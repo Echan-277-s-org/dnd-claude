@@ -92,6 +92,17 @@ The handoff needs JSX + state beyond a CSS reskin. Flagged so it isn't underesti
   timestamps** with current-session highlight, **turn-pill** + live-status dot.
 - Header/composer/HUD chrome per the handoff's Chat spec.
 
+> ⚠️ **MUST KEEP — the handoff omits an existing feature.** The Setup screen's
+> **"Campaign Notes / Load .md file"** field (`ApiKeySetup.jsx` — hidden `.md/.txt`
+> file input, the `.file-upload-btn` label, the `.file-loaded` chip + clear button)
+> is **not** in the handoff's Setup component list (Emblem → Eyebrow → Title →
+> Subtitle → Genre → Name → Details → Begin). It loads session notes into
+> `campaign.context` for the system prompt — keep it, placed **between the Details
+> textarea and the Begin button**. Good news: its CSS is already token-driven
+> (`var(--surface-2)`, `--border-gold`, `--gold-bright`, …), so it re-skins for
+> free under both palettes. Theme B (Crimson Void) may optionally restyle the
+> dashed-border upload button to match its faceted look — polish, not required.
+
 ## DECISION (settled 2026-05-23): theme follows genre
 
 **Theme is driven by `campaign.genre`, not an independent toggle.** Picking the
