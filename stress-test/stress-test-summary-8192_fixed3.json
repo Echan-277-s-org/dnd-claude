@@ -1,0 +1,357 @@
+{
+  "run_id": "8192_fixed3",
+  "num_ctx": 8192,
+  "num_predict": 400,
+  "deviation_note": "num_predict=400 (production=900) per PROTOCOL §6",
+  "total_turns": 48,
+  "probe_results": {
+    "P1": {
+      "anchors": [
+        {
+          "id": "B1",
+          "expected": "Garret",
+          "category": "B",
+          "pass": true
+        },
+        {
+          "id": "B2",
+          "expected": "Forge of Embers",
+          "category": "B",
+          "pass": true
+        },
+        {
+          "id": "B5",
+          "expected": "12 gold",
+          "category": "B",
+          "pass": false
+        }
+      ],
+      "passed": 2,
+      "total": 3
+    },
+    "P2": {
+      "anchors": [
+        {
+          "id": "A3",
+          "expected": "Sorcha",
+          "category": "A",
+          "pass": true
+        },
+        {
+          "id": "A4",
+          "expected": "Sunstone",
+          "category": "A",
+          "pass": true
+        },
+        {
+          "id": "B8",
+          "expected": "Ash Covenant",
+          "category": "B",
+          "pass": false
+        }
+      ],
+      "passed": 2,
+      "total": 3
+    },
+    "P3": {
+      "anchors": [
+        {
+          "id": "A1",
+          "expected": "Ravenmoor",
+          "category": "A",
+          "pass": true
+        },
+        {
+          "id": "B3",
+          "expected": "Vell",
+          "category": "B",
+          "pass": true
+        }
+      ],
+      "passed": 2,
+      "total": 2
+    },
+    "P4": {
+      "anchors": [
+        {
+          "id": "C1",
+          "expected": "Weeping Arch",
+          "category": "C",
+          "pass": true
+        },
+        {
+          "id": "C2",
+          "expected": "pressure",
+          "category": "C",
+          "pass": true
+        },
+        {
+          "id": "C3",
+          "expected": "golem",
+          "category": "C",
+          "pass": true
+        }
+      ],
+      "passed": 3,
+      "total": 3
+    },
+    "P5": {
+      "anchors": [
+        {
+          "id": "A1",
+          "expected": "Ravenmoor",
+          "category": "A",
+          "pass": true
+        },
+        {
+          "id": "C4",
+          "expected": "Shard of Dawn",
+          "category": "C",
+          "pass": true
+        },
+        {
+          "id": "B8",
+          "expected": "Ash Covenant",
+          "category": "B",
+          "pass": false
+        },
+        {
+          "id": "B6",
+          "expected": "Mira",
+          "category": "B",
+          "pass": true
+        },
+        {
+          "id": "B5",
+          "expected": "12 gold",
+          "category": "B",
+          "pass": false
+        }
+      ],
+      "passed": 3,
+      "total": 5
+    }
+  },
+  "category_accuracy": {
+    "A": 1,
+    "B": 0.5,
+    "C": 1
+  },
+  "category_counts": {
+    "passed": {
+      "A": 4,
+      "B": 4,
+      "C": 4
+    },
+    "total": {
+      "A": 4,
+      "B": 8,
+      "C": 4
+    }
+  },
+  "drift_onset": {
+    "probe": "P1",
+    "anchor_id": "B5",
+    "probe_turn": 21,
+    "introduced_turn": 7,
+    "turn_distance": 14
+  },
+  "contradictions": [],
+  "trim_boundary_log": [
+    {
+      "turn": 13,
+      "total_before_trim": 24,
+      "dropped_indices": "4..5"
+    },
+    {
+      "turn": 14,
+      "total_before_trim": 26,
+      "dropped_indices": "4..7"
+    },
+    {
+      "turn": 16,
+      "total_before_trim": 29,
+      "dropped_indices": "4..10"
+    },
+    {
+      "turn": 18,
+      "total_before_trim": 32,
+      "dropped_indices": "4..13"
+    },
+    {
+      "turn": 19,
+      "total_before_trim": 34,
+      "dropped_indices": "4..15"
+    },
+    {
+      "turn": 20,
+      "total_before_trim": 36,
+      "dropped_indices": "4..17"
+    },
+    {
+      "turn": 21,
+      "total_before_trim": 38,
+      "dropped_indices": "4..19"
+    },
+    {
+      "turn": 22,
+      "total_before_trim": 40,
+      "dropped_indices": "4..21"
+    },
+    {
+      "turn": 23,
+      "total_before_trim": 42,
+      "dropped_indices": "4..23"
+    },
+    {
+      "turn": 24,
+      "total_before_trim": 44,
+      "dropped_indices": "4..25"
+    },
+    {
+      "turn": 26,
+      "total_before_trim": 47,
+      "dropped_indices": "4..28"
+    },
+    {
+      "turn": 27,
+      "total_before_trim": 49,
+      "dropped_indices": "4..30"
+    },
+    {
+      "turn": 28,
+      "total_before_trim": 51,
+      "dropped_indices": "4..32"
+    },
+    {
+      "turn": 29,
+      "total_before_trim": 53,
+      "dropped_indices": "4..34"
+    },
+    {
+      "turn": 31,
+      "total_before_trim": 56,
+      "dropped_indices": "4..37"
+    },
+    {
+      "turn": 32,
+      "total_before_trim": 58,
+      "dropped_indices": "4..39"
+    },
+    {
+      "turn": 34,
+      "total_before_trim": 61,
+      "dropped_indices": "4..42"
+    },
+    {
+      "turn": 36,
+      "total_before_trim": 64,
+      "dropped_indices": "4..45"
+    },
+    {
+      "turn": 38,
+      "total_before_trim": 67,
+      "dropped_indices": "4..48"
+    },
+    {
+      "turn": 39,
+      "total_before_trim": 69,
+      "dropped_indices": "4..50"
+    },
+    {
+      "turn": 40,
+      "total_before_trim": 71,
+      "dropped_indices": "4..52"
+    },
+    {
+      "turn": 41,
+      "total_before_trim": 73,
+      "dropped_indices": "4..54"
+    },
+    {
+      "turn": 42,
+      "total_before_trim": 75,
+      "dropped_indices": "4..56"
+    },
+    {
+      "turn": 43,
+      "total_before_trim": 77,
+      "dropped_indices": "4..58"
+    },
+    {
+      "turn": 44,
+      "total_before_trim": 79,
+      "dropped_indices": "4..60"
+    },
+    {
+      "turn": 46,
+      "total_before_trim": 82,
+      "dropped_indices": "4..63"
+    },
+    {
+      "turn": 47,
+      "total_before_trim": 84,
+      "dropped_indices": "4..65"
+    },
+    {
+      "turn": 48,
+      "total_before_trim": 86,
+      "dropped_indices": "4..67"
+    },
+    {
+      "turn": 49,
+      "total_before_trim": 88,
+      "dropped_indices": "4..69"
+    },
+    {
+      "turn": 51,
+      "total_before_trim": 91,
+      "dropped_indices": "4..72"
+    },
+    {
+      "turn": 52,
+      "total_before_trim": 93,
+      "dropped_indices": "4..74"
+    },
+    {
+      "turn": 53,
+      "total_before_trim": 95,
+      "dropped_indices": "4..76"
+    },
+    {
+      "turn": 54,
+      "total_before_trim": 97,
+      "dropped_indices": "4..78"
+    },
+    {
+      "turn": 56,
+      "total_before_trim": 100,
+      "dropped_indices": "4..81"
+    },
+    {
+      "turn": 58,
+      "total_before_trim": 103,
+      "dropped_indices": "4..84"
+    },
+    {
+      "turn": 59,
+      "total_before_trim": 105,
+      "dropped_indices": "4..86"
+    },
+    {
+      "turn": 60,
+      "total_before_trim": 107,
+      "dropped_indices": "4..88"
+    }
+  ],
+  "performance": {
+    "mean_tok_per_sec": 74.45,
+    "p25_tok_per_sec": 73.44,
+    "p75_tok_per_sec": 75.89,
+    "p95_tok_per_sec": 77.11,
+    "sample_count": 43
+  },
+  "cpu_offload_detected": false,
+  "cpu_offload_first_turn": null,
+  "wall_time_seconds": 273
+}

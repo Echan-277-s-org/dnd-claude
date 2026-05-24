@@ -6,10 +6,10 @@ const OLLAMA_MODELS = [
 ]
 
 export default function CampaignSetup({ onSetup }) {
-  const [name, setName] = useState('')
-  const [details, setDetails] = useState('')
-  const [model, setModel] = useState('qwen2.5:14b')
-  const [context, setContext] = useState('')
+  const [name, setName] = useState(() => localStorage.getItem('dnd_campaign_name') || '')
+  const [details, setDetails] = useState(() => localStorage.getItem('dnd_campaign_details') || '')
+  const [model, setModel] = useState(() => localStorage.getItem('dnd_model') || 'qwen2.5:14b')
+  const [context, setContext] = useState(() => localStorage.getItem('dnd_campaign_context') || '')
   const [contextFileName, setContextFileName] = useState('')
   const fileInputRef = useRef(null)
 

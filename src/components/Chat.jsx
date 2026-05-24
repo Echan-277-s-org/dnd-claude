@@ -69,6 +69,10 @@ export default function Chat({ campaign, onReset, character, setCharacter }) {
     el.style.height = Math.min(el.scrollHeight, 140) + 'px'
   }, [input])
 
+  useEffect(() => {
+    if (!isLoading) textareaRef.current?.focus()
+  }, [isLoading])
+
   const systemPrompt = buildSystemPrompt(campaign)
 
   async function sendMessage(text) {
@@ -90,7 +94,8 @@ export default function Chat({ campaign, onReset, character, setCharacter }) {
       ? `${systemPrompt}\n\n---\nEstablished entities so far (stay consistent with these named NPCs, locations, and items): ${entities.join(', ')}.`
       : systemPrompt
 
-    setMessages(prev => [...prev, userMsg, { role: 'assistant', content: '' }])
+    const assistantId = crypto.randomUUID()
+    setMessages(prev => [...prev, userMsg, { role: 'assistant', content: '', id: assistantId }])
     setInput('')
     setIsLoading(true)
 
@@ -150,11 +155,7 @@ export default function Chat({ campaign, onReset, character, setCharacter }) {
             const delta = event.message?.content
             if (delta) {
               fullText += delta
-              setMessages(prev => {
-                const updated = [...prev]
-                updated[updated.length - 1] = { role: 'assistant', content: fullText }
-                return updated
-              })
+              setMessages(prev => prev.map(m => m.id === assistantId ? { ...m, content: fullText } : m))
             }
           } catch {
             // incomplete JSON chunk — skip
@@ -162,18 +163,13 @@ export default function Chat({ campaign, onReset, character, setCharacter }) {
         }
       }
     } catch (err) {
-      setMessages(prev => {
-        const updated = [...prev]
-        updated[updated.length - 1] = {
-          role: 'assistant',
-          content: `*The DM's voice fades into silence...*\n\n**Error:** ${err.message}`,
-          error: true,
-        }
-        return updated
-      })
+      setMessages(prev => prev.map(m => m.id === assistantId ? {
+        ...m,
+        content: `*The DM's voice fades into silence...*\n\n**Error:** ${err.message}`,
+        error: true,
+      } : m))
     } finally {
       setIsLoading(false)
-      textareaRef.current?.focus()
       // Update entities after streaming completes
       setMessages(prev => {
         setEntities(extractEntities(prev))
@@ -210,7 +206,13 @@ export default function Chat({ campaign, onReset, character, setCharacter }) {
   })()
 
   return (
-    <div className="app-layout">
+    <div
+      className="app-layout"
+      style={{
+        '--history-width': showHistory ? 'var(--panel-width)' : '0px',
+        '--char-width': showCharacter ? 'var(--panel-width)' : '0px',
+      }}
+    >
       <HistoryPanel
         entities={entities}
         sessionLog={sessionLog}
@@ -311,7 +313,7 @@ export default function Chat({ campaign, onReset, character, setCharacter }) {
               const isLast = i === messages.length - 1
               const isEmpty = msg.content === ''
               const isLastAssistant = i === lastAssistantIndex
-              const showSuggestions = isLastAssistant && !isLoading && msg.content.length > 0
+              const showSuggestions = isLastAssistant && !isLoading && msg.content.length > 0 && !msg.error
 
               return (
                 <div key={i} className={`message dm-message ${msg.error ? 'error' : ''}`}>

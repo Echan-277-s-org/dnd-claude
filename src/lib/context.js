@@ -102,10 +102,43 @@ const GENERIC_HEAD_NOUNS = new Set([
   'hall', 'guard', 'leader', 'figure', 'option', 'note', 'choice', 'choices',
 ])
 
+// D&D 5e mechanics / stat-block vocabulary. The model bolds these constantly
+// when it narrates skill checks and renders monster stat blocks, and they
+// flooded the digest in testing ("Detect Magic", "Initiative Order",
+// "Armor Class", "Player Character A", "Short Rest", "Multiattack", "STR"…).
+// None are ever a continuity anchor, so an exact/normalized match is safe.
+const MECHANICS_TERMS = new Set([
+  // skills & checks
+  'perception', 'investigation', 'insight', 'persuasion', 'deception',
+  'intimidation', 'stealth', 'arcana', 'history', 'nature', 'religion',
+  'survival', 'medicine', 'athletics', 'acrobatics', 'sleight of hand',
+  'animal handling', 'performance', 'initiative', 'initiative order',
+  'monster', 'creature', 'enemy', 'enemies',
+  // ability scores
+  'str', 'dex', 'con', 'int', 'wis', 'cha',
+  'strength', 'dexterity', 'constitution', 'intelligence', 'wisdom', 'charisma',
+  // combat / resources
+  'armor class', 'hit points', 'hit point', 'temporary hit points', 'speed',
+  'damage immunities', 'damage resistances', 'damage', 'senses', 'languages',
+  'challenge', 'multiattack', 'slam', 'short rest', 'long rest',
+  'spell slots', 'spell slots regained', 'spell slot', 'spell save dc',
+  'saving throw', 'saving throws', 'condition', 'conditions', 'advantage',
+  'disadvantage', 'concentration', 'reaction', 'bonus action',
+  'skills', 'skill', 'condition immunities', 'damage roll', 'vulnerabilities',
+  'immutable form', 'magic resistance', 'legendary actions', 'legendary resistance',
+  'proficiency', 'proficiency bonus', 'attack roll', 'ability check', 'death save',
+  // spells the model commonly bolds
+  'detect magic', 'identify', 'guidance', 'light', 'mage hand',
+  // generic combatant placeholders
+  'player character a', 'player character b', 'player character c',
+  'player character', 'guard 1', 'guard 2', 'leader figure',
+])
+
 // Filler / pronoun fragments captured from quotes or bold.
 const PRONOUN_FILLER = new Set([
   'one of you', 'you', 'i', 'we', 'they', 'he', 'she', 'it', 'us', 'them',
-  'aye', 'now', 'well', 'yes', 'no', 'okay',
+  'aye', 'now', 'well', 'yes', 'no', 'okay', 'welcome', 'greetings', 'hello',
+  'farewell', 'thanks', 'please', 'wait', 'stop', 'halt',
 ])
 
 function looksLikeEntity(term) {
@@ -114,14 +147,29 @@ function looksLikeEntity(term) {
 
   const lower = t.toLowerCase()
 
-  // 1. Explicit junk lists (labels, meta phrases, filler).
+  // 1. Explicit junk lists (labels, meta phrases, filler, D&D mechanics).
   if (GENERIC_LABELS.has(lower)) return false
   if (PRONOUN_FILLER.has(lower)) return false
+  if (MECHANICS_TERMS.has(lower)) return false
+
+  // 1b. Enumerated placeholder combatants: a generic head noun followed by a
+  //     single index token ("Guard 1", "Hooded Figure B", "Player Character C",
+  //     "Shadow Guardian 2"). Pattern: ends with a lone digit or single A-Z.
+  if (/\s(?:\d+|[A-Z])$/.test(t)) {
+    const head = t.replace(/\s(?:\d+|[A-Z])$/, '').toLowerCase()
+    if (GENERIC_HEAD_NOUNS.has(head) || MECHANICS_TERMS.has(head) ||
+        /\b(guard|figure|character|enemy|guardian|soldier|cultist|skeleton)\b/.test(head)) {
+      return false
+    }
+  }
 
   // 2. Drop anything carrying a colon — label syntax like "Shop Name:" or
   //    "Check for Traps (Perception Check):". (The caller already strips a
   //    single trailing colon, so an interior colon is the real signal.)
   if (t.includes(':')) return false
+
+  // 2b. Possessive "<Role>'s Name" label ("Blacksmith's Name", "Captain's Name").
+  if (/['’]s\s+name$/i.test(t)) return false
 
   // 3. Drop parenthetical mechanics annotations:
   //    "Artifact (Sunstone)", "Skill Check (Thieves' Tools)",
@@ -135,8 +183,10 @@ function looksLikeEntity(term) {
   //    Upward", "Passage Entrance Described").
   if (words.length > 4) return false
 
-  // 5. Reject tokens with no Latin letters at all (stray CJK like "钩子").
+  // 5. Reject tokens with no Latin letters at all (stray CJK like "钩子"),
+  //    and chat/handle artifacts like "@PlayerA".
   if (!/[A-Za-z]/.test(t)) return false
+  if (t.startsWith('@')) return false
 
   // 6. Imperative / option-list phrases: leading word is an action verb AND the
   //    phrase is multi-word ("Disarm Traps", "Proceed Down One Path",
