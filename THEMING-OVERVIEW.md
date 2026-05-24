@@ -83,8 +83,8 @@ Fonts: **Orbitron** + **Titillium Web**.
 
 The handoff needs JSX + state beyond a CSS reskin. Flagged so it isn't underestimated:
 
-- **Theme toggle + `localStorage`** (`theme: 'dnd' | 'void'`, default `'dnd'`) —
-  see open decision below.
+- ~~Theme toggle + `localStorage`~~ — **dropped** per the decision below (theme
+  follows genre; the genre→theme marker is the only wiring needed).
 - **`--font-mono`** (JetBrains Mono) wired into `index.html` + `:root`.
 - **Dice chips** carry `{ die, check, result, verdict }` — current messages are
   `{ role: 'dice', die, result }`, so DiceRoller/Chat need `check` + `verdict`.
@@ -92,19 +92,36 @@ The handoff needs JSX + state beyond a CSS reskin. Flagged so it isn't underesti
   timestamps** with current-session highlight, **turn-pill** + live-status dot.
 - Header/composer/HUD chrome per the handoff's Chat spec.
 
-## OPEN DECISION (settle before building)
+## DECISION (settled 2026-05-23): theme follows genre
 
-**Is the theme tied to `campaign.genre`, or an independent user toggle?**
-The archived plans wired `data-theme` *from* `campaign.genre`. The handoff makes
-`theme` an independent, `localStorage`-persisted toggle defaulting to `'dnd'`.
-These conflict — pick one before Phase 1.
+**Theme is driven by `campaign.genre`, not an independent toggle.** Picking the
+genre drives both the prompt engine *and* the look; there is no separate theme
+control, and the handoff's independent `theme` state + `localStorage` toggle is
+**dropped**. (Genre already persists via `dnd_genre`, so no new persistence.)
+
+**Mapping wrinkle (must handle in Phase 1):** the genre ids are `'dnd'` and
+`'starwars'` (`src/lib/genres.js`), but the handoff's Theme B selector is
+`[data-theme="void"]`. So map genre → theme attribute rather than assigning the
+genre id directly:
+
+```js
+const THEME_FOR_GENRE = { dnd: 'dnd', starwars: 'void' };
+useEffect(() => {
+  const genre = ready ? campaign.genre : draftGenre;
+  document.documentElement.dataset.theme = THEME_FOR_GENRE[genre] ?? 'dnd';
+}, [ready, campaign.genre, draftGenre]);
+```
+
+No genre rename, no engine/`genres.js`/`context*.js` changes — the `'starwars'`
+genre id and its Saga engine stay; only its *visual* attribute is `void`.
 
 ## Build sequence (carried over; still sound)
 
 Do the **shared work once**, then add each theme's additive block:
 
-1. **Shared mechanism** — wire the root `data-theme` marker (from the chosen
-   source above) + lift genre/theme selection into `ApiKeySetup.jsx`.
+1. **Shared mechanism** — wire the root `data-theme` marker via the genre→theme
+   map (see the decision below) + lift genre selection into `ApiKeySetup.jsx` so
+   the setup screen previews the right skin.
 2. **Shared refactors** — tokenize the ~6 hardcoded color spots (button gradients,
    card/emblem glow, the two rgba literals, body bg, select-arrow SVG); swap the
    **31 font literals** (25 `Cinzel` + 6 `Crimson Pro` — count verified) to
