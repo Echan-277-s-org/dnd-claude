@@ -31,6 +31,44 @@ When a party/turn model is added later, revisit these against `design-handoff/RE
 (Mobile party strip, header turn-pill, Dice chip) — the token system shipped here re-skins
 them for free.
 
+## Post-merge gap closure (2026-05-24)
+
+After the three theme merges landed on `master`, a handoff-vs-merged audit found five
+visual features from `design-handoff/README.md` that the build hadn't applied. They split
+into two buckets:
+
+**Shipped — gaps inside the committed scope (commit `3c091e0`):**
+
+- **(4) Composer `›` prefix glyph** — gold `›` at the left of the chat input
+  (`.input-area::before`), token-driven via `--gold` + `--font-display` so Theme A renders
+  it in Cinzel and Theme B in Orbitron with no per-theme rule.
+- **(5) Shared drop-cap hook** — `parseMarkdown` (`Chat.jsx`) now wraps the GM's first
+  letter in a single `<span class="dropcap">` (matches even when the paragraph opens with
+  `<strong>`/`<em>`). Theme A illuminates the span; Theme B leaves it plain and surfaces GM
+  identity via its `[GM]` HUD label. Replaces the old `::first-letter` selector so both
+  themes share one hook — no JSX fork.
+  - *Deviation from the original brief:* the plan said Theme B should "restyle the same
+    span into `[GM]`." Turning a single-letter span into the text `[GM]` would swallow the
+    first letter, so instead the `.dropcap` span is the shared hook (illuminated in A, plain
+    in B) and B's `[GM]` tag stays on `.message-label.dm-label`. Same visual result, no fork.
+  - Verified live in both themes (Ollama-backed GM message): drop-cap illuminates in `dnd`,
+    stays a plain crimson letter in `void` (no bleed); `›` renders in both. Build green,
+    108/108 tests pass.
+
+**Still deferred — next tranche (items 1–3 above), each blocked on a missing data model:**
+
+- **(1) Mobile party strip** — needs `party: Array<{id,name,role,hpPct,isActive}>`; app has
+  one `character` (`App.jsx` `DEFAULT_CHARACTER`, persisted to `dnd_character`).
+- **(2) Header turn-pill + live-status dot** — needs an `activeCharacter`/turn concept;
+  none exists today.
+- **(3) Dice skill-check chip + verdict** — needs `{die, check, result, verdict}`;
+  `DiceRoller.jsx` emits only `{die, result}` and `Chat.jsx` renders crit/fumble via
+  `.dice-result`.
+
+Before building 1–3, settle the data-model scope (full multi-character party + turn order
+vs. a minimal shim) — that decision drives the work across `App.jsx`, `Chat.jsx`,
+`DiceRoller.jsx`, `CharacterPanel.jsx`, `HistoryPanel.jsx`, and both `App.css` theme blocks.
+
 ## Themes
 
 | Theme | Selector | Genre | Branch | Worktree | Dev port |
