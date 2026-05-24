@@ -18,6 +18,18 @@ const DEFAULT_CHARACTER = {
   conditions: [],
 }
 
+// DEFAULT_PARTY is the display-cache seed used when no prior data exists.
+// The LLM overwrites it after the first response; this prevents a blank strip.
+const DEFAULT_PARTY = [
+  {
+    id: 'seed-0',
+    name: 'Adventurer',
+    role: 'Fighter',
+    hpPct: 100,
+    isActive: true,
+  },
+]
+
 function loadCharacter() {
   try {
     const stored = localStorage.getItem('dnd_character')
@@ -26,6 +38,45 @@ function loadCharacter() {
     // ignore parse errors
   }
   return DEFAULT_CHARACTER
+}
+
+// loadParty() migration:
+// 1. Return dnd_party if present and parseable.
+// 2. Else derive a single-member seed from dnd_character.
+// 3. Else return DEFAULT_PARTY.
+// dnd_character is never deleted — this is a read-only migration.
+function loadParty() {
+  try {
+    const stored = localStorage.getItem('dnd_party')
+    if (stored) {
+      const parsed = JSON.parse(stored)
+      if (Array.isArray(parsed) && parsed.length > 0) return parsed
+    }
+  } catch {
+    // fall through to migration
+  }
+  try {
+    const charStored = localStorage.getItem('dnd_character')
+    if (charStored) {
+      const c = JSON.parse(charStored)
+      const hpPct =
+        c.hpMax > 0
+          ? Math.max(0, Math.min(100, Math.round((c.hpCurrent / c.hpMax) * 100)))
+          : 100
+      return [
+        {
+          id: 'seed-0',
+          name: c.name || DEFAULT_CHARACTER.name,
+          role: c.charClass || DEFAULT_CHARACTER.charClass,
+          hpPct,
+          isActive: true,
+        },
+      ]
+    }
+  } catch {
+    // fall through to default
+  }
+  return DEFAULT_PARTY
 }
 
 export default function App() {
@@ -38,6 +89,8 @@ export default function App() {
     context: localStorage.getItem('dnd_campaign_context') || '',
   }))
   const [character, setCharacter] = useState(loadCharacter)
+  // party is LLM-driven (display cache). loadParty() migrates from dnd_character on first boot.
+  const [party, setParty] = useState(loadParty)
   // Tracks the genre selected on the setup screen so the theme previews before "Begin".
   const [draftGenre, setDraftGenre] = useState(campaign.genre)
 
@@ -73,6 +126,8 @@ export default function App() {
       onReset={handleReset}
       character={character}
       setCharacter={setCharacter}
+      party={party}
+      setParty={setParty}
     />
   )
 }
