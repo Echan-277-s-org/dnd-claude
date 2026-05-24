@@ -1280,6 +1280,130 @@ body {
 /* ─── THEME A — Candle-lit Grimoire ─────────────────────────────────────
    (filled on branch theme/dnd) */
 [data-theme="dnd"] {
+  --bg:             #0d0a07;
+  --surface-1:      #1c1409;
+  --surface-2:      #241809;
+  --surface-3:      #34250f;
+  --gold:           #c9a84c;
+  --gold-dim:       #846a34;
+  --gold-bright:    #f0d28a;
+  --text-primary:   #ecdcae;
+  --text-secondary: #a88a64;
+  --text-muted:     #6f5442;
+  --border:         #3f2d18;
+  --border-gold:    #644626;
+  --red:            #8b1a1a;
+  --green:          #2a5a1a;
+  --font-display:   'Cinzel', serif;
+  --font-body:      'Crimson Pro', Georgia, serif;
+}
+
+/* ── 1. Backdrop — warm candlelight pools via a fixed ::before overlay ── */
+[data-theme="dnd"] body {
+  position: relative;
+}
+
+[data-theme="dnd"] body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background:
+    radial-gradient(circle at 12% 6%,  color-mix(in oklab, var(--gold) 36%, transparent) 0%, transparent 50%),
+    radial-gradient(circle at 88% 100%, color-mix(in oklab, #2a0c00 75%, transparent)     0%, transparent 60%),
+    url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200'><filter id='v'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/><feColorMatrix type='saturate' values='0'/><feBlend in='SourceGraphic' mode='multiply'/></filter><rect width='200' height='200' filter='url(%23v)' opacity='0.04'/></svg>");
+  mix-blend-mode: screen;
+  opacity: 0.55;
+}
+
+/* ── 2. GM bubble — parchment-grain diagonal wash + inset gold glow ──── */
+[data-theme="dnd"] .dm-bubble {
+  background:
+    repeating-linear-gradient(
+      135deg,
+      rgba(201, 168, 76, 0.08) 0px  2px,
+      transparent                   2px 6px
+    ),
+    var(--surface-2);
+  box-shadow:
+    inset 0 0 50px -10px color-mix(in oklab, var(--gold) 24%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+
+/* ── 3. Illuminated drop-cap on GM's first paragraph ─────────────────── */
+[data-theme="dnd"] .dm-bubble .message-content > p:first-child::first-letter {
+  font-family:  var(--font-display);
+  font-size:    2.8em;
+  font-weight:  700;
+  color:        var(--gold-bright);
+  text-shadow:  0 0 14px color-mix(in oklab, var(--gold) 55%, transparent);
+  float:        left;
+  line-height:  0.85;
+  padding:      6px 10px 0 0;
+}
+
+/* ── 4. Setup emblem — candleFlicker glow animation ──────────────────── */
+/*
+   .setup-emblem uses filter: drop-shadow(...) for its glow — box-shadow
+   has no effect on elements rendered via filter. We animate filter:
+   drop-shadow() directly to match the README's intent (subtle glow shift
+   between dim gold and bright gold, 6s ease-in-out, not a spinner).
+*/
+[data-theme="dnd"] .setup-emblem {
+  animation: candleFlicker 6s ease-in-out infinite;
+}
+
+@keyframes candleFlicker {
+  0%, 100% {
+    filter: drop-shadow(0 0 18px color-mix(in oklab, #c9a84c 45%, transparent));
+  }
+  50% {
+    filter: drop-shadow(0 0 26px color-mix(in oklab, #f0d28a 48%, transparent));
+  }
+}
+
+/* ── 5. Reduced motion ───────────────────────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  [data-theme="dnd"] .setup-emblem {
+    animation: none;
+  }
+}
+
+/* ── 6. Wax-seal corners on .setup-card ─────────────────────────────── */
+[data-theme="dnd"] .setup-card::before,
+[data-theme="dnd"] .setup-card::after {
+  /* 22px crimson disc with 1px crimson rim; gilt ✦ glyph centered */
+  content: '✦';
+  width:  22px;
+  height: 22px;
+  border-radius: 50%;
+  background: radial-gradient(
+    circle at 40% 38%,
+    color-mix(in oklab, var(--red) 85%, #ffffff) 0%,
+    var(--red) 60%,
+    color-mix(in oklab, var(--red) 70%, #000000) 100%
+  );
+  border: 1px solid color-mix(in oklab, var(--red) 80%, #ffffff);
+  /* Glyph styling */
+  font-family:     var(--font-display);
+  font-size:       10px;
+  color:           var(--gold-bright);
+  text-shadow:     0 0 4px color-mix(in oklab, var(--gold) 70%, transparent);
+  display:         flex;
+  align-items:     center;
+  justify-content: center;
+  line-height:     1;
+}
+
+[data-theme="dnd"] .setup-card::before {
+  top:  -1px;
+  left: -1px;
+}
+
+[data-theme="dnd"] .setup-card::after {
+  bottom: -1px;
+  right:  -1px;
 }
 
 /* ─── THEME B — Crimson Void ────────────────────────────────────────────
