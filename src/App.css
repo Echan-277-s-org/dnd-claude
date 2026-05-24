@@ -1555,3 +1555,375 @@ body {
   bottom: 4px;
   right: 4px;
 }
+
+/* ═══════════════════════════════════════════════════════════════════════
+   PHASE B — Mobile party strip + HistoryPanel party sub-section
+   CSS corrected per design-bridge review (PARTY-HUD-PLAN.md Section 8):
+   - Cell base: --surface-1 (not surface-2), radius 6px (not 4px)
+   - Active inset bar: --gold (not --border-gold)
+   - Active tint: color-mix over --surface-1 (not surface-2)
+   - Puck: 18px/9px, --border-gold ring, --gold-bright text
+   - Name: 9.5px uppercase 0.12em tracking
+   - HP fill: gold gradient + glow (not --green; no .warn variant)
+   - HP track: 3px height (not 4px), 1px solid --border
+   ═══════════════════════════════════════════════════════════════════════ */
+
+/* ─── Mobile party strip (hidden by default; shown inside mobile breakpoint) */
+.party-strip {
+  display: none;             /* hidden on desktop */
+  flex-shrink: 0;
+  padding: 6px 12px 8px;
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--border-gold);
+}
+
+@media (max-width: 768px) {
+  .party-strip {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 8px;
+  }
+}
+
+.party-strip-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 8px;
+  background: var(--surface-1);         /* design-bridge: surface-1, not surface-2 */
+  border: 1px solid var(--border);
+  border-radius: 6px;                    /* design-bridge: 6px, not 4px */
+  transition: border-color 200ms, box-shadow 200ms;  /* README:216 */
+}
+
+.party-strip-cell--active {
+  border-color: var(--border-gold);
+  background: color-mix(in oklab, var(--gold) 6%, var(--surface-1));  /* over surface-1 */
+  box-shadow: inset 2px 0 0 var(--gold);  /* design-bridge: --gold, not --border-gold */
+}
+
+.party-strip-top {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* Avatar puck — design-bridge: 18px/9px, --border-gold ring, --gold-bright text */
+.party-strip-avatar {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--surface-3);
+  border: 1px solid var(--border-gold);  /* design-bridge: border-gold ring */
+  color: var(--gold-bright);             /* design-bridge: gold-bright text */
+  font-family: var(--font-display);
+  font-size: 9px;
+  display: grid;
+  place-items: center;
+  line-height: 1;
+}
+
+.party-strip-who {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+/* Name — design-bridge: 9.5px, uppercase, 0.12em letter-spacing */
+.party-strip-name {
+  font-family: var(--font-display);
+  font-size: 9.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Role — design-bridge: 9px (not 10px), font-body italic */
+.party-strip-role {
+  font-family: var(--font-body);
+  font-size: 9px;
+  font-style: italic;
+  color: var(--text-muted);
+  letter-spacing: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* HP track — design-bridge: 3px height (not 4px), 1px solid --border */
+.party-strip-hp-track {
+  height: 3px;
+  background: var(--surface-3);
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+/* HP fill — design-bridge: gold gradient + glow (not --green; no .warn variant) */
+.party-strip-hp-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--gold-dim), var(--gold-bright));
+  box-shadow: 0 0 6px -1px color-mix(in oklab, var(--gold) 60%, transparent);
+  transition: width 0.3s ease;
+}
+
+/* ─── HistoryPanel party sub-section (desktop) */
+.history-party-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.history-party-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 8px;
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  transition: border-color 150ms;
+}
+
+.history-party-row--active {
+  border-color: var(--border-gold);
+  background: color-mix(in oklab, var(--gold) 4%, var(--surface-1));
+}
+
+.history-party-row-top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+  min-width: 0;
+}
+
+.history-party-name {
+  font-family: var(--font-display);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-primary);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.history-party-role {
+  font-family: var(--font-body);
+  font-size: 10px;
+  font-style: italic;
+  color: var(--text-muted);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.history-party-hp-track {
+  height: 3px;
+  background: var(--surface-3);
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.history-party-hp-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--gold-dim), var(--gold-bright));
+  box-shadow: 0 0 6px -1px color-mix(in oklab, var(--gold) 60%, transparent);
+  transition: width 0.3s ease;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   PHASE C — Header live-status dot + turn-pill (DESKTOP-ONLY)
+   Both are hidden on mobile via media query — the active strip cell's
+   "· turn" caption is the mobile turn indicator (design-bridge confirmed).
+   Pulse animation is wrapped in prefers-reduced-motion per README:218.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+/* Live-status dot — 8px, --gold fill, static glow (no animation needed) */
+.header-status-dot {
+  display: block;              /* desktop: visible */
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--gold);
+  box-shadow: 0 0 10px var(--gold);  /* README:259 */
+  flex-shrink: 0;
+}
+
+/* Turn-pill — inline-flex, rounded-full, gold-bright text, Cinzel/Orbitron */
+.turn-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px 4px 8px;
+  border-radius: 99px;
+  background: color-mix(in oklab, var(--gold) 10%, var(--surface-2));
+  border: 1px solid var(--border-gold);
+  color: var(--gold-bright);
+  font-family: var(--font-display);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+/* Pulsing dot inside the turn-pill */
+.turn-pill-dot {
+  display: block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--gold-bright);
+  animation: turnDotPulse 1.8s ease-in-out infinite;
+  flex-shrink: 0;
+}
+
+@keyframes turnDotPulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.35; }
+}
+
+/* Reduced motion: disable the turn-pill dot pulse (README:218) */
+@media (prefers-reduced-motion: reduce) {
+  .turn-pill-dot {
+    animation: none;
+  }
+}
+
+/* Hide status dot and turn-pill on mobile — strip "· turn" is the mobile indicator */
+@media (max-width: 768px) {
+  .header-status-dot {
+    display: none;
+  }
+  .turn-pill {
+    display: none;
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   PHASE D — DiceChip component
+   CSS corrected per design-bridge review:
+   - Chip outer glow: 0 0 16px -8px (was missing)
+   - Die tile border: --gold (not --gold-dim)
+   - Die tile bg: gold-10% wash over --surface-3 (not flat surface-3)
+   - PASS color: mix --green toward --gold-bright (not #ffffff)
+   - fadeUp animation matches README:213 (opacity 0→1, ty 6px→0, 200ms)
+   ═══════════════════════════════════════════════════════════════════════ */
+
+.dice-chip {
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 12px 5px 6px;           /* design-bridge: 5px 12px 5px 6px */
+  border-radius: 99px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-gold);
+  box-shadow: 0 0 16px -8px color-mix(in oklab, var(--gold) 60%, transparent);  /* design-bridge: missing glow added */
+  animation: fadeUp 0.2s ease-out;     /* README:213: opacity 0→1, ty 6px→0 */
+}
+
+/* Die tile — design-bridge: --gold border (not --gold-dim), gold-10% bg wash */
+.dice-chip-tile {
+  min-width: 22px;
+  height: 22px;
+  padding: 0 5px;
+  border-radius: 5px;
+  border: 1px solid var(--gold);       /* design-bridge: --gold, not --gold-dim */
+  background: color-mix(in oklab, var(--gold) 10%, var(--surface-3));  /* design-bridge: gold wash */
+  color: var(--gold-bright);
+  font-family: var(--font-display);
+  font-size: 9px;
+  letter-spacing: 0;
+  display: grid;
+  place-items: center;
+}
+
+/* Check label — uppercase, display font, text-secondary */
+.dice-chip-check {
+  font-family: var(--font-display);
+  font-size: 9.5px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+/* Numeric result — gold-bright, larger */
+.dice-chip-result {
+  font-family: var(--font-display);
+  font-size: 13px;
+  color: var(--gold-bright);
+}
+
+/* Crit/fumble result modifiers */
+.dice-chip-result--crit {
+  color: color-mix(in oklab, var(--gold-bright) 80%, var(--green));
+}
+
+.dice-chip-result--fumble {
+  color: var(--red);
+}
+
+/* Crit/fumble chip container modifiers */
+.dice-chip--crit {
+  border-color: color-mix(in oklab, var(--gold) 70%, var(--green));
+  box-shadow:
+    0 0 16px -8px color-mix(in oklab, var(--gold) 60%, transparent),
+    0 0 12px -4px color-mix(in oklab, var(--green) 40%, transparent);
+}
+
+.dice-chip--fumble {
+  border-color: var(--red);
+  box-shadow:
+    0 0 16px -8px color-mix(in oklab, var(--gold) 60%, transparent),
+    0 0 12px -4px color-mix(in oklab, var(--red) 40%, transparent);
+}
+
+/* Crit/fumble inline labels */
+.dice-chip-crit-label,
+.dice-chip-fumble-label {
+  font-family: var(--font-mono);
+  font-size: 8px;
+  letter-spacing: 0.1em;
+}
+
+/* Verdict — mono font, PASS/FAIL classes */
+.dice-chip-verdict {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.05em;
+}
+
+/* PASS — design-bridge: mix --green toward --gold-bright (not #ffffff) */
+.dice-chip-verdict--pass {
+  color: color-mix(in oklab, var(--green) 50%, var(--gold-bright));
+}
+
+/* FAIL — --red (themes correctly in both dnd + void) */
+.dice-chip-verdict--fail {
+  color: var(--red);
+}
+
+/* Desktop breakpoint: larger die tile + check/result font sizes */
+@media (min-width: 769px) {
+  .dice-chip-tile {
+    min-width: 26px;
+    padding: 0 6px;
+  }
+  .dice-chip-check {
+    font-size: 10.5px;
+  }
+  .dice-chip-result {
+    font-size: 15px;
+  }
+  .dice-chip-verdict {
+    font-size: 10px;
+  }
+}

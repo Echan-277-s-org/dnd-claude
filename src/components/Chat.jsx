@@ -2,6 +2,8 @@ import { useState, useRef, useEffect } from 'react'
 import DiceRoller from './DiceRoller'
 import HistoryPanel from './HistoryPanel'
 import CharacterPanel from './CharacterPanel'
+import PartyStrip from './PartyStrip'
+import DiceChip from './DiceChip'
 import { getGenre } from '../lib/genres'
 
 // ─── Structured-block parser (Phase A) ────────────────────────────────────────
@@ -305,6 +307,9 @@ export default function Chat({ campaign, onReset, character, setCharacter, party
     return -1
   })()
 
+  // Phase C: derive active member from LLM-owned party state (desktop turn-pill)
+  const activeMember = party.find(m => m.isActive) ?? party[0]
+
   return (
     <div
       className="app-layout"
@@ -318,11 +323,14 @@ export default function Chat({ campaign, onReset, character, setCharacter, party
         sessionLog={sessionLog}
         isOpen={showHistory}
         onToggle={() => setShowHistory(s => !s)}
+        party={party}
       />
 
       <div className="chat-container">
         <header className="chat-header">
           <div className="header-left">
+            {/* Phase C: live-status dot — desktop-only (hidden on mobile via CSS) */}
+            <span className="header-status-dot" aria-hidden="true" />
             <span className="header-emblem">{genre.emblem}</span>
             <div className="header-title">
               <span className="campaign-name">{campaign.name || genre.headerDefaultName}</span>
@@ -330,6 +338,13 @@ export default function Chat({ campaign, onReset, character, setCharacter, party
             </div>
           </div>
           <div className="header-actions">
+            {/* Phase C: turn-pill — desktop-only (hidden on mobile via CSS) */}
+            {activeMember && (
+              <div className="turn-pill" aria-label={`${activeMember.name}'s turn`}>
+                <span className="turn-pill-dot" aria-hidden="true" />
+                {activeMember.name}&apos;s turn
+              </div>
+            )}
             <button
               className={`icon-btn ${showHistory ? 'active' : ''}`}
               onClick={() => setShowHistory(s => !s)}
@@ -360,6 +375,9 @@ export default function Chat({ campaign, onReset, character, setCharacter, party
           </div>
         </header>
 
+        {/* Phase B: mobile-only party strip — visibility controlled by CSS media query */}
+        <PartyStrip party={party} />
+
         {showDice && <DiceRoller onRoll={handleDiceRoll} />}
 
         <main className="messages-container">
@@ -380,20 +398,17 @@ export default function Chat({ campaign, onReset, character, setCharacter, party
 
           {messages.map((msg, i) => {
             if (msg.role === 'dice') {
-              const isCrit = msg.die === 'd20' && msg.result === 20
-              const isFumble = msg.die === 'd20' && msg.result === 1
+              // Phase D: DiceChip replaces the old inline dice-result div.
+              // Bare state {die, result} renders the chip without check/verdict.
+              // Resolved state {die, result, check, verdict} renders the full chip.
               return (
-                <div
+                <DiceChip
                   key={i}
-                  className={`dice-result ${isCrit ? 'crit' : ''} ${isFumble ? 'fumble' : ''}`}
-                >
-                  <span className="dice-result-icon">🎲</span>
-                  <span>
-                    {msg.die} → <strong>{msg.result}</strong>
-                    {isCrit && ' — Critical Hit!'}
-                    {isFumble && ' — Critical Fail!'}
-                  </span>
-                </div>
+                  die={msg.die}
+                  result={msg.result}
+                  check={msg.check}
+                  verdict={msg.verdict}
+                />
               )
             }
 
