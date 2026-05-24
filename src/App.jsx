@@ -28,6 +28,7 @@ function loadCharacter() {
 export default function App() {
   const [ready, setReady] = useState(() => !!localStorage.getItem('dnd_setup_done'))
   const [campaign, setCampaign] = useState(() => ({
+    genre: localStorage.getItem('dnd_genre') || 'dnd',
     name: localStorage.getItem('dnd_campaign_name') || '',
     details: localStorage.getItem('dnd_campaign_details') || '',
     model: localStorage.getItem('dnd_model') || 'qwen2.5:14b',
@@ -35,13 +36,14 @@ export default function App() {
   }))
   const [character, setCharacter] = useState(loadCharacter)
 
-  function handleSetup({ name, details, model, context }) {
+  function handleSetup({ genre, name, details, model, context }) {
     localStorage.setItem('dnd_setup_done', '1')
+    localStorage.setItem('dnd_genre', genre)
     localStorage.setItem('dnd_campaign_name', name)
     localStorage.setItem('dnd_campaign_details', details)
     localStorage.setItem('dnd_model', model)
     localStorage.setItem('dnd_campaign_context', context)
-    setCampaign({ name, details, model, context })
+    setCampaign({ genre, name, details, model, context })
     setReady(true)
   }
 

@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from 'react'
 import DiceRoller from './DiceRoller'
 import HistoryPanel from './HistoryPanel'
 import CharacterPanel from './CharacterPanel'
-import { buildSystemPrompt, extractEntities, trimContext } from '../lib/context'
+import { getGenre } from '../lib/genres'
 
 function parseMarkdown(text) {
   const escaped = text
@@ -22,31 +22,9 @@ function parseMarkdown(text) {
   return html || '<p></p>'
 }
 
-const STARTER_PROMPTS = [
-  'Begin the adventure — set the scene and describe where we are.',
-  'The party enters a dimly lit tavern. What do we see?',
-  'We arrive at the dungeon entrance. What dangers await?',
-]
-
-const COMBAT_KEYWORDS = ['attack', 'sword', 'enemy', 'creature', 'monster', 'fight', 'weapon', 'combat', 'battle', 'strike']
-const SOCIAL_KEYWORDS = ['says', 'asks', 'merchant', 'guard', 'innkeeper', 'tavern', 'town', 'village', 'noble', 'coin', 'price']
-const EXPLORATION_KEYWORDS = ['door', 'chest', 'hallway', 'dungeon', 'trap', 'ruin', 'passage', 'stairs', 'forest', 'cave']
-
-function getActionSuggestions(text) {
-  const lower = text.toLowerCase()
-  if (COMBAT_KEYWORDS.some(kw => lower.includes(kw))) {
-    return ['Attack', 'Cast a Spell', 'Take Cover', 'Flee']
-  }
-  if (SOCIAL_KEYWORDS.some(kw => lower.includes(kw))) {
-    return ['Persuade', 'Intimidate', 'Ask a question', 'Offer coin']
-  }
-  if (EXPLORATION_KEYWORDS.some(kw => lower.includes(kw))) {
-    return ['Search the area', 'Listen carefully', 'Examine it closely', 'Proceed cautiously']
-  }
-  return ['Describe my action', 'Ask the DM', 'Roll for it', 'What do I know?']
-}
-
 export default function Chat({ campaign, onReset, character, setCharacter }) {
+  const genre = getGenre(campaign.genre)
+  const { buildSystemPrompt, extractEntities, trimContext } = genre.engine
   const [messages, setMessages] = useState([])
   const [input, setInput] = useState('')
   const [isLoading, setIsLoading] = useState(false)
@@ -223,10 +201,10 @@ export default function Chat({ campaign, onReset, character, setCharacter }) {
       <div className="chat-container">
         <header className="chat-header">
           <div className="header-left">
-            <span className="header-emblem">⚔</span>
+            <span className="header-emblem">{genre.emblem}</span>
             <div className="header-title">
-              <span className="campaign-name">{campaign.name || 'D&D Campaign'}</span>
-              <span className="header-subtitle">Dungeon Master Assistant</span>
+              <span className="campaign-name">{campaign.name || genre.headerDefaultName}</span>
+              <span className="header-subtitle">{genre.headerSubtitle}</span>
             </div>
           </div>
           <div className="header-actions">
@@ -265,11 +243,11 @@ export default function Chat({ campaign, onReset, character, setCharacter }) {
         <main className="messages-container">
           {messages.length === 0 && (
             <div className="empty-state">
-              <div className="empty-emblem">🗺</div>
-              <h2>Your adventure awaits...</h2>
-              <p>Describe your first action, ask the DM a question, or set the scene.</p>
+              <div className="empty-emblem">{genre.emptyEmblem}</div>
+              <h2>{genre.emptyTitle}</h2>
+              <p>{genre.emptySubtitle}</p>
               <div className="starter-prompts">
-                {STARTER_PROMPTS.map(prompt => (
+                {genre.starterPrompts.map(prompt => (
                   <button key={prompt} className="starter-btn" onClick={() => sendMessage(prompt)}>
                     {prompt}
                   </button>
@@ -318,8 +296,8 @@ export default function Chat({ campaign, onReset, character, setCharacter }) {
               return (
                 <div key={i} className={`message dm-message ${msg.error ? 'error' : ''}`}>
                   <div className="message-header">
-                    <span className="message-avatar">📜</span>
-                    <span className="message-label dm-label">Dungeon Master</span>
+                    <span className="message-avatar">{genre.gmAvatar}</span>
+                    <span className="message-label dm-label">{genre.gmName}</span>
                   </div>
                   <div className="message-bubble dm-bubble">
                     {isEmpty && isLast && isLoading ? (
@@ -338,7 +316,7 @@ export default function Chat({ campaign, onReset, character, setCharacter }) {
                   </div>
                   {showSuggestions && (
                     <div className="action-suggestions">
-                      {getActionSuggestions(msg.content).map(action => (
+                      {genre.getActionSuggestions(msg.content).map(action => (
                         <button
                           key={action}
                           className="action-btn"
@@ -366,7 +344,7 @@ export default function Chat({ campaign, onReset, character, setCharacter }) {
             value={input}
             onChange={e => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Describe your action, ask the DM, or speak as your character... (Enter to send, Shift+Enter for newline)"
+            placeholder={genre.inputPlaceholder}
             rows={1}
             disabled={isLoading}
           />
