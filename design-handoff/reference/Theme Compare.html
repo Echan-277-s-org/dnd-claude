@@ -1,0 +1,1338 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Theme sketches v2 — Grimoire vs Holo-cyan</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;600;700&family=Crimson+Pro:ital,wght@0,400;0,500;0,600;1,400&family=Orbitron:wght@500;600;700;800&family=Titillium+Web:wght@300;400;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  /* ---------- page chrome ---------- */
+  *, *::before, *::after { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: #07070a;
+    color: #cfd2d8;
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    min-height: 100vh;
+    padding: 28px 28px 48px;
+  }
+  .page-title {
+    max-width: 1520px;
+    margin: 0 auto 18px;
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 24px;
+  }
+  .page-title h1 {
+    font: 600 18px/1.2 ui-sans-serif, system-ui, sans-serif;
+    margin: 0;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: #d8dae3;
+  }
+  .page-title p {
+    margin: 0;
+    font-size: 13px;
+    color: #828693;
+  }
+
+  .compare {
+    max-width: 1520px;
+    margin: 0 auto;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 28px;
+  }
+  .column { display: flex; flex-direction: column; gap: 18px; }
+  .col-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 4px;
+  }
+  .col-head .tag {
+    font: 600 11px/1 ui-sans-serif, system-ui, sans-serif;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: #6b6f7c;
+  }
+  .col-head .name {
+    font: 600 15px/1 ui-sans-serif, system-ui, sans-serif;
+    color: #cfd2d8;
+  }
+  .col-head .swatches { display: flex; gap: 4px; }
+  .col-head .swatches i {
+    width: 14px; height: 14px; border-radius: 3px;
+    border: 1px solid rgba(255,255,255,0.06);
+    display: inline-block;
+  }
+
+  .frame {
+    border-radius: 14px;
+    overflow: hidden;
+    border: 1px solid #1d1f27;
+    box-shadow: 0 22px 50px -28px rgba(0,0,0,0.9), 0 1px 0 rgba(255,255,255,0.02) inset;
+    position: relative;
+    isolation: isolate;
+  }
+
+  .notes {
+    max-width: 1520px;
+    margin: 28px auto 0;
+    padding: 18px 20px;
+    background: #0d0e13;
+    border: 1px solid #1d1f27;
+    border-radius: 12px;
+    color: #b9bcc6;
+    font-size: 13.5px;
+    line-height: 1.55;
+  }
+  .notes h2 {
+    margin: 0 0 10px;
+    font: 600 11px/1 ui-sans-serif, system-ui, sans-serif;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: #6b6f7c;
+  }
+  .notes ul { margin: 0; padding-left: 18px; }
+  .notes li { margin: 0 0 6px; }
+  .notes li:last-child { margin: 0; }
+  .notes code {
+    background: #181a22;
+    border: 1px solid #20232c;
+    padding: 1px 6px;
+    border-radius: 4px;
+    font: 12px/1.2 "JetBrains Mono", ui-monospace, monospace;
+    color: #d8dae3;
+  }
+
+  /* =====================================================================
+     SHARED COMPONENT — all sizing in tokens, themed via [data-theme]
+     ===================================================================== */
+
+  .app {
+    /* fallbacks */
+    --bg: #0d0a07;
+    --surface-1: #1c1409;
+    --surface-2: #241809;
+    --surface-3: #34250f;
+    --gold: #c9a84c;
+    --gold-dim: #846a34;
+    --gold-bright: #f0d28a;
+    --text-primary: #ecdcae;
+    --text-secondary: #a88a64;
+    --text-muted: #6f5442;
+    --border: #3f2d18;
+    --border-gold: #644626;
+    --red: #8b1a1a;
+    --green: #2a5a1a;
+    --font-display: 'Cinzel', serif;
+    --font-body: 'Crimson Pro', Georgia, serif;
+    --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+
+    background: var(--bg);
+    color: var(--text-primary);
+    font-family: var(--font-body);
+    position: relative;
+    padding: 18px;
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+  }
+
+  /* ---------- SETUP screen ---------- */
+  .setup {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 40px 24px;
+    min-height: 510px;
+    border-radius: 10px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+    background: var(--surface-1);
+  }
+  .setup-card {
+    position: relative;
+    width: min(450px, 100%);
+    background: linear-gradient(180deg, var(--surface-2), var(--surface-1));
+    border: 1px solid var(--border-gold);
+    border-radius: 8px;
+    padding: 38px 32px 28px;
+    text-align: center;
+    box-shadow:
+      0 1px 0 rgba(255,255,255,0.05) inset,
+      0 0 0 1px color-mix(in oklab, var(--gold) 8%, transparent) inset,
+      0 36px 60px -36px rgba(0,0,0,0.85);
+  }
+  /* hairline gold inner rule */
+  .setup-card::after {
+    content: "";
+    position: absolute;
+    inset: 8px;
+    border: 1px solid color-mix(in oklab, var(--gold-dim) 38%, transparent);
+    border-radius: 5px;
+    pointer-events: none;
+  }
+  .corner {
+    position: absolute;
+    width: 22px; height: 22px;
+    display: grid;
+    place-items: center;
+    z-index: 2;
+  }
+  .corner.tl { top: 4px; left: 4px; }
+  .corner.tr { top: 4px; right: 4px; }
+  .corner.bl { bottom: 4px; left: 4px; }
+  .corner.br { bottom: 4px; right: 4px; }
+
+  .emblem-wrap {
+    position: relative;
+    width: 92px;
+    height: 92px;
+    margin: 0 auto 16px;
+  }
+  .emblem {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    border-radius: 50%;
+    border: 1px solid var(--border-gold);
+    background:
+      radial-gradient(circle at 50% 40%, color-mix(in oklab, var(--gold) 35%, transparent), transparent 70%),
+      var(--surface-3);
+    color: var(--gold-bright);
+    font-family: var(--font-display);
+    font-size: 42px;
+    line-height: 1;
+  }
+  .emblem-ring {
+    position: absolute;
+    inset: -8px;
+    border-radius: 50%;
+    border: 1px dashed color-mix(in oklab, var(--gold-dim) 50%, transparent);
+    pointer-events: none;
+  }
+
+  .setup-eyebrow {
+    font-family: var(--font-display);
+    font-size: 10px;
+    letter-spacing: 0.32em;
+    text-transform: uppercase;
+    color: var(--gold-dim);
+    margin: 0 0 6px;
+  }
+  .setup-title {
+    font-family: var(--font-display);
+    font-size: 28px;
+    letter-spacing: 0.08em;
+    margin: 0 0 4px;
+    color: var(--gold-bright);
+    text-transform: uppercase;
+    line-height: 1.1;
+  }
+  .setup-subtitle {
+    font-family: var(--font-body);
+    font-size: 14px;
+    color: var(--text-secondary);
+    margin: 0 0 22px;
+    font-style: italic;
+  }
+  .field {
+    display: flex; flex-direction: column;
+    gap: 6px;
+    margin-bottom: 12px;
+    text-align: left;
+  }
+  .field label {
+    font-family: var(--font-display);
+    font-size: 10px;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--text-secondary);
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .field label .hint {
+    font-family: var(--font-body);
+    font-size: 11px;
+    letter-spacing: 0;
+    text-transform: none;
+    color: var(--text-muted);
+    font-style: italic;
+  }
+  .input, .textarea, .select {
+    width: 100%;
+    background: var(--bg);
+    color: var(--text-primary);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 10px 12px;
+    font-family: var(--font-body);
+    font-size: 14px;
+    outline: none;
+    transition: border-color .15s, box-shadow .15s;
+  }
+  .textarea { min-height: 70px; resize: vertical; line-height: 1.45; }
+  .select {
+    appearance: none;
+    background-image: linear-gradient(45deg, transparent 50%, var(--gold-dim) 50%),
+                      linear-gradient(135deg, var(--gold-dim) 50%, transparent 50%);
+    background-position: calc(100% - 16px) 50%, calc(100% - 11px) 50%;
+    background-size: 5px 5px;
+    background-repeat: no-repeat;
+    padding-right: 32px;
+  }
+  /* one field shown in focused state to demo focus ring */
+  .field.focused .input,
+  .input:focus, .textarea:focus, .select:focus {
+    border-color: var(--gold);
+    box-shadow: 0 0 0 3px color-mix(in oklab, var(--gold) 28%, transparent);
+  }
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    width: 100%;
+    margin-top: 8px;
+    padding: 13px 16px;
+    border-radius: 4px;
+    border: 1px solid var(--border-gold);
+    background: linear-gradient(180deg,
+      color-mix(in oklab, var(--gold) 32%, var(--surface-3)),
+      color-mix(in oklab, var(--gold-dim) 35%, var(--surface-2)));
+    color: var(--gold-bright);
+    font-family: var(--font-display);
+    font-size: 14px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    cursor: pointer;
+    box-shadow:
+      0 0 0 1px rgba(255,255,255,0.05) inset,
+      0 0 22px -6px color-mix(in oklab, var(--gold) 60%, transparent);
+  }
+  .btn:hover { filter: brightness(1.08); }
+  .btn .arr { font-family: var(--font-body); font-size: 16px; line-height: 1; }
+
+  /* ---------- CHAT screen ---------- */
+  .chat {
+    position: relative;
+    display: grid;
+    grid-template-columns: 144px 1fr 168px;
+    grid-template-rows: auto 1fr auto;
+    min-height: 580px;
+    border-radius: 10px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+    background: var(--surface-1);
+  }
+  .chat-header {
+    grid-column: 1 / -1;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 18px;
+    background: var(--surface-2);
+    border-bottom: 1px solid var(--border-gold);
+  }
+  .chat-title {
+    font-family: var(--font-display);
+    font-size: 13px;
+    letter-spacing: 0.18em;
+    color: var(--gold-bright);
+    text-transform: uppercase;
+    display: flex; align-items: center; gap: 12px;
+  }
+  .chat-title .dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--gold);
+    box-shadow: 0 0 10px var(--gold);
+  }
+  .chat-title .sep {
+    color: var(--text-muted);
+    font-family: var(--font-body);
+    letter-spacing: 0;
+  }
+  .chat-title .crumb {
+    color: var(--text-secondary);
+    letter-spacing: 0.14em;
+  }
+  .chat-controls { display: flex; gap: 6px; align-items: center; }
+  .icon-btn {
+    width: 30px; height: 30px;
+    border-radius: 4px;
+    background: var(--surface-3);
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+    font-family: var(--font-body);
+    font-size: 14px;
+    display: grid; place-items: center;
+    cursor: pointer;
+    transition: color .15s, border-color .15s;
+  }
+  .icon-btn:hover { color: var(--gold-bright); border-color: var(--border-gold); }
+  .turn-pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 4px 10px;
+    border-radius: 999px;
+    background: var(--surface-3);
+    border: 1px solid var(--border-gold);
+    color: var(--gold-bright);
+    font-family: var(--font-display);
+    font-size: 10px;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+  }
+  .turn-pill .pulse {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: var(--gold);
+    box-shadow: 0 0 8px var(--gold);
+  }
+
+  /* ---------- side panels ---------- */
+  .panel {
+    background: var(--surface-1);
+    border-right: 1px solid var(--border);
+    padding: 14px 12px;
+    color: var(--text-muted);
+    font-size: 12px;
+    display: flex; flex-direction: column; gap: 12px;
+    overflow: hidden;
+  }
+  .panel.right {
+    border-right: none;
+    border-left: 1px solid var(--border);
+  }
+  .panel h4 {
+    margin: 0 0 4px;
+    font-family: var(--font-display);
+    font-size: 10px;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--gold-dim);
+  }
+  .panel ul { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 6px; }
+  .panel li {
+    padding: 8px 10px;
+    border-radius: 4px;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+    font-size: 12px;
+    display: flex; flex-direction: column; gap: 2px;
+  }
+  .panel li.current {
+    border-color: var(--border-gold);
+    color: var(--text-primary);
+    box-shadow: inset 2px 0 0 var(--gold);
+    background: color-mix(in oklab, var(--gold) 6%, var(--surface-2));
+  }
+  .panel li .meta {
+    font-family: var(--font-mono);
+    font-size: 9.5px;
+    color: var(--text-muted);
+    letter-spacing: 0.06em;
+  }
+
+  .portrait {
+    height: 96px;
+    border: 1px solid var(--border-gold);
+    border-radius: 4px;
+    background:
+      repeating-linear-gradient(45deg,
+        color-mix(in oklab, var(--gold-dim) 22%, transparent) 0 6px,
+        transparent 6px 12px),
+      var(--surface-3);
+    display: grid; place-items: center;
+    color: var(--gold-dim);
+    font-size: 10px;
+    font-family: var(--font-display);
+    letter-spacing: 0.22em;
+    position: relative;
+  }
+  .portrait .name {
+    position: absolute;
+    bottom: 6px; left: 6px; right: 6px;
+    background: color-mix(in oklab, var(--bg) 70%, transparent);
+    color: var(--gold-bright);
+    font-family: var(--font-display);
+    font-size: 10px;
+    letter-spacing: 0.16em;
+    padding: 3px 6px;
+    border-radius: 2px;
+    text-align: left;
+  }
+
+  /* stat row with bar */
+  .stat {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    align-items: baseline;
+    column-gap: 8px;
+    row-gap: 4px;
+  }
+  .stat .label {
+    font-family: var(--font-display);
+    font-size: 9.5px;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--text-secondary);
+  }
+  .stat .val {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--gold-bright);
+  }
+  .stat .bar {
+    grid-column: 1 / -1;
+    height: 4px;
+    background: var(--surface-3);
+    border: 1px solid var(--border);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+  .stat .bar i {
+    display: block;
+    height: 100%;
+    background: linear-gradient(90deg, var(--gold-dim), var(--gold-bright));
+    box-shadow: 0 0 8px -1px color-mix(in oklab, var(--gold) 60%, transparent);
+  }
+  .stat.warn .bar i { background: linear-gradient(90deg, color-mix(in oklab, var(--red) 60%, var(--gold-dim)), var(--red)); }
+
+  .tags { display: flex; flex-wrap: wrap; gap: 4px; }
+  .tag-chip {
+    font-family: var(--font-mono);
+    font-size: 9.5px;
+    letter-spacing: 0.04em;
+    padding: 3px 6px;
+    border-radius: 2px;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+  }
+
+  /* ---------- messages ---------- */
+  .messages {
+    padding: 20px 22px 22px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    overflow: hidden;
+    background: var(--bg);
+  }
+
+  .day-rule {
+    align-self: center;
+    display: inline-flex; align-items: center; gap: 12px;
+    font-family: var(--font-display);
+    font-size: 9.5px;
+    letter-spacing: 0.32em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    margin: 2px 0;
+  }
+  .day-rule::before, .day-rule::after {
+    content: ""; width: 60px; height: 1px;
+    background: linear-gradient(90deg, transparent, var(--border-gold), transparent);
+  }
+
+  .msg-row { display: flex; gap: 10px; align-items: flex-start; max-width: 80%; }
+  .msg-row.gm    { align-self: flex-start; }
+  .msg-row.player{ align-self: flex-end; flex-direction: row-reverse; }
+
+  .avatar {
+    flex: none;
+    width: 32px; height: 32px;
+    border-radius: 50%;
+    background: var(--surface-3);
+    border: 1px solid var(--border-gold);
+    display: grid; place-items: center;
+    color: var(--gold-bright);
+    font-family: var(--font-display);
+    font-size: 13px;
+    letter-spacing: 0.04em;
+    box-shadow: 0 0 0 1px color-mix(in oklab, var(--gold) 14%, transparent) inset;
+  }
+  .msg-row.gm .avatar { box-shadow: 0 0 10px -2px color-mix(in oklab, var(--gold) 60%, transparent); }
+
+  .bubble {
+    padding: 12px 16px;
+    border-radius: 8px;
+    font-size: 14.5px;
+    line-height: 1.55;
+    color: var(--text-primary);
+    position: relative;
+    flex: 1;
+  }
+  .bubble .meta-row {
+    display: flex; align-items: baseline; gap: 8px;
+    margin-bottom: 6px;
+  }
+  .bubble .who {
+    font-family: var(--font-display);
+    font-size: 10px;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--gold);
+  }
+  .bubble .ts {
+    font-family: var(--font-mono);
+    font-size: 9.5px;
+    color: var(--text-muted);
+    letter-spacing: 0.04em;
+  }
+  .bubble.gm {
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-top: 2px solid var(--gold);
+    border-left: 3px solid var(--gold);
+    box-shadow: inset 0 0 36px -8px color-mix(in oklab, var(--gold) 18%, transparent);
+    overflow: hidden;
+  }
+  .bubble.gm .who { color: var(--gold); }
+  .bubble.gm p { margin: 0; }
+  .bubble.gm p + p { margin-top: 8px; }
+  .bubble.gm .dropcap {
+    float: left;
+    font-family: var(--font-display);
+    font-size: 2.8em;
+    line-height: 0.82;
+    color: var(--gold-bright);
+    padding: 6px 10px 0 0;
+    text-shadow: 0 0 14px color-mix(in oklab, var(--gold) 55%, transparent);
+  }
+  .bubble.player {
+    background: var(--surface-3);
+    border: 1px solid var(--border-gold);
+    color: var(--text-primary);
+  }
+  .bubble.player .meta-row { justify-content: flex-end; }
+  .bubble.player .who { color: var(--gold-bright); }
+
+  /* dice chip — proper "result" feel */
+  .dice-chip {
+    align-self: center;
+    display: inline-flex; align-items: center; gap: 10px;
+    padding: 6px 14px 6px 8px;
+    border-radius: 999px;
+    background: var(--surface-2);
+    border: 1px solid var(--border-gold);
+    color: var(--text-secondary);
+    font-family: var(--font-display);
+    font-size: 10.5px;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    box-shadow: 0 0 18px -6px color-mix(in oklab, var(--gold) 60%, transparent);
+  }
+  .dice-chip .die {
+    min-width: 26px; height: 26px;
+    padding: 0 6px;
+    border-radius: 6px;
+    border: 1px solid var(--gold);
+    color: var(--gold-bright);
+    background: color-mix(in oklab, var(--gold) 10%, var(--surface-3));
+    display: grid; place-items: center;
+    font-family: var(--font-display);
+    font-size: 11px;
+    letter-spacing: 0;
+    line-height: 1;
+  }
+  .dice-chip .result {
+    font-family: var(--font-display);
+    font-size: 15px;
+    letter-spacing: 0.04em;
+    color: var(--gold-bright);
+  }
+  .dice-chip .pass {
+    color: color-mix(in oklab, var(--green) 50%, var(--gold-bright));
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.1em;
+  }
+
+  /* action suggestions */
+  .actions {
+    align-self: flex-start;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 2px;
+    padding-left: 42px; /* align past avatar */
+  }
+  .action {
+    padding: 9px 13px;
+    border-radius: 4px;
+    background: transparent;
+    border: 1px solid var(--border-gold);
+    color: var(--text-primary);
+    font-family: var(--font-body);
+    font-size: 13.5px;
+    cursor: pointer;
+    display: inline-flex; align-items: center; gap: 8px;
+    transition: background .15s, color .15s;
+  }
+  .action::before {
+    content: "›";
+    color: var(--gold);
+    font-size: 14px;
+    line-height: 1;
+  }
+  .action:hover {
+    background: color-mix(in oklab, var(--gold) 12%, var(--surface-2));
+    color: var(--gold-bright);
+  }
+
+  /* composer */
+  .composer {
+    grid-column: 1 / -1;
+    display: flex;
+    gap: 10px;
+    padding: 12px 16px;
+    border-top: 1px solid var(--border-gold);
+    background: var(--surface-2);
+    align-items: center;
+  }
+  .composer .input-wrap {
+    flex: 1;
+    position: relative;
+    display: flex; align-items: center;
+  }
+  .composer .input {
+    flex: 1; background: var(--surface-1);
+    padding-left: 36px;
+  }
+  .composer .input-wrap::before {
+    content: "›";
+    position: absolute;
+    left: 14px;
+    color: var(--gold);
+    font-family: var(--font-display);
+    font-size: 18px;
+    line-height: 1;
+  }
+  .send-btn {
+    padding: 10px 18px;
+    background: linear-gradient(180deg,
+      color-mix(in oklab, var(--gold) 32%, var(--surface-3)),
+      color-mix(in oklab, var(--gold-dim) 35%, var(--surface-2)));
+    color: var(--gold-bright);
+    border: 1px solid var(--border-gold);
+    border-radius: 4px;
+    font-family: var(--font-display);
+    font-size: 12px;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    cursor: pointer;
+    box-shadow: 0 0 14px -4px color-mix(in oklab, var(--gold) 55%, transparent);
+    display: inline-flex; align-items: center; gap: 8px;
+  }
+
+  /* =====================================================================
+     THEME A — candle-lit grimoire (tuned)
+     ===================================================================== */
+  .app[data-theme="dnd"] {
+    --bg: #0d0a07;
+    --surface-1: #1c1409;
+    --surface-2: #241809;
+    --surface-3: #34250f;
+    --gold: #c9a84c;
+    --gold-dim: #846a34;
+    --gold-bright: #f0d28a;
+    --text-primary: #ecdcae;
+    --text-secondary: #a88a64;
+    --text-muted: #6f5442;
+    --border: #3f2d18;
+    --border-gold: #644626;
+    --red: #8b1a1a;
+    --green: #2a5a1a;
+    --font-display: 'Cinzel', serif;
+    --font-body: 'Crimson Pro', Georgia, serif;
+  }
+
+  /* warm candlelight pools + stronger vellum noise */
+  .app[data-theme="dnd"] .setup::before,
+  .app[data-theme="dnd"] .messages::before {
+    content: "";
+    position: absolute; inset: 0;
+    background:
+      radial-gradient(circle at 12% 8%, color-mix(in oklab, var(--gold) 34%, transparent) 0%, transparent 45%),
+      radial-gradient(circle at 88% 100%, color-mix(in oklab, #2a0c00 75%, transparent) 0%, transparent 55%),
+      url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence baseFrequency='0.9' numOctaves='2' seed='4'/><feColorMatrix values='0 0 0 0 0.7  0 0 0 0 0.55  0 0 0 0 0.30  0 0 0 0.18 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+    pointer-events: none;
+    mix-blend-mode: screen;
+    opacity: 0.55;
+    z-index: 0;
+  }
+  .app[data-theme="dnd"] .setup > *,
+  .app[data-theme="dnd"] .messages > * { position: relative; z-index: 1; }
+
+  /* parchment grain + inset gold glow on GM bubble — grain bumped to 0.08 */
+  .app[data-theme="dnd"] .bubble.gm {
+    background:
+      repeating-linear-gradient(135deg,
+        rgba(201,168,76,0.08) 0 2px,
+        transparent 2px 6px),
+      var(--surface-2);
+    box-shadow:
+      inset 0 0 50px -10px color-mix(in oklab, var(--gold) 24%, transparent),
+      inset 0 1px 0 rgba(255,255,255,0.05);
+  }
+
+  /* candle-flicker — slowed + dimmed peak */
+  @keyframes candleFlicker {
+    0%, 100% { box-shadow: 0 0 22px -2px color-mix(in oklab, #c9a84c 45%, transparent); }
+    38%      { box-shadow: 0 0 16px -2px color-mix(in oklab, #c9a84c 32%, transparent); }
+    62%      { box-shadow: 0 0 26px -2px color-mix(in oklab, #f0d28a 45%, transparent); }
+    82%      { box-shadow: 0 0 20px -2px color-mix(in oklab, #c9a84c 40%, transparent); }
+  }
+  .app[data-theme="dnd"] .emblem {
+    animation: candleFlicker 6s ease-in-out infinite;
+  }
+
+  /* wax-seal corners — a disc with a flourish */
+  .app[data-theme="dnd"] .corner {
+    width: 24px; height: 24px;
+    border-radius: 50%;
+    background: radial-gradient(circle at 50% 35%,
+      color-mix(in oklab, var(--red) 70%, #000) 0%,
+      color-mix(in oklab, var(--red) 90%, #000) 70%,
+      color-mix(in oklab, var(--red) 50%, #000) 100%);
+    box-shadow:
+      0 0 0 1px color-mix(in oklab, var(--red) 40%, #000),
+      0 0 10px -2px color-mix(in oklab, var(--red) 70%, transparent);
+    color: color-mix(in oklab, var(--gold-bright) 90%, transparent);
+    font-family: var(--font-display);
+    font-size: 11px;
+    line-height: 1;
+    text-shadow: 0 1px 0 rgba(0,0,0,0.6);
+  }
+  .app[data-theme="dnd"] .corner::after { content: "✦"; }
+
+  .app[data-theme="dnd"] .turn-pill .pulse {
+    animation: candleFlicker 6s ease-in-out infinite;
+  }
+
+  /* =====================================================================
+     THEME B — Crimson Void (original dark-order sci-fi villain)
+     ===================================================================== */
+  .app[data-theme="void"] {
+    --bg: #06040a;
+    --surface-1: #0d0810;
+    --surface-2: #160a13;
+    --surface-3: #200d17;
+    --gold: #c8232e;          /* crimson primary */
+    --gold-dim: #6a1218;
+    --gold-bright: #ff5a5f;
+    --text-primary: #e6dee2;
+    --text-secondary: #a08894;
+    --text-muted: #6a5260;
+    --border: #2a1620;
+    --border-gold: #6a1c24;   /* deep blood */
+    --red: #ff3b3f;           /* alert / crit */
+    --green: #2a5a1a;
+    --font-display: 'Orbitron', sans-serif;
+    --font-body: 'Titillium Web', system-ui, sans-serif;
+  }
+
+  /* deep void backdrop: ash, faint embers, a slow crimson pool */
+  .app[data-theme="void"] .setup::before,
+  .app[data-theme="void"] .messages::before {
+    content: "";
+    position: absolute; inset: 0;
+    background:
+      radial-gradient(circle at 18% 18%, color-mix(in oklab, #c8232e 32%, transparent) 0%, transparent 55%),
+      radial-gradient(circle at 84% 92%, color-mix(in oklab, #1a0309 85%, transparent) 0%, transparent 60%),
+      radial-gradient(1.2px 1.2px at 16% 28%, #ff8a8d 99%, transparent),
+      radial-gradient(0.8px 0.8px at 36% 70%, #c8232e 99%, transparent),
+      radial-gradient(0.6px 0.6px at 60% 22%, #5a1219 99%, transparent),
+      radial-gradient(1px 1px at 78% 52%, #ff5a5f 99%, transparent),
+      radial-gradient(0.6px 0.6px at 88% 82%, #6a1218 99%, transparent),
+      radial-gradient(0.6px 0.6px at 12% 86%, #ff8a8d 99%, transparent),
+      radial-gradient(0.4px 0.4px at 48% 90%, #c8232e 99%, transparent);
+    pointer-events: none;
+    opacity: 0.85;
+    z-index: 0;
+  }
+  .app[data-theme="void"] .setup > *,
+  .app[data-theme="void"] .messages > * { position: relative; z-index: 1; }
+
+  /* GM bubble — faceted black with a hot inner ember and faint horizontal interlace */
+  .app[data-theme="void"] .bubble.gm {
+    background:
+      repeating-linear-gradient(0deg,
+        rgba(200,35,46,0.06) 0 1px,
+        transparent 1px 3px),
+      radial-gradient(120% 80% at 0% 0%, color-mix(in oklab, var(--gold) 14%, var(--surface-2)) 0%, var(--surface-2) 60%);
+    box-shadow:
+      inset 0 0 40px -10px color-mix(in oklab, var(--gold) 35%, transparent),
+      0 0 22px -10px color-mix(in oklab, var(--gold) 70%, transparent);
+  }
+  /* GM identifier tag instead of illuminated drop-cap */
+  .app[data-theme="void"] .bubble.gm .dropcap {
+    float: none;
+    display: inline-block;
+    font-family: var(--font-display);
+    font-weight: 700;
+    font-size: 0.78em;
+    letter-spacing: 0.22em;
+    color: var(--gold-bright);
+    text-shadow: 0 0 8px color-mix(in oklab, var(--gold) 70%, transparent);
+    padding: 2px 7px;
+    margin-right: 8px;
+    border: 1px solid color-mix(in oklab, var(--gold) 55%, transparent);
+    border-radius: 0;
+    clip-path: polygon(4px 0, 100% 0, 100% calc(100% - 4px), calc(100% - 4px) 100%, 0 100%, 0 4px);
+    background: color-mix(in oklab, var(--gold) 14%, transparent);
+  }
+
+  /* emblem — molten core, slow pulse */
+  .app[data-theme="void"] .emblem {
+    box-shadow:
+      0 0 0 1px color-mix(in oklab, var(--gold) 55%, transparent),
+      0 0 32px -2px color-mix(in oklab, var(--gold) 70%, transparent),
+      inset 0 0 22px -2px color-mix(in oklab, var(--gold) 75%, transparent);
+    animation: emberPulse 5.5s ease-in-out infinite;
+  }
+  @keyframes emberPulse {
+    0%, 100% { box-shadow:
+        0 0 0 1px color-mix(in oklab, var(--gold) 55%, transparent),
+        0 0 28px -2px color-mix(in oklab, var(--gold) 55%, transparent),
+        inset 0 0 22px -2px color-mix(in oklab, var(--gold) 70%, transparent); }
+    50%      { box-shadow:
+        0 0 0 1px color-mix(in oklab, var(--gold-bright) 55%, transparent),
+        0 0 38px -2px color-mix(in oklab, var(--gold-bright) 75%, transparent),
+        inset 0 0 26px -2px color-mix(in oklab, var(--gold-bright) 80%, transparent); }
+  }
+  .app[data-theme="void"] .emblem-ring {
+    border-style: solid;
+    border-color: color-mix(in oklab, var(--gold) 35%, transparent);
+  }
+
+  /* faceted angle corners — small chevrons pointing inward */
+  .app[data-theme="void"] .corner {
+    border-radius: 0;
+    background: none;
+    box-shadow: none;
+    color: var(--gold);
+    font-family: var(--font-mono);
+    font-size: 14px;
+    line-height: 1;
+    text-shadow: 0 0 8px color-mix(in oklab, var(--gold) 70%, transparent);
+  }
+  .app[data-theme="void"] .corner.tl::after { content: "◤"; }
+  .app[data-theme="void"] .corner.tr::after { content: "◥"; }
+  .app[data-theme="void"] .corner.bl::after { content: "◣"; }
+  .app[data-theme="void"] .corner.br::after { content: "◢"; }
+
+  /* tighten Orbitron tracking */
+  .app[data-theme="void"] .setup-title {
+    letter-spacing: 0.22em;
+    font-weight: 800;
+    text-shadow: 0 0 16px color-mix(in oklab, var(--gold) 55%, transparent);
+  }
+  .app[data-theme="void"] .chat-title { letter-spacing: 0.22em; }
+  .app[data-theme="void"] .send-btn,
+  .app[data-theme="void"] .btn { letter-spacing: 0.24em; font-weight: 700; }
+  .app[data-theme="void"] .dice-chip { letter-spacing: 0.22em; }
+
+  /* sharper chamfered cut on the primary CTA + send */
+  .app[data-theme="void"] .btn {
+    clip-path: polygon(12px 0, 100% 0, 100% calc(100% - 12px), calc(100% - 12px) 100%, 0 100%, 0 12px);
+    border-radius: 0;
+  }
+  .app[data-theme="void"] .send-btn {
+    clip-path: polygon(8px 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%, 0 8px);
+    border-radius: 0;
+  }
+
+  /* setup-card edge: cut the top-left + bottom-right corners for a faceted plate */
+  .app[data-theme="void"] .setup-card {
+    clip-path: polygon(18px 0, 100% 0, 100% calc(100% - 18px), calc(100% - 18px) 100%, 0 100%, 0 18px);
+    border-radius: 0;
+  }
+  .app[data-theme="void"] .setup-card::after {
+    clip-path: polygon(14px 0, 100% 0, 100% calc(100% - 14px), calc(100% - 14px) 100%, 0 100%, 0 14px);
+    border-radius: 0;
+  }
+
+  /* warn stat bar uses brighter blaster-red in this theme */
+  .app[data-theme="void"] .stat.warn .bar i {
+    background: linear-gradient(90deg, color-mix(in oklab, var(--gold) 50%, #2a0006), var(--gold-bright));
+    box-shadow: 0 0 10px -1px color-mix(in oklab, var(--gold-bright) 70%, transparent);
+  }
+
+</style>
+</head>
+<body>
+
+  <div class="page-title">
+    <h1>Theme sketches · Grimoire vs Crimson Void</h1>
+    <p>Same shared markup. Tokens + a handful of theme-scoped FX do the work.</p>
+  </div>
+
+  <div class="compare">
+
+    <!-- ================== COLUMN A : GRIMOIRE ================== -->
+    <div class="column">
+      <div class="col-head">
+        <div style="display:flex; gap:10px; align-items:baseline;">
+          <span class="tag">Theme A</span>
+          <span class="name">Candle-lit Grimoire</span>
+        </div>
+        <div class="swatches" aria-hidden="true">
+          <i style="background:#0d0a07"></i>
+          <i style="background:#241809"></i>
+          <i style="background:#644626"></i>
+          <i style="background:#c9a84c"></i>
+          <i style="background:#f0d28a"></i>
+        </div>
+      </div>
+
+      <!-- SETUP -->
+      <div class="frame">
+        <div class="app" data-theme="dnd">
+          <div class="setup">
+            <div class="setup-card">
+              <span class="corner tl"></span>
+              <span class="corner tr"></span>
+              <span class="corner bl"></span>
+              <span class="corner br"></span>
+
+              <div class="emblem-wrap">
+                <span class="emblem-ring"></span>
+                <div class="emblem">⚔</div>
+              </div>
+
+              <p class="setup-eyebrow">Begin a saga</p>
+              <h2 class="setup-title">A New Tale</h2>
+              <p class="setup-subtitle">Light the candle. Open the book.</p>
+
+              <div class="field">
+                <label for="g1">Genre</label>
+                <select id="g1" class="select">
+                  <option>High Fantasy</option>
+                  <option>Dark Fantasy</option>
+                  <option>Sword &amp; Sorcery</option>
+                </select>
+              </div>
+              <div class="field focused">
+                <label for="n1">Campaign name <span class="hint">required</span></label>
+                <input id="n1" class="input" value="The Hollow Crown" />
+              </div>
+              <div class="field">
+                <label for="d1">Details <span class="hint">tone, setting, hooks…</span></label>
+                <textarea id="d1" class="textarea">A ruined kingdom whose heir was lost to the fey. Three companions ride for the border before the first snow…</textarea>
+              </div>
+              <button class="btn">Begin <span class="arr">›</span></button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- CHAT -->
+      <div class="frame">
+        <div class="app" data-theme="dnd">
+          <div class="chat">
+            <div class="chat-header">
+              <div class="chat-title">
+                <span class="dot"></span>
+                The Hollow Crown
+                <span class="sep">·</span>
+                <span class="crumb">Session III · Sablewatch Inn</span>
+              </div>
+              <div class="chat-controls">
+                <span class="turn-pill"><span class="pulse"></span>Aelis' turn</span>
+                <button class="icon-btn" title="Map">⌖</button>
+                <button class="icon-btn" title="Notes">✎</button>
+                <button class="icon-btn" title="Menu">≡</button>
+              </div>
+            </div>
+
+            <aside class="panel left">
+              <h4>History</h4>
+              <ul>
+                <li><span>I · The Crossing</span><span class="meta">3 days ago</span></li>
+                <li><span>II · Black Vault</span><span class="meta">yesterday</span></li>
+                <li class="current"><span>III · Hollow Crown</span><span class="meta">now</span></li>
+              </ul>
+              <h4 style="margin-top:6px;">Party</h4>
+              <ul>
+                <li><span>Aelis · Ranger</span><span class="meta">HP 24/31</span></li>
+                <li><span>Borin · Cleric</span><span class="meta">HP 28/28</span></li>
+                <li><span>Vex · Rogue</span><span class="meta">HP 19/22</span></li>
+              </ul>
+            </aside>
+
+            <div class="messages">
+              <div class="day-rule">Session III · Evening</div>
+
+              <div class="msg-row gm">
+                <div class="avatar">GM</div>
+                <div class="bubble gm">
+                  <div class="meta-row">
+                    <span class="who">Game-Master</span>
+                    <span class="ts">19:42</span>
+                  </div>
+                  <p><span class="dropcap">T</span>he tavern door groans on iron hinges. Within, smoke curls about a lone bard who stops mid-verse to look at you. A stranger at the hearth turns a copper coin between long fingers.</p>
+                  <p>“You'd be the ones,” he murmurs, “who answered the raven.”</p>
+                </div>
+              </div>
+
+              <div class="msg-row player">
+                <div class="avatar">Æ</div>
+                <div class="bubble player">
+                  <div class="meta-row">
+                    <span class="who">Aelis · Ranger</span>
+                    <span class="ts">19:43</span>
+                  </div>
+                  I keep one hand near my dagger and ask what tidings the raven carried.
+                </div>
+              </div>
+
+              <div class="dice-chip">
+                <span class="die">20</span>
+                <span>Insight</span>
+                <span class="result">17</span>
+                <span class="pass">PASS</span>
+              </div>
+
+              <div class="actions">
+                <button class="action">Press him further</button>
+                <button class="action">Order ale, listen</button>
+                <button class="action">Step outside &amp; circle</button>
+              </div>
+            </div>
+
+            <aside class="panel right">
+              <h4>Aelis · L4 Ranger</h4>
+              <div class="portrait">
+                PORTRAIT
+                <div class="name">AELIS OF WREN</div>
+              </div>
+              <div class="stat">
+                <span class="label">Health</span><span class="val">24 / 31</span>
+                <span class="bar"><i style="width: 78%"></i></span>
+              </div>
+              <div class="stat">
+                <span class="label">Stamina</span><span class="val">12 / 20</span>
+                <span class="bar"><i style="width: 60%"></i></span>
+              </div>
+              <div class="stat warn">
+                <span class="label">Rations</span><span class="val">2 days</span>
+                <span class="bar"><i style="width: 22%"></i></span>
+              </div>
+              <h4>Carries</h4>
+              <div class="tags">
+                <span class="tag-chip">Longbow</span>
+                <span class="tag-chip">Hand-axe</span>
+                <span class="tag-chip">Cloak</span>
+                <span class="tag-chip">112 gp</span>
+              </div>
+            </aside>
+
+            <div class="composer">
+              <div class="input-wrap">
+                <input class="input" placeholder="Speak, or roll the dice…" />
+              </div>
+              <button class="send-btn">Send</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ================== COLUMN B : CRIMSON VOID ================== -->
+    <div class="column">
+      <div class="col-head">
+        <div style="display:flex; gap:10px; align-items:baseline;">
+          <span class="tag">Theme B</span>
+          <span class="name">Crimson Void</span>
+        </div>
+        <div class="swatches" aria-hidden="true">
+          <i style="background:#06040a"></i>
+          <i style="background:#160a13"></i>
+          <i style="background:#6a1c24"></i>
+          <i style="background:#c8232e"></i>
+          <i style="background:#ff5a5f"></i>
+        </div>
+      </div>
+
+      <!-- SETUP -->
+      <div class="frame">
+        <div class="app" data-theme="void">
+          <div class="setup">
+            <div class="setup-card">
+              <span class="corner tl"></span>
+              <span class="corner tr"></span>
+              <span class="corner bl"></span>
+              <span class="corner br"></span>
+
+              <div class="emblem-wrap">
+                <span class="emblem-ring"></span>
+                <div class="emblem">◆</div>
+              </div>
+
+              <p class="setup-eyebrow">// Sealed Directive</p>
+              <h2 class="setup-title">New Operation</h2>
+              <p class="setup-subtitle">Open the dossier. The order will not wait.</p>
+
+              <div class="field">
+                <label for="g2">Setting</label>
+                <select id="g2" class="select">
+                  <option>Dark Space Opera</option>
+                  <option>Imperial Intrigue</option>
+                  <option>Cosmic Horror</option>
+                </select>
+              </div>
+              <div class="field focused">
+                <label for="n2">Codename <span class="hint">required</span></label>
+                <input id="n2" class="input" value="OBSIDIAN HARROW" />
+              </div>
+              <div class="field">
+                <label for="d2">Directive <span class="hint">target, terms, conditions…</span></label>
+                <textarea id="d2" class="textarea">A blacksite on the rim has gone silent. Three operatives, no extraction window, recover the asset by any means. Burn the rest.</textarea>
+              </div>
+              <button class="btn">Execute <span class="arr">›</span></button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- CHAT -->
+      <div class="frame">
+        <div class="app" data-theme="void">
+          <div class="chat">
+            <div class="chat-header">
+              <div class="chat-title">
+                <span class="dot"></span>
+                Obsidian Harrow
+                <span class="sep">·</span>
+                <span class="crumb">Phase 03 · Blacksite Veyra</span>
+              </div>
+              <div class="chat-controls">
+                <span class="turn-pill"><span class="pulse"></span>Korr · Active</span>
+                <button class="icon-btn" title="Map">⌖</button>
+                <button class="icon-btn" title="Log">▢</button>
+                <button class="icon-btn" title="Menu">≡</button>
+              </div>
+            </div>
+
+            <aside class="panel left">
+              <h4>Phases</h4>
+              <ul>
+                <li><span>01 · Insertion</span><span class="meta">T-72h</span></li>
+                <li><span>02 · Silence</span><span class="meta">T-18h</span></li>
+                <li class="current"><span>03 · Harrow</span><span class="meta">now</span></li>
+              </ul>
+              <h4 style="margin-top:6px;">Cell</h4>
+              <ul>
+                <li><span>Korr · Blade</span><span class="meta">CORE 78%</span></li>
+                <li><span>Vex · Adept</span><span class="meta">CORE 92%</span></li>
+                <li><span>Drev · Killer</span><span class="meta">CORE 64%</span></li>
+              </ul>
+            </aside>
+
+            <div class="messages">
+              <div class="day-rule">Phase 03 · Local 04:12</div>
+
+              <div class="msg-row gm">
+                <div class="avatar">GM</div>
+                <div class="bubble gm">
+                  <div class="meta-row">
+                    <span class="who">Game-Master</span>
+                    <span class="ts">04:12</span>
+                  </div>
+                  <p><span class="dropcap">GM</span>The corridor lights bleed red, then die. Somewhere below, a containment seal hisses open that should not have opened. A voice over the comm — your own handler, calm: “Whatever you find inside, it is no longer the asset. Recover the data. Leave the rest.”</p>
+                  <p>Three heat signatures wait beyond the door. Two of them are kneeling.</p>
+                </div>
+              </div>
+
+              <div class="msg-row player">
+                <div class="avatar">K</div>
+                <div class="bubble player">
+                  <div class="meta-row">
+                    <span class="who">Korr · Blade</span>
+                    <span class="ts">04:13</span>
+                  </div>
+                  Vex, mask the cell. Drev, lead. I want them silent before they understand what happened.
+                </div>
+              </div>
+
+              <div class="dice-chip">
+                <span class="die">d20</span>
+                <span>Stealth</span>
+                <span class="result">22</span>
+                <span class="pass">PASS</span>
+              </div>
+
+              <div class="actions">
+                <button class="action">Breach the door</button>
+                <button class="action">Cut the lights first</button>
+                <button class="action">Take them alive</button>
+              </div>
+            </div>
+
+            <aside class="panel right">
+              <h4>Korr · Blade</h4>
+              <div class="portrait">
+                PORTRAIT
+                <div class="name">KORR / HARROW</div>
+              </div>
+              <div class="stat">
+                <span class="label">Vitals</span><span class="val">78%</span>
+                <span class="bar"><i style="width: 78%"></i></span>
+              </div>
+              <div class="stat">
+                <span class="label">Focus</span><span class="val">40%</span>
+                <span class="bar"><i style="width: 40%"></i></span>
+              </div>
+              <div class="stat warn">
+                <span class="label">Cover</span><span class="val">22%</span>
+                <span class="bar"><i style="width: 22%"></i></span>
+              </div>
+              <h4>On hand</h4>
+              <div class="tags">
+                <span class="tag-chip">Blade</span>
+                <span class="tag-chip">Sidearm</span>
+                <span class="tag-chip">Decoy×2</span>
+                <span class="tag-chip">Med×1</span>
+              </div>
+            </aside>
+
+            <div class="composer">
+              <div class="input-wrap">
+                <input class="input" placeholder="Issue your order…" />
+              </div>
+              <button class="send-btn">Send</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="notes">
+    <h2>What changed v1 → v2 → Crimson</h2>
+    <ul>
+      <li><b>Theme B re-skinned as “Crimson Void.”</b> Original dark-order sci-fi villain palette — not a branded recreation. Black + crimson + ember on black; tokens map 1:1 to the existing names (<code>--gold</code> = crimson primary, <code>--border-gold</code> = blood-line, <code>--gold-bright</code> = ember).</li>
+      <li><b>FX swap.</b> Starfield → sparse ember dust + a slow crimson pool. Holo scanlines → a much fainter (0.06) interlace plus a hot inner ember on the GM bubble. <code>holoFlick</code> opacity stutter → <code>emberPulse</code> 5.5s box-shadow breathing.</li>
+      <li><b>Corners</b> went from HUD brackets to faceted triangles (◆ ◄ ► shapes per corner).</li>
+      <li><b>Setup card itself is faceted</b> — corners chamfered via clip-path, mirroring the Sith-plate aesthetic without copying any insignia.</li>
+      <li><b>Copy</b> rewritten as an original dark-order operation (“Obsidian Harrow”) so it reads villainous without leaning on trademarked names.</li>
+    </ul>
+    <h2 style="margin-top:14px;">Worth a look</h2>
+    <ul>
+      <li>The ember-pulse on the emblem may read as a distraction during long sessions — consider gating it behind “reduced motion” or limiting to setup-only.</li>
+      <li>Crimson on near-black is high-contrast; the GM bubble glow can crowd at small widths. If it overpowers, drop the outer box-shadow alpha from 70% → ~45%.</li>
+      <li>The faceted setup-card clip removes its border-radius entirely; if you want both, layer a faceted background plate behind a rounded inner card.</li>
+    </ul>
+  </div>
+
+</body>
+</html>

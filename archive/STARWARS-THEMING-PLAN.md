@@ -1,3 +1,9 @@
+> ⛔ **SUPERSEDED 2026-05-23.** The Star Wars / holo-cyan direction was dropped.
+> Theme B is now **Crimson Void** (`[data-theme="void"]`, crimson `#b2222d`) — an
+> original, de-branded aesthetic. Source of truth: `../design-handoff/README.md`;
+> reconciled index: `../THEMING-OVERVIEW.md`. Kept for history only — do not
+> implement from this file.
+
 # Star Wars Theming Plan
 
 Plan for theming the **Star Wars (d20 / Saga Edition)** genre mode. Captured to be
@@ -27,9 +33,17 @@ resumed later. **Nothing in Phases 1–5 is applied yet** — this is the bluepr
 `App.css` is built on CSS custom properties (`--bg`, `--gold`, `--surface-1`,
 `--text-primary`, …) in `:root`, and ~80% of the UI reads them via `var(...)`.
 A theme is mostly **a second set of values for the same variables**, scoped under
-a `[data-theme="starwars"]` attribute. D&D = "attribute absent," so D&D rendering
-stays byte-identical. The ui-overhaul panels added since this was written follow
-the same discipline (53 `var(--…)` refs in the new section, see Phase 2).
+a `[data-theme="starwars"]` attribute. `:root` is the genre-neutral fallback, so
+anything Star Wars doesn't override renders identically to the base. The
+ui-overhaul panels added since this was written follow the same discipline (53
+`var(--…)` refs in the new section, see Phase 2).
+
+> **Note (updated 2026-05-23):** the companion `DND-THEMING-PLAN.md` makes D&D an
+> explicit `[data-theme="dnd"]` theme rather than "attribute absent." Phase 1's
+> wiring below is unchanged and shared — `dataset.theme = campaign.genre` already
+> yields `data-theme="dnd"` for the D&D genre. Whichever plan ships first lands
+> the shared Phase 1 mechanism + Phase 3/4 tokenization; the other only adds its
+> per-theme override values.
 
 **Touched files (all phases):** `src/App.css`, `src/App.jsx`,
 `src/components/ApiKeySetup.jsx`, `index.html`. No engine / `genres.js` /
@@ -174,5 +188,7 @@ Each commit is independently shippable; D&D never has `data-theme="starwars"` on
 - Verify with `npm run build` **and** `npm test -- --run` (108 tests as of the
   merge) — confirms D&D rendering and the genre engines are untouched.
 - Favicon/`<title>` in `index.html` are static HTML and can't react to runtime genre; leave generic.
-- Regression guard: D&D theming = `data-theme` absent on `<html>`. After each
-  phase, confirm the D&D path still renders identically.
+- Regression guard: `:root` is the genre-neutral fallback, and Star Wars only
+  overrides token values + adds theme-scoped rules — so the D&D path (now
+  `data-theme="dnd"`, per `DND-THEMING-PLAN.md`) is never touched by this plan's
+  changes. After each phase, confirm the D&D path still renders identically.
