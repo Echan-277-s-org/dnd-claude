@@ -1,4 +1,8 @@
-export default function HistoryPanel({ entities, sessionLog, isOpen, onToggle }) {
+// HistoryPanel — left sidebar (desktop).
+// party prop is optional with a safe default ([]) so existing tests that
+// render without the prop continue to pass unchanged (backward-compatible).
+
+export default function HistoryPanel({ entities, sessionLog, isOpen, onToggle, party = [] }) {
   return (
     <aside className={`history-panel ${isOpen ? 'history-panel--open' : ''}`}>
       {/* Toggle tab */}
@@ -37,6 +41,31 @@ export default function HistoryPanel({ entities, sessionLog, isOpen, onToggle })
             ))
           )}
         </div>
+
+        {/* Party sub-section — at-a-glance HP for all members (README:170) */}
+        {party.length > 0 && (
+          <>
+            <div className="panel-header" style={{ marginTop: '20px', marginBottom: '12px' }}>
+              Party
+            </div>
+            <div className="history-party-list">
+              {party.map(m => (
+                <div key={m.id} className={`history-party-row${m.isActive ? ' history-party-row--active' : ''}`}>
+                  <div className="history-party-row-top">
+                    <span className="history-party-name">{m.name}</span>
+                    <span className="history-party-role">{m.role}</span>
+                  </div>
+                  <div className="history-party-hp-track" aria-label={`HP: ${m.hpPct}%`}>
+                    <div
+                      className="history-party-hp-fill"
+                      style={{ width: `${m.hpPct}%` }}
+                    />
+                  </div>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
       </div>
     </aside>
   )
