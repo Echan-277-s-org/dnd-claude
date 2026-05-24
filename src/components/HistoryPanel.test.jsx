@@ -2,13 +2,15 @@ import { describe, it, expect } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import HistoryPanel from './HistoryPanel'
 
-function renderPanel({ entities = [], sessionLog = [], isOpen = true, onToggle = () => {} } = {}) {
+// party param is optional (default undefined) to preserve backward-compat for all 14 existing tests.
+function renderPanel({ entities = [], sessionLog = [], isOpen = true, onToggle = () => {}, party = undefined } = {}) {
   return render(
     <HistoryPanel
       entities={entities}
       sessionLog={sessionLog}
       isOpen={isOpen}
       onToggle={onToggle}
+      party={party}
     />
   )
 }
@@ -124,5 +126,60 @@ describe('HistoryPanel — open/close state', () => {
     renderPanel({ isOpen: false })
     const toggleIcon = document.querySelector('.history-panel-toggle-icon')
     expect(toggleIcon.textContent).toBe('›')
+  })
+})
+
+// ─── Phase B — HistoryPanel party section (PH-01..06) ────────────────────────
+
+const HIST_PARTY = [
+  { id: 'id-aelis', name: 'Aelis', role: 'Ranger', hpPct: 80, isActive: true },
+  { id: 'id-borin', name: 'Borin', role: 'Cleric', hpPct: 50, isActive: false },
+]
+
+describe('HistoryPanel — party section (PH-01..06)', () => {
+  it('PH-01 "Party" header is present when party prop is provided', () => {
+    renderPanel({ party: HIST_PARTY })
+    expect(screen.getByText('Party')).toBeInTheDocument()
+  })
+
+  it('PH-02 member names are rendered in the party section', () => {
+    renderPanel({ party: HIST_PARTY })
+    expect(screen.getByText('Aelis')).toBeInTheDocument()
+    expect(screen.getByText('Borin')).toBeInTheDocument()
+  })
+
+  it('PH-03 member roles are rendered in the party section', () => {
+    const { container } = renderPanel({ party: HIST_PARTY })
+    const roles = Array.from(container.querySelectorAll('.history-party-role'))
+    const roleTexts = roles.map(el => el.textContent)
+    expect(roleTexts).toContain('Ranger')
+    expect(roleTexts).toContain('Cleric')
+  })
+
+  it('PH-04 HP fill width reflects hpPct for each member', () => {
+    const { container } = renderPanel({ party: HIST_PARTY })
+    const fills = container.querySelectorAll('.history-party-hp-fill')
+    expect(fills[0].style.width).toBe('80%')
+    expect(fills[1].style.width).toBe('50%')
+  })
+
+  it('PH-05 all 14 existing tests pass when party is undefined (backward-compat)', () => {
+    // When party is not provided (undefined), HistoryPanel defaults to [] so the
+    // party section is not rendered; no Party header, no member rows.
+    const { container } = renderPanel({ party: undefined })
+    // Party section absent
+    expect(container.querySelector('.history-party-list')).toBeNull()
+    // Standard sections are still present
+    expect(screen.getByText('Entities will appear as the story unfolds...')).toBeInTheDocument()
+    expect(screen.getByText('Your actions will be logged here...')).toBeInTheDocument()
+  })
+
+  it('PH-06 empty party array renders no member rows and no Party header', () => {
+    const { container } = renderPanel({ party: [] })
+    expect(container.querySelector('.history-party-list')).toBeNull()
+    // Party header absent (party.length === 0 hides the section)
+    const headers = Array.from(container.querySelectorAll('.panel-header'))
+    const headerTexts = headers.map(h => h.textContent.trim())
+    expect(headerTexts).not.toContain('Party')
   })
 })

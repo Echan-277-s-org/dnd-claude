@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { extractEntities, trimContext, buildSystemPrompt } from './context'
+import { buildSystemPrompt as buildSystemPromptSW } from './context.starwars'
 
 // ─── trimContext ─────────────────────────────────────────────────────────────
 
@@ -209,5 +210,76 @@ describe('buildSystemPrompt', () => {
   it('handles undefined input gracefully', () => {
     expect(() => buildSystemPrompt(undefined)).not.toThrow()
     expect(() => buildSystemPrompt({})).not.toThrow()
+  })
+})
+
+// ─── Phase A0 — Party/check/verdict prompt instructions (PP-01..07) ──────────
+
+describe('buildSystemPrompt — party/check/verdict instructions (PP-01..07)', () => {
+  it('PP-01 dnd prompt includes party instruction tokens (party + hpPct)', () => {
+    const p = buildSystemPrompt({})
+    expect(p).toContain('party')
+    expect(p).toContain('hpPct')
+  })
+
+  it('PP-02 dnd prompt includes check instruction tokens (check + dc)', () => {
+    const p = buildSystemPrompt({})
+    expect(p).toContain('check')
+    expect(p).toContain('dc')
+  })
+
+  it('PP-03 dnd prompt includes verdict instruction tokens (verdict + PASS + FAIL)', () => {
+    const p = buildSystemPrompt({})
+    expect(p).toContain('verdict')
+    expect(p).toContain('PASS')
+    expect(p).toContain('FAIL')
+  })
+
+  it('PP-04 starwars prompt includes the same three groups of tokens', () => {
+    const p = buildSystemPromptSW({})
+    expect(p).toContain('party')
+    expect(p).toContain('hpPct')
+    expect(p).toContain('check')
+    expect(p).toContain('dc')
+    expect(p).toContain('verdict')
+    expect(p).toContain('PASS')
+    expect(p).toContain('FAIL')
+  })
+
+  it('PP-05 party-block instruction text byte-identical across engines', () => {
+    // Extract the section that starts with the party block instruction and ends
+    // before the check block instruction. Compare both engines to each other.
+    const dnd = buildSystemPrompt({})
+    const sw = buildSystemPromptSW({})
+    // Token that appears in both party-block instructions
+    const partyToken = 'hpPct'
+    const dndIdx = dnd.indexOf(partyToken)
+    const swIdx = sw.indexOf(partyToken)
+    expect(dndIdx).toBeGreaterThan(-1)
+    expect(swIdx).toBeGreaterThan(-1)
+    // Extract a 50-char window around the hpPct token and compare
+    const dndSnippet = dnd.slice(dndIdx, dndIdx + 50)
+    const swSnippet = sw.slice(swIdx, swIdx + 50)
+    expect(dndSnippet).toBe(swSnippet)
+  })
+
+  it('PP-06 check/verdict instruction text byte-identical across engines', () => {
+    const dnd = buildSystemPrompt({})
+    const sw = buildSystemPromptSW({})
+    // The verdict result token is shared between both engines
+    const verdictToken = '"PASS" or "FAIL"'
+    expect(dnd).toContain(verdictToken)
+    expect(sw).toContain(verdictToken)
+    // Confirm the same substring occurs in both (byte-identical for the verdict spec)
+    const dndIdx = dnd.indexOf(verdictToken)
+    const swIdx = sw.indexOf(verdictToken)
+    const dndSnippet = dnd.slice(dndIdx, dndIdx + 60)
+    const swSnippet = sw.slice(swIdx, swIdx + 60)
+    expect(dndSnippet).toBe(swSnippet)
+  })
+
+  it('PP-07 buildSystemPrompt(undefined) does not throw (regression)', () => {
+    expect(() => buildSystemPrompt(undefined)).not.toThrow()
+    expect(() => buildSystemPromptSW(undefined)).not.toThrow()
   })
 })

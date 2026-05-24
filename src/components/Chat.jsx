@@ -2,7 +2,57 @@ import { useState, useRef, useEffect } from 'react'
 import DiceRoller from './DiceRoller'
 import HistoryPanel from './HistoryPanel'
 import CharacterPanel from './CharacterPanel'
+import PartyStrip from './PartyStrip'
+import DiceChip from './DiceChip'
 import { getGenre } from '../lib/genres'
+
+// ─── Structured-block parser (Phase A) ────────────────────────────────────────
+// These tags carry LLM-owned data; they are NEVER rendered in the chat bubble.
+
+const BLOCK_TAGS = ['party', 'check', 'verdict']
+
+// One compiled regex strips all known structured blocks before display.
+// The lazy [\s\S]*? + required closing ``` means an unclosed fence mid-stream
+// does NOT match — safe against partial streaming chunks.
+const STRIP_RE = new RegExp(
+  '```(?:' + BLOCK_TAGS.join('|') + ')[\\s\\S]*?```',
+  'g'
+)
+
+function stripStructuredBlocks(text) {
+  return text.replace(STRIP_RE, '').trimEnd()
+}
+
+// Parameterised extractor — returns parsed JSON or null (never throws).
+function extractBlock(tag, text) {
+  const re = new RegExp('```' + tag + '\\s*([\\s\\S]*?)```')
+  const match = text.match(re)
+  if (!match) return null
+  try {
+    return JSON.parse(match[1].trim())
+  } catch {
+    return null // malformed JSON → ignore, keep last-known state
+  }
+}
+
+// Reconcile incoming LLM party data with existing IDs so React keys stay stable.
+// Matches by normalized (lowercased/trimmed) name. New members get a UUID.
+// Guards every field defensively; zero-member arrays must be rejected BEFORE calling.
+function applyPartyUpdate(rawArray, existing) {
+  return rawArray.map(raw => {
+    const normalizedName = String(raw.name ?? '').trim().toLowerCase()
+    const found = existing.find(
+      e => e.name.trim().toLowerCase() === normalizedName
+    )
+    return {
+      id: found?.id ?? crypto.randomUUID(),
+      name: String(raw.name ?? '').trim() || 'Unknown',
+      role: String(raw.role ?? '').trim() || '',
+      hpPct: Math.max(0, Math.min(100, Math.round(Number(raw.hpPct) || 0))),
+      isActive: Boolean(raw.isActive),
+    }
+  })
+}
 
 function parseMarkdown(text) {
   const escaped = text
@@ -31,7 +81,7 @@ function parseMarkdown(text) {
   return withDropcap || '<p></p>'
 }
 
-export default function Chat({ campaign, onReset, character, setCharacter }) {
+export default function Chat({ campaign, onReset, character, setCharacter, party, setParty }) {
   const genre = getGenre(campaign.genre)
   const { buildSystemPrompt, extractEntities, trimContext } = genre.engine
   const [messages, setMessages] = useState([])
@@ -42,6 +92,8 @@ export default function Chat({ campaign, onReset, character, setCharacter }) {
   const [showCharacter, setShowCharacter] = useState(false)
   const [entities, setEntities] = useState([])
   const [sessionLog, setSessionLog] = useState([])
+  // pendingCheck is session-only (not persisted). Cleared when the roll is sent or on new session.
+  const [pendingCheck, setPendingCheck] = useState(null)
   const messagesEndRef = useRef(null)
   const textareaRef = useRef(null)
 
@@ -67,12 +119,25 @@ export default function Chat({ campaign, onReset, character, setCharacter }) {
     if (!trimmed || isLoading) return
 
     const userMsg = { role: 'user', content: trimmed }
+    // Find index of the most recent dice message so we can fold pendingCheck into it.
+    const lastDiceIdx = (() => {
+      for (let i = messages.length - 1; i >= 0; i--) {
+        if (messages[i].role === 'dice') return i
+      }
+      return -1
+    })()
+
+    // Serialize messages for the LLM. The most-recent dice roll carries pendingCheck
+    // context so the LLM can judge the roll against the DC.
     const apiMessages = trimContext([
-      ...messages.map(m =>
-        m.role === 'dice'
-          ? { role: 'user', content: `[Dice roll: ${m.die} → ${m.result}]` }
-          : m
-      ),
+      ...messages.map((m, i) => {
+        if (m.role !== 'dice') return m
+        const checkCtx =
+          i === lastDiceIdx && pendingCheck
+            ? ` | pending check: ${pendingCheck.skill} DC ${pendingCheck.dc}`
+            : ''
+        return { role: 'user', content: `[Dice roll: ${m.die} → ${m.result}${checkCtx}]` }
+      }),
       userMsg,
     ])
 
@@ -85,6 +150,9 @@ export default function Chat({ campaign, onReset, character, setCharacter }) {
     setMessages(prev => [...prev, userMsg, { role: 'assistant', content: '', id: assistantId }])
     setInput('')
     setIsLoading(true)
+    // Clear pendingCheck after the message is queued — the check context was folded
+    // into the dice line above; clearing now ensures the next roll starts fresh.
+    if (pendingCheck) setPendingCheck(null)
 
     // Log the user action to session log
     setSessionLog(prev => [
@@ -94,6 +162,9 @@ export default function Chat({ campaign, onReset, character, setCharacter }) {
         text: trimmed.slice(0, 60),
       },
     ])
+
+    // Hoist fullText so the finally block can read it for structured-block extraction.
+    let fullText = ''
 
     try {
       const ollamaHost = `${window.location.hostname}:11434`
@@ -126,7 +197,6 @@ export default function Chat({ campaign, onReset, character, setCharacter }) {
 
       const reader = response.body.getReader()
       const decoder = new TextDecoder()
-      let fullText = ''
       let buffer = ''
 
       while (true) {
@@ -142,7 +212,10 @@ export default function Chat({ campaign, onReset, character, setCharacter }) {
             const delta = event.message?.content
             if (delta) {
               fullText += delta
-              setMessages(prev => prev.map(m => m.id === assistantId ? { ...m, content: fullText } : m))
+              // Strip structured blocks before display — they must never appear in the bubble.
+              // Unclosed fences mid-stream pass through harmlessly (lazy regex requires closing ```).
+              const displayText = stripStructuredBlocks(fullText)
+              setMessages(prev => prev.map(m => m.id === assistantId ? { ...m, content: displayText } : m))
             }
           } catch {
             // incomplete JSON chunk — skip
@@ -157,6 +230,47 @@ export default function Chat({ campaign, onReset, character, setCharacter }) {
       } : m))
     } finally {
       setIsLoading(false)
+
+      // ── Post-stream structured-block apply (all three tags, in order) ──────
+      // fullText holds the raw LLM output including any structured fences.
+      // Each extractBlock call is defensive: returns null on missing/malformed.
+
+      // 1. party — always applied when present and non-empty
+      const partyRaw = extractBlock('party', fullText)
+      if (partyRaw && Array.isArray(partyRaw) && partyRaw.length > 0) {
+        setParty(prev => {
+          const next = applyPartyUpdate(partyRaw, prev)
+          localStorage.setItem('dnd_party', JSON.stringify(next))
+          return next
+        })
+      }
+
+      // 2. check — store as pendingCheck; cleared when roll is sent to LLM
+      const checkRaw = extractBlock('check', fullText)
+      if (checkRaw?.skill && checkRaw?.dc != null) {
+        setPendingCheck({
+          skill: String(checkRaw.skill).toUpperCase(),
+          dc: Number(checkRaw.dc),
+        })
+      }
+
+      // 3. verdict — find the most-recent dice message with no verdict and upgrade it
+      const verdictRaw = extractBlock('verdict', fullText)
+      if (verdictRaw?.result === 'PASS' || verdictRaw?.result === 'FAIL') {
+        setMessages(prev => {
+          const idx = [...prev]
+            .map((m, i) => ({ m, i }))
+            .reverse()
+            .find(({ m }) => m.role === 'dice' && m.verdict == null)?.i
+          if (idx == null) return prev
+          return prev.map((m, i) =>
+            i === idx
+              ? { ...m, check: verdictRaw.skill, verdict: verdictRaw.result }
+              : m
+          )
+        })
+      }
+
       // Update entities after streaming completes
       setMessages(prev => {
         setEntities(extractEntities(prev))
@@ -181,6 +295,7 @@ export default function Chat({ campaign, onReset, character, setCharacter }) {
       setMessages([])
       setEntities([])
       setSessionLog([])
+      setPendingCheck(null)
     }
   }
 
@@ -191,6 +306,9 @@ export default function Chat({ campaign, onReset, character, setCharacter }) {
     }
     return -1
   })()
+
+  // Phase C: derive active member from LLM-owned party state (desktop turn-pill)
+  const activeMember = party.find(m => m.isActive) ?? party[0]
 
   return (
     <div
@@ -205,11 +323,14 @@ export default function Chat({ campaign, onReset, character, setCharacter }) {
         sessionLog={sessionLog}
         isOpen={showHistory}
         onToggle={() => setShowHistory(s => !s)}
+        party={party}
       />
 
       <div className="chat-container">
         <header className="chat-header">
           <div className="header-left">
+            {/* Phase C: live-status dot — desktop-only (hidden on mobile via CSS) */}
+            <span className="header-status-dot" aria-hidden="true" />
             <span className="header-emblem">{genre.emblem}</span>
             <div className="header-title">
               <span className="campaign-name">{campaign.name || genre.headerDefaultName}</span>
@@ -217,6 +338,13 @@ export default function Chat({ campaign, onReset, character, setCharacter }) {
             </div>
           </div>
           <div className="header-actions">
+            {/* Phase C: turn-pill — desktop-only (hidden on mobile via CSS) */}
+            {activeMember && (
+              <div className="turn-pill" aria-label={`${activeMember.name}'s turn`}>
+                <span className="turn-pill-dot" aria-hidden="true" />
+                {activeMember.name}&apos;s turn
+              </div>
+            )}
             <button
               className={`icon-btn ${showHistory ? 'active' : ''}`}
               onClick={() => setShowHistory(s => !s)}
@@ -247,6 +375,9 @@ export default function Chat({ campaign, onReset, character, setCharacter }) {
           </div>
         </header>
 
+        {/* Phase B: mobile-only party strip — visibility controlled by CSS media query */}
+        <PartyStrip party={party} />
+
         {showDice && <DiceRoller onRoll={handleDiceRoll} />}
 
         <main className="messages-container">
@@ -267,20 +398,17 @@ export default function Chat({ campaign, onReset, character, setCharacter }) {
 
           {messages.map((msg, i) => {
             if (msg.role === 'dice') {
-              const isCrit = msg.die === 'd20' && msg.result === 20
-              const isFumble = msg.die === 'd20' && msg.result === 1
+              // Phase D: DiceChip replaces the old inline dice-result div.
+              // Bare state {die, result} renders the chip without check/verdict.
+              // Resolved state {die, result, check, verdict} renders the full chip.
               return (
-                <div
+                <DiceChip
                   key={i}
-                  className={`dice-result ${isCrit ? 'crit' : ''} ${isFumble ? 'fumble' : ''}`}
-                >
-                  <span className="dice-result-icon">🎲</span>
-                  <span>
-                    {msg.die} → <strong>{msg.result}</strong>
-                    {isCrit && ' — Critical Hit!'}
-                    {isFumble && ' — Critical Fail!'}
-                  </span>
-                </div>
+                  die={msg.die}
+                  result={msg.result}
+                  check={msg.check}
+                  verdict={msg.verdict}
+                />
               )
             }
 
