@@ -1,0 +1,74 @@
+{
+  "run_id": "smoke_4096",
+  "num_ctx": 4096,
+  "num_predict": 400,
+  "deviation_note": "num_predict=400 (production=900) per PROTOCOL §6",
+  "total_turns": 12,
+  "probe_results": {
+    "P1": {
+      "anchors": [
+        {
+          "id": "B1",
+          "expected": "Garret",
+          "category": "B",
+          "pass": true
+        },
+        {
+          "id": "B2",
+          "expected": "Forge of Embers",
+          "category": "B",
+          "pass": true
+        },
+        {
+          "id": "B5",
+          "expected": "12 gold",
+          "category": "B",
+          "pass": true
+        }
+      ],
+      "passed": 3,
+      "total": 3
+    }
+  },
+  "category_accuracy": {
+    "A": null,
+    "B": 1,
+    "C": null
+  },
+  "category_counts": {
+    "passed": {
+      "A": 0,
+      "B": 3,
+      "C": 0
+    },
+    "total": {
+      "A": 0,
+      "B": 3,
+      "C": 0
+    }
+  },
+  "drift_onset": null,
+  "contradictions": [],
+  "trim_boundary_log": [
+    {
+      "turn": 12,
+      "total_before_trim": 22,
+      "dropped_indices": "2..3"
+    },
+    {
+      "turn": 14,
+      "total_before_trim": 25,
+      "dropped_indices": "2..6"
+    }
+  ],
+  "performance": {
+    "mean_tok_per_sec": 74.01,
+    "p25_tok_per_sec": 72.39,
+    "p75_tok_per_sec": 75.11,
+    "p95_tok_per_sec": 76.62,
+    "sample_count": 11
+  },
+  "cpu_offload_detected": false,
+  "cpu_offload_first_turn": null,
+  "wall_time_seconds": 68
+}

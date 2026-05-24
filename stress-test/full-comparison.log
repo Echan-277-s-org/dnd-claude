@@ -1,0 +1,235 @@
+======================================================================
+FULL COMPARISON ORCHESTRATOR
+Run A: num_ctx=4096  Run B: num_ctx=8192
+======================================================================
+
+--- Starting Run A (num_ctx=4096) ---
+
+
+======================================================================
+STRESS-TEST HARNESS — 4096_A
+Mode: full  num_ctx: 4096  num_predict: 400
+DEVIATION: num_predict=400 (prod=900) — intentional per PROTOCOL §6
+Output: H:\Claude\dnd-claude\stress-test\stress-test-4096_A.jsonl
+======================================================================
+
+  Baseline processor: 100% GPU
+  T01 [user]   333 tok  76.3 tok/s  digest_len=0
+  T02 [user]   400 tok  75.5 tok/s  digest_len=2
+  T03 [user]   400 tok  75.3 tok/s  digest_len=3
+  T04 [user]   400 tok  74.6 tok/s  digest_len=5
+  T05 [user]   400 tok  73.3 tok/s  digest_len=5
+  T06 [user]   375 tok  72.9 tok/s  digest_len=7
+  T07 [user]   400 tok  72.2 tok/s  digest_len=7
+  T08 [user]   400 tok  72.2 tok/s  digest_len=9
+  T09 [user]   400 tok  73.1 tok/s  digest_len=10
+  T10 [user]   400 tok  73.1 tok/s  digest_len=12
+  T11 [user]   387 tok  72.9 tok/s  digest_len=18
+  T12 [DICE] d20 → 14
+  T13 [user]   374 tok  72.8 tok/s  digest_len=22
+  T14 [user]   400 tok  72.9 tok/s  digest_len=23
+  T15 [DICE] d20 → 8
+  T16 [user]   400 tok  72.8 tok/s  digest_len=30
+  T17 [DICE] d20 → 19
+  T18 [user]   347 tok  72.7 tok/s  digest_len=33
+  T19 [user]   241 tok  72.7 tok/s  digest_len=34
+  T20 [user]   246 tok  73.0 tok/s  digest_len=34
+  T21 [P1] Score: 2/3  PASS: [B1,B2]  FAIL: [B5]
+         Response snippet: Out of character: The blacksmith you visited at the beginning of the session is **Garret Ironhand**, and his forge is called **Garret Ironhand’s Forge of Embers**. You also sought information from **M
+  T22 [user]   308 tok  73.2 tok/s  digest_len=34
+  T23 [user]   339 tok  73.2 tok/s  digest_len=35
+  T24 [user]   337 tok  72.7 tok/s  digest_len=35
+  T25 [DICE] d20 → 11
+  T26 [user]   249 tok  73.0 tok/s  digest_len=39
+  T27 [user]   257 tok  72.9 tok/s  digest_len=39
+  T28 [user]   243 tok  72.8 tok/s  digest_len=39
+  T29 [user]   238 tok  73.4 tok/s  digest_len=39
+  T30 [DICE] d20 → 17
+  T31 [P2] Score: 1/3  PASS: [A4]  FAIL: [A3,B8]
+         Response snippet: It sounds like you're asking clarifying questions out of character. Here's a quick recap based on established context:
+
+- **Quest Sender:** Your current mission was initiated by various sources during
+  T32 [user]   329 tok  72.7 tok/s  digest_len=40
+  T33 [DICE] d20 → 3
+  T34 [user]   244 tok  74.1 tok/s  digest_len=40
+  T35 [DICE] d20 → 16
+  T36 [user]   254 tok  74.1 tok/s  digest_len=40
+  T37 [DICE] d20 → 20
+  T38 [user]   246 tok  74.5 tok/s  digest_len=40
+  T39 [user]   236 tok  74.1 tok/s  digest_len=40
+  T40 [user]   227 tok  74.0 tok/s  digest_len=40
+  T41 [P3] Score: 2/2  PASS: [A1,B3]  FAIL: []
+  T42 [user]   338 tok  74.4 tok/s  digest_len=40
+  T43 [user]   317 tok  74.6 tok/s  digest_len=40
+  T44 [user]   283 tok  73.8 tok/s  digest_len=40
+  T45 [DICE] d20 → 9
+  T46 [user]   249 tok  73.6 tok/s  digest_len=40
+  T47 [user]   260 tok  73.9 tok/s  digest_len=40
+  T48 [user]   286 tok  73.8 tok/s  digest_len=40
+  T49 [user]   342 tok  73.5 tok/s  digest_len=40
+  T50 [DICE] d20 → 13
+  T51 [P4] Score: 3/3  PASS: [C1,C2,C3]  FAIL: []
+  T52 [user]   288 tok  73.5 tok/s  digest_len=40
+  T53 [user]   361 tok  73.3 tok/s  digest_len=40
+  T54 [user]   263 tok  73.1 tok/s  digest_len=40
+  T55 [DICE] d20 → 7
+  T56 [user]   182 tok  73.7 tok/s  digest_len=40
+  T57 [DICE] d20 → 15
+  T58 [user]   338 tok  73.8 tok/s  digest_len=40
+  T59 [user]   334 tok  73.8 tok/s  digest_len=40
+  T60 [P5] Score: 2/5  PASS: [A1,C4]  FAIL: [B8,B6,B5]
+         Response snippet: Certainly! Here’s a summary of key details established so far:
+
+- **Town**: Ravenmoor
+- **Artifact Recovered**: The **Shard of Dawn** (formerly known as the Sunstone)
+- **Faction Opposing You**: The S
+
+======================================================================
+RUN COMPLETE: 4096_A
+Wall time: 244s
+Category accuracy: A=0.75  B=0.375  C=1
+Performance: mean=73.5 p25=72.9 p75=73.9 p95=74.6 tok/s
+CPU offload: No
+Summary: H:\Claude\dnd-claude\stress-test\stress-test-summary-4096_A.json
+======================================================================
+
+Waiting for model to go idle (≥60s between runs per spec)...
+  ollama ps: processor="100% GPU"  (10s elapsed)
+  ollama ps: processor="100% GPU"  (20s elapsed)
+  ollama ps: processor="100% GPU"  (31s elapsed)
+  ollama ps: processor="100% GPU"  (41s elapsed)
+  ollama ps: processor="100% GPU"  (51s elapsed)
+  ollama ps: processor="100% GPU"  (61s elapsed)
+  ollama ps: processor="100% GPU"  (72s elapsed)
+  ollama ps: processor="100% GPU"  (82s elapsed)
+  ollama ps: processor="100% GPU"  (92s elapsed)
+  ollama ps: processor="100% GPU"  (102s elapsed)
+  ollama ps: processor="100% GPU"  (113s elapsed)
+  ollama ps: processor="100% GPU"  (123s elapsed)
+  WARNING: model did not go fully idle within timeout — continuing anyway
+Enforcing minimum 60s gap between runs...
+
+--- Starting Run B (num_ctx=8192) ---
+
+
+======================================================================
+STRESS-TEST HARNESS — 8192_B
+Mode: full  num_ctx: 8192  num_predict: 400
+DEVIATION: num_predict=400 (prod=900) — intentional per PROTOCOL §6
+Output: H:\Claude\dnd-claude\stress-test\stress-test-8192_B.jsonl
+======================================================================
+
+  Baseline processor: 100% GPU
+  T01 [user]   382 tok  78.0 tok/s  digest_len=0
+  T02 [user]   400 tok  75.2 tok/s  digest_len=3
+  T03 [user]   400 tok  76.0 tok/s  digest_len=5
+  T04 [user]   400 tok  75.3 tok/s  digest_len=8
+  T05 [user]   400 tok  73.3 tok/s  digest_len=9
+  T06 [user]   374 tok  72.9 tok/s  digest_len=11
+  T07 [user]   400 tok  72.2 tok/s  digest_len=12
+  T08 [user]   400 tok  72.0 tok/s  digest_len=14
+  T09 [user]   299 tok  71.9 tok/s  digest_len=14
+  T10 [user]   380 tok  69.2 tok/s  digest_len=14
+  T11 [user]   400 tok  69.9 tok/s  digest_len=18
+  T12 [DICE] d20 → 14
+  T13 [user]   385 tok  70.8 tok/s  digest_len=18
+  T14 [user]   301 tok  69.9 tok/s  digest_len=18
+  T15 [DICE] d20 → 8
+  T16 [user]   353 tok  71.1 tok/s  digest_len=18
+  T17 [DICE] d20 → 19
+  T18 [user]   348 tok  72.3 tok/s  digest_len=18
+  T19 [user]   279 tok  73.6 tok/s  digest_len=18
+  T20 [user]   256 tok  73.3 tok/s  digest_len=18
+  T21 [P1] Score: 2/3  PASS: [B1,B2]  FAIL: [B5]
+         Response snippet: In-character details:
+
+You continue listening carefully to the sounds emanating from beneath the corridor, trying to discern more about what lies ahead.
+
+Out-of-character information:
+- The name of th
+  T22 [user]   391 tok  71.8 tok/s  digest_len=18
+  T23 [user]   375 tok  72.5 tok/s  digest_len=19
+  T24 [user]   400 tok  73.1 tok/s  digest_len=19
+  T25 [DICE] d20 → 11
+  T26 [user]   318 tok  73.1 tok/s  digest_len=23
+  T27 [user]   311 tok  73.6 tok/s  digest_len=23
+  T28 [user]   253 tok  67.6 tok/s  digest_len=23
+  T29 [user]   278 tok  69.4 tok/s  digest_len=23
+  T30 [DICE] d20 → 17
+  T31 [P2] Score: 2/3  PASS: [A4,B8]  FAIL: [A3]
+         Response snippet: It sounds like you’re seeking some additional context regarding the campaign’s background. Here’s a quick recap:
+
+### Background Recap:
+- **Quest Giver**: Your party was initially tasked by **Eldric G
+  T32 [user]   246 tok  72.0 tok/s  digest_len=26
+  T33 [DICE] d20 → 3
+  T34 [user]   357 tok  72.5 tok/s  digest_len=28
+  T35 [DICE] d20 → 16
+  T36 [user]   365 tok  73.8 tok/s  digest_len=29
+  T37 [DICE] d20 → 20
+  T38 [user]   269 tok  74.0 tok/s  digest_len=31
+  T39 [user]   241 tok  73.5 tok/s  digest_len=31
+  T40 [user]   363 tok  73.2 tok/s  digest_len=31
+  T41 [P3] Score: 2/2  PASS: [A1,B3]  FAIL: []
+  T42 [user]   353 tok  72.6 tok/s  digest_len=31
+  T43 [user]   287 tok  72.3 tok/s  digest_len=31
+  T44 [user]   369 tok  72.4 tok/s  digest_len=32
+  T45 [DICE] d20 → 9
+  T46 [user]   308 tok  72.7 tok/s  digest_len=32
+  T47 [user]   292 tok  72.3 tok/s  digest_len=32
+  T48 [user]   306 tok  72.7 tok/s  digest_len=32
+  T49 [user]   338 tok  73.3 tok/s  digest_len=34
+  T50 [DICE] d20 → 13
+  T51 [P4] Score: 3/3  PASS: [C1,C2,C3]  FAIL: []
+  T52 [user]   370 tok  71.6 tok/s  digest_len=35
+  T53 [user]   292 tok  72.5 tok/s  digest_len=36
+  T54 [user]   254 tok  72.0 tok/s  digest_len=38
+  T55 [DICE] d20 → 7
+  T56 [user]   258 tok  72.8 tok/s  digest_len=38
+  T57 [DICE] d20 → 15
+  T58 [user]   297 tok  73.6 tok/s  digest_len=38
+  T59 [user]   298 tok  73.5 tok/s  digest_len=38
+  T60 [P5] Score: 3/5  PASS: [A1,C4,B8]  FAIL: [B6,B5]
+         Response snippet: Sure! Here’s a quick recap to ensure everything stays consistent:
+
+- **Town**: You began your adventure in Ravenmoor.
+- **Artifact Recovered**: The Shard of Dawn.
+- **Faction Opposing Us**: The Ash Co
+
+======================================================================
+RUN COMPLETE: 8192_B
+Wall time: 264s
+Category accuracy: A=0.75  B=0.625  C=1
+Performance: mean=72.6 p25=72.0 p75=73.3 p95=75.2 tok/s
+CPU offload: No
+Summary: H:\Claude\dnd-claude\stress-test\stress-test-summary-8192_B.json
+======================================================================
+
+
+--- Printing comparison table ---
+
+
+======================================================================
+FINAL COMPARISON TABLE
+======================================================================
+Metric                         Run A (4096)     Run B (8192)    
+----------------------------------------------------------------------
+Category A accuracy            0.750            0.750           
+Category B accuracy            0.375            0.625           
+Category C accuracy            1.000            1.000           
+Mean tok/s                     73.5             72.6            
+p25 tok/s                      72.9             72.0            
+p75 tok/s                      73.9             73.3            
+p95 tok/s                      74.7             75.2            
+CPU offload                    No               No              
+Drift onset                    P1/B5            P1/B5           
+Wall time (s)                  244              264             
+----------------------------------------------------------------------
+recall_delta_B  = 0.250
+speed_ratio     = 0.987
+----------------------------------------------------------------------
+RECOMMENDATION: Upgrade to 8192
+REASON: recall_delta_B=0.250 ≥ 0.20 AND speed_ratio=0.987 ≥ 0.70
+======================================================================
+
+Full comparison orchestration complete.
