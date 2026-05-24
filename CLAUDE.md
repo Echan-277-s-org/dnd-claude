@@ -24,6 +24,12 @@ React 18 + Vite app. No routing library — `App.jsx` holds `campaign` state and
 
 **Dice messages**: stored as `{ role: 'dice', die, result }` — filtered out before sending to the API.
 
+## Campaign notes
+
+`campaigns/` holds saved campaign-notes Markdown files. The setup screen's **Load .md file** button reads one into `campaign.context`, which is injected into the system prompt as prior world state (see `buildSystemPrompt` in `src/lib/context.js`). Bold every NPC/location name (`**Name**`) so the continuity tracker (`extractEntities`) picks them up.
+
+Example: `campaigns/jaycen-hawke-day2.md`.
+
 ## Pending work — Ollama migration
 
 The API key UI (`ApiKeySetup.jsx`) needs to be replaced with Ollama (local LLM). See `CONTEXT.md` for the full migration plan. In short:
