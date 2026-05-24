@@ -16,18 +16,23 @@
   --shadow: rgba(0, 0, 0, 0.7);
   --panel-width: 280px;
   --header-height: 62px;
+  /* Typography tokens — base values are the D&D faces; theme blocks override
+     --font-display / --font-body. --font-mono is shared by both themes. */
+  --font-display: 'Cinzel', serif;
+  --font-body: 'Crimson Pro', Georgia, serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, monospace;
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
 body {
-  font-family: 'Crimson Pro', Georgia, serif;
+  font-family: var(--font-body);
   background-color: var(--bg);
   /* Subtle SVG noise texture layered over the dark background */
   background-image:
     url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.75' numOctaves='4' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3CfeBlend in='SourceGraphic' mode='multiply'/%3E%3C/filter%3E%3Crect width='200' height='200' filter='url(%23n)' opacity='0.035'/%3E%3C/svg%3E"),
-    radial-gradient(ellipse at 30% 20%, rgba(42, 26, 8, 0.6) 0%, transparent 60%),
-    radial-gradient(ellipse at 70% 80%, rgba(20, 12, 4, 0.4) 0%, transparent 50%);
+    radial-gradient(ellipse at 30% 20%, color-mix(in oklab, var(--gold) 16%, transparent) 0%, transparent 60%),
+    radial-gradient(ellipse at 70% 80%, color-mix(in oklab, #000 45%, transparent) 0%, transparent 50%);
   color: var(--text-primary);
   height: 100vh;
   overflow: hidden;
@@ -38,7 +43,7 @@ body {
 /* ─── PANEL HEADER (shared utility class) ────────────── */
 
 .panel-header {
-  font-family: 'Cinzel', serif;
+  font-family: var(--font-display);
   font-size: 11px;
   font-weight: 600;
   text-transform: uppercase;
@@ -58,13 +63,13 @@ body {
   overflow-y: auto;
   padding: 24px 20px;
   background:
-    radial-gradient(ellipse at top, #1f1408 0%, #0d0a07 70%),
+    radial-gradient(ellipse at top, color-mix(in oklab, var(--gold) 12%, var(--bg)) 0%, var(--bg) 70%),
     repeating-linear-gradient(
       45deg,
       transparent,
       transparent 60px,
-      rgba(201, 168, 76, 0.015) 60px,
-      rgba(201, 168, 76, 0.015) 120px
+      color-mix(in oklab, var(--gold) 2%, transparent) 60px,
+      color-mix(in oklab, var(--gold) 2%, transparent) 120px
     );
 }
 
@@ -75,7 +80,7 @@ body {
   border: 1px solid var(--border-gold);
   border-radius: 4px;
   padding: 48px 44px;
-  box-shadow: 0 0 80px rgba(201, 168, 76, 0.07), 0 24px 60px var(--shadow);
+  box-shadow: 0 0 80px color-mix(in oklab, var(--gold) 7%, transparent), 0 24px 60px var(--shadow);
   position: relative;
 }
 
@@ -103,11 +108,11 @@ body {
   font-size: 52px;
   display: block;
   margin-bottom: 14px;
-  filter: drop-shadow(0 0 16px rgba(201, 168, 76, 0.45));
+  filter: drop-shadow(0 0 16px color-mix(in oklab, var(--gold) 45%, transparent));
 }
 
 .setup-header h1 {
-  font-family: 'Cinzel', serif;
+  font-family: var(--font-display);
   font-size: 26px;
   font-weight: 700;
   color: var(--gold-bright);
@@ -132,7 +137,7 @@ body {
   align-items: center;
   gap: 12px;
   color: var(--text-muted);
-  font-family: 'Cinzel', serif;
+  font-family: var(--font-display);
   font-size: 11px;
   letter-spacing: 0.1em;
   text-transform: uppercase;
@@ -152,7 +157,7 @@ body {
 }
 
 .form-group label {
-  font-family: 'Cinzel', serif;
+  font-family: var(--font-display);
   font-size: 12px;
   font-weight: 600;
   color: var(--gold);
@@ -161,7 +166,7 @@ body {
 }
 
 .optional {
-  font-family: 'Crimson Pro', serif;
+  font-family: var(--font-body);
   font-size: 13px;
   color: var(--text-muted);
   text-transform: none;
@@ -178,7 +183,7 @@ body {
   border-radius: 3px;
   padding: 10px 14px;
   color: var(--text-primary);
-  font-family: 'Crimson Pro', serif;
+  font-family: var(--font-body);
   font-size: 16px;
   transition: border-color 0.2s;
   resize: vertical;
@@ -187,9 +192,13 @@ body {
 }
 
 .form-group select {
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8'%3E%3Cpath d='M0 0l6 8 6-8z' fill='%237a6230'/%3E%3C/svg%3E");
-  background-repeat: no-repeat;
-  background-position: right 14px center;
+  /* Token-driven chevron (two triangles) so it re-skins per theme. */
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--gold-dim) 50%),
+    linear-gradient(135deg, var(--gold-dim) 50%, transparent 50%);
+  background-repeat: no-repeat, no-repeat;
+  background-position: right 18px center, right 13px center;
+  background-size: 5px 5px, 5px 5px;
   padding-right: 36px;
   cursor: pointer;
 }
@@ -198,7 +207,8 @@ body {
 .form-group textarea:focus,
 .form-group select:focus {
   outline: none;
-  border-color: var(--gold-dim);
+  border-color: var(--gold);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--gold) 28%, transparent);
 }
 
 .form-group input::placeholder,
@@ -220,11 +230,11 @@ body {
 }
 
 .form-error {
-  background: rgba(139, 26, 26, 0.2);
+  background: color-mix(in oklab, var(--red) 20%, transparent);
   border: 1px solid var(--red);
   border-radius: 3px;
   padding: 10px 14px;
-  color: #e88080;
+  color: color-mix(in srgb, var(--red) 45%, #ffffff);
   font-size: 14px;
 }
 
@@ -281,12 +291,12 @@ body {
 }
 
 .btn-begin {
-  background: linear-gradient(135deg, #4a3010 0%, #6a4818 100%);
+  background: linear-gradient(180deg, color-mix(in oklab, var(--gold) 32%, var(--surface-3)), color-mix(in oklab, var(--gold-dim) 35%, var(--surface-2)));
   border: 1px solid var(--gold-dim);
   border-radius: 3px;
   padding: 14px 20px;
   color: var(--gold-bright);
-  font-family: 'Cinzel', serif;
+  font-family: var(--font-display);
   font-size: 16px;
   font-weight: 600;
   letter-spacing: 0.08em;
@@ -300,9 +310,9 @@ body {
 }
 
 .btn-begin:hover {
-  background: linear-gradient(135deg, #5a3c14 0%, #7a5620 100%);
+  background: linear-gradient(180deg, color-mix(in oklab, var(--gold) 42%, var(--surface-3)), color-mix(in oklab, var(--gold-dim) 45%, var(--surface-2)));
   border-color: var(--gold);
-  box-shadow: 0 0 24px rgba(201, 168, 76, 0.2);
+  box-shadow: 0 0 24px color-mix(in oklab, var(--gold) 20%, transparent);
   transform: translateY(-1px);
 }
 
@@ -428,7 +438,7 @@ body {
 .history-log-time {
   font-size: 11px;
   color: var(--text-muted);
-  font-family: 'Cinzel', serif;
+  font-family: var(--font-display);
   letter-spacing: 0.04em;
 }
 
@@ -515,7 +525,7 @@ body {
 }
 
 .char-section-label {
-  font-family: 'Cinzel', serif;
+  font-family: var(--font-display);
   font-size: 10px;
   font-weight: 600;
   text-transform: uppercase;
@@ -555,7 +565,7 @@ body {
 
 /* Identity */
 .char-name {
-  font-family: 'Cinzel', serif;
+  font-family: var(--font-display);
   font-size: 16px;
   font-weight: 600;
   color: var(--gold-bright);
@@ -565,7 +575,7 @@ body {
 }
 
 .char-name.char-inline-input {
-  font-family: 'Cinzel', serif;
+  font-family: var(--font-display);
   font-size: 16px;
 }
 
@@ -590,14 +600,14 @@ body {
 }
 
 .char-hp-val {
-  font-family: 'Cinzel', serif;
+  font-family: var(--font-display);
   font-size: 20px;
   font-weight: 700;
   color: var(--text-primary);
 }
 
 .char-hp-val.char-inline-input {
-  font-family: 'Cinzel', serif;
+  font-family: var(--font-display);
   font-size: 20px;
   width: 50px;
 }
@@ -625,7 +635,7 @@ body {
   background: var(--red);
   border-radius: 3px;
   transition: width 0.3s ease;
-  box-shadow: 0 0 8px rgba(139, 26, 26, 0.5);
+  box-shadow: 0 0 8px color-mix(in oklab, var(--red) 50%, transparent);
 }
 
 /* Combat badges */
@@ -648,7 +658,7 @@ body {
 }
 
 .char-badge-val {
-  font-family: 'Cinzel', serif;
+  font-family: var(--font-display);
   font-size: 18px;
   font-weight: 700;
   color: var(--text-primary);
@@ -657,14 +667,14 @@ body {
 }
 
 .char-badge-val.char-inline-input {
-  font-family: 'Cinzel', serif;
+  font-family: var(--font-display);
   font-size: 18px;
   width: 48px;
   text-align: center;
 }
 
 .char-badge-label {
-  font-family: 'Cinzel', serif;
+  font-family: var(--font-display);
   font-size: 9px;
   text-transform: uppercase;
   letter-spacing: 0.08em;
@@ -690,7 +700,7 @@ body {
 }
 
 .char-ability-key {
-  font-family: 'Cinzel', serif;
+  font-family: var(--font-display);
   font-size: 9px;
   text-transform: uppercase;
   letter-spacing: 0.08em;
@@ -698,14 +708,14 @@ body {
 }
 
 .char-ability-score {
-  font-family: 'Cinzel', serif;
+  font-family: var(--font-display);
   font-size: 17px;
   font-weight: 700;
   color: var(--text-primary);
 }
 
 .char-ability-score.char-inline-input {
-  font-family: 'Cinzel', serif;
+  font-family: var(--font-display);
   font-size: 17px;
   width: 38px;
   text-align: center;
@@ -714,7 +724,7 @@ body {
 .char-ability-mod {
   font-size: 12px;
   color: var(--gold-dim);
-  font-family: 'Cinzel', serif;
+  font-family: var(--font-display);
 }
 
 /* Conditions */
@@ -733,7 +743,7 @@ body {
   color: var(--text-muted);
   cursor: pointer;
   transition: all 0.15s;
-  font-family: 'Crimson Pro', serif;
+  font-family: var(--font-body);
 }
 
 .char-condition-chip:hover {
@@ -742,13 +752,13 @@ body {
 }
 
 .char-condition-chip--active {
-  background: rgba(139, 26, 26, 0.25);
+  background: color-mix(in oklab, var(--red) 25%, transparent);
   border-color: var(--red);
-  color: #e08060;
+  color: color-mix(in srgb, var(--red) 45%, #ffffff);
 }
 
 .char-condition-chip--active:hover {
-  background: rgba(139, 26, 26, 0.35);
+  background: color-mix(in oklab, var(--red) 35%, transparent);
 }
 
 /* ─── CHAT LAYOUT ──────────────────────────────────── */
@@ -781,7 +791,7 @@ body {
 
 .header-emblem {
   font-size: 32px;
-  filter: drop-shadow(0 0 14px rgba(201, 168, 76, 0.6)) drop-shadow(0 0 4px rgba(201, 168, 76, 0.3));
+  filter: drop-shadow(0 0 14px color-mix(in oklab, var(--gold) 60%, transparent)) drop-shadow(0 0 4px color-mix(in oklab, var(--gold) 30%, transparent));
 }
 
 .header-title {
@@ -790,7 +800,7 @@ body {
 }
 
 .campaign-name {
-  font-family: 'Cinzel', serif;
+  font-family: var(--font-display);
   font-size: 20px;
   font-weight: 600;
   color: var(--gold-bright);
@@ -843,7 +853,7 @@ body {
 }
 
 .dice-panel-title {
-  font-family: 'Cinzel', serif;
+  font-family: var(--font-display);
   font-size: 11px;
   font-weight: 600;
   color: var(--gold-dim);
@@ -865,7 +875,7 @@ body {
   padding: 8px 6px;
   color: var(--text-primary);
   cursor: pointer;
-  font-family: 'Cinzel', serif;
+  font-family: var(--font-display);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -936,7 +946,7 @@ body {
 }
 
 .empty-state h2 {
-  font-family: 'Cinzel', serif;
+  font-family: var(--font-display);
   font-size: 22px;
   color: var(--text-secondary);
   margin-bottom: 8px;
@@ -964,7 +974,7 @@ body {
   padding: 11px 18px;
   color: var(--text-secondary);
   cursor: pointer;
-  font-family: 'Crimson Pro', serif;
+  font-family: var(--font-body);
   font-size: 15px;
   font-style: italic;
   text-align: left;
@@ -999,7 +1009,7 @@ body {
 .message-avatar { font-size: 15px; line-height: 1; }
 
 .message-label {
-  font-family: 'Cinzel', serif;
+  font-family: var(--font-display);
   font-size: 10px;
   font-weight: 600;
   color: var(--text-muted);
@@ -1027,7 +1037,7 @@ body {
   border: 1px solid var(--border-gold);
   border-left: 2px solid var(--gold-dim);
   border-radius: 4px 12px 12px 12px;
-  box-shadow: inset 0 0 30px rgba(201, 168, 76, 0.04);
+  box-shadow: inset 0 0 30px color-mix(in oklab, var(--gold) 4%, transparent);
   position: relative;
 }
 
@@ -1043,7 +1053,7 @@ body {
 .dm-message.error .dm-bubble {
   border-color: var(--red);
   border-left-color: var(--red);
-  background: rgba(139, 26, 26, 0.08);
+  background: color-mix(in oklab, var(--red) 8%, transparent);
 }
 .dm-message.error .dm-bubble::before {
   background: linear-gradient(90deg, var(--red), transparent);
@@ -1062,7 +1072,7 @@ body {
   border: 1px solid var(--border);
   border-radius: 3px;
   padding: 1px 6px;
-  font-family: 'Courier New', monospace;
+  font-family: var(--font-mono);
   font-size: 14px;
   color: var(--gold);
 }
@@ -1093,7 +1103,7 @@ body {
   border: 1px solid var(--border);
   border-radius: 24px;
   padding: 6px 18px;
-  font-family: 'Cinzel', serif;
+  font-family: var(--font-display);
   font-size: 14px;
   color: var(--text-secondary);
   display: flex;
@@ -1108,18 +1118,18 @@ body {
 }
 
 .dice-result.crit {
-  border-color: #3a6a1a;
-  background: rgba(42, 90, 26, 0.2);
-  color: #80c860;
+  border-color: color-mix(in oklab, var(--green) 70%, #ffffff);
+  background: color-mix(in oklab, var(--green) 20%, transparent);
+  color: color-mix(in srgb, var(--green) 40%, #ffffff);
 }
-.dice-result.crit strong { color: #a0e880; font-size: 18px; }
+.dice-result.crit strong { color: color-mix(in srgb, var(--green) 28%, #ffffff); font-size: 18px; }
 
 .dice-result.fumble {
   border-color: var(--red);
-  background: rgba(139, 26, 26, 0.2);
-  color: #e08060;
+  background: color-mix(in oklab, var(--red) 20%, transparent);
+  color: color-mix(in srgb, var(--red) 45%, #ffffff);
 }
-.dice-result.fumble strong { color: #e88080; font-size: 18px; }
+.dice-result.fumble strong { color: color-mix(in srgb, var(--red) 40%, #ffffff); font-size: 18px; }
 
 .dice-result-icon { font-size: 16px; }
 
@@ -1173,7 +1183,7 @@ body {
   border-radius: 3px;
   padding: 4px 12px;
   color: var(--text-muted);
-  font-family: 'Cinzel', serif;
+  font-family: var(--font-display);
   font-size: 12px;
   cursor: pointer;
   transition: all 0.15s;
@@ -1183,7 +1193,7 @@ body {
 .action-btn:hover {
   border-color: var(--gold);
   color: var(--gold-bright);
-  background: rgba(201, 168, 76, 0.06);
+  background: color-mix(in oklab, var(--gold) 6%, transparent);
 }
 
 /* ─── INPUT AREA ───────────────────────────────────── */
@@ -1206,7 +1216,7 @@ body {
   border-radius: 4px;
   padding: 12px 16px;
   color: var(--text-primary);
-  font-family: 'Crimson Pro', serif;
+  font-family: var(--font-body);
   font-size: 16px;
   resize: none;
   min-height: 46px;
@@ -1219,8 +1229,8 @@ body {
 
 .message-input:focus {
   outline: none;
-  border-color: var(--gold-dim);
-  box-shadow: 0 0 0 2px rgba(201, 168, 76, 0.25);
+  border-color: var(--gold);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--gold) 28%, transparent);
 }
 
 .message-input::placeholder {
@@ -1232,7 +1242,7 @@ body {
 .message-input:disabled { opacity: 0.45; }
 
 .send-btn {
-  background: linear-gradient(135deg, #4a3010 0%, #6a4818 100%);
+  background: linear-gradient(180deg, color-mix(in oklab, var(--gold) 32%, var(--surface-3)), color-mix(in oklab, var(--gold-dim) 35%, var(--surface-2)));
   border: 1px solid var(--gold-dim);
   border-radius: 4px;
   padding: 11px 20px;
@@ -1245,9 +1255,9 @@ body {
 }
 
 .send-btn:hover:not(:disabled) {
-  background: linear-gradient(135deg, #5a3c14 0%, #7a5620 100%);
+  background: linear-gradient(180deg, color-mix(in oklab, var(--gold) 42%, var(--surface-3)), color-mix(in oklab, var(--gold-dim) 45%, var(--surface-2)));
   border-color: var(--gold);
-  box-shadow: 0 0 16px rgba(201, 168, 76, 0.22);
+  box-shadow: 0 0 16px color-mix(in oklab, var(--gold) 22%, transparent);
   transform: translateY(-1px);
 }
 
@@ -1256,4 +1266,23 @@ body {
 .send-btn:disabled {
   opacity: 0.35;
   cursor: not-allowed;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   THEME BLOCKS — APPEND-ONLY ZONE
+   Each theme overrides the token VALUES above and adds its own attribute-
+   scoped FX here. Theme branches edit ONLY their own block; nothing above
+   this line is touched on a theme branch. Keep both blocks stacked at EOF.
+   ─ Theme A "Candle-lit Grimoire"  → [data-theme="dnd"]   (branch theme/dnd)
+   ─ Theme B "Crimson Void"         → [data-theme="void"]  (branch theme/void)
+   ═══════════════════════════════════════════════════════════════════════ */
+
+/* ─── THEME A — Candle-lit Grimoire ─────────────────────────────────────
+   (filled on branch theme/dnd) */
+[data-theme="dnd"] {
+}
+
+/* ─── THEME B — Crimson Void ────────────────────────────────────────────
+   (filled on branch theme/void) */
+[data-theme="void"] {
 }

@@ -6,8 +6,8 @@ const OLLAMA_MODELS = [
   { value: 'qwen2.5:32b', label: 'Qwen 2.5 32B — Richer narration, slower' },
 ]
 
-export default function CampaignSetup({ onSetup }) {
-  const [genreId, setGenreId] = useState('dnd')
+export default function CampaignSetup({ onSetup, onGenreChange }) {
+  const [genreId, setGenreId] = useState(() => localStorage.getItem('dnd_genre') || 'dnd')
   const [name, setName] = useState(() => localStorage.getItem('dnd_campaign_name') || '')
   const [details, setDetails] = useState(() => localStorage.getItem('dnd_campaign_details') || '')
   const [model, setModel] = useState(() => localStorage.getItem('dnd_model') || 'qwen2.5:14b')
@@ -51,7 +51,11 @@ export default function CampaignSetup({ onSetup }) {
         <form onSubmit={handleSubmit} className="setup-form">
           <div className="form-group">
             <label htmlFor="genre">Genre</label>
-            <select id="genre" value={genreId} onChange={e => setGenreId(e.target.value)}>
+            <select
+              id="genre"
+              value={genreId}
+              onChange={e => { setGenreId(e.target.value); onGenreChange?.(e.target.value) }}
+            >
               {Object.values(GENRES).map(g => (
                 <option key={g.id} value={g.id}>{g.label}</option>
               ))}
