@@ -1,4 +1,5 @@
 import { useState, useRef } from 'react'
+import { GENRES, getGenre } from '../lib/genres'
 
 const OLLAMA_MODELS = [
   { value: 'qwen2.5:14b', label: 'Qwen 2.5 14B — Fast & capable (recommended)' },
@@ -6,12 +7,15 @@ const OLLAMA_MODELS = [
 ]
 
 export default function CampaignSetup({ onSetup }) {
+  const [genreId, setGenreId] = useState('dnd')
   const [name, setName] = useState('')
   const [details, setDetails] = useState('')
   const [model, setModel] = useState('qwen2.5:14b')
   const [context, setContext] = useState('')
   const [contextFileName, setContextFileName] = useState('')
   const fileInputRef = useRef(null)
+
+  const genre = getGenre(genreId)
 
   function handleFile(e) {
     const file = e.target.files[0]
@@ -32,19 +36,31 @@ export default function CampaignSetup({ onSetup }) {
 
   function handleSubmit(e) {
     e.preventDefault()
-    onSetup({ name: name.trim(), details: details.trim(), model, context })
+    onSetup({ genre: genreId, name: name.trim(), details: details.trim(), model, context })
   }
 
   return (
     <div className="setup-container">
       <div className="setup-card">
         <div className="setup-header">
-          <div className="setup-emblem">⚔</div>
-          <h1>D&D Campaign Assistant</h1>
-          <p className="setup-subtitle">Your AI Dungeon Master — Powered by Ollama</p>
+          <div className="setup-emblem">{genre.emblem}</div>
+          <h1>{genre.appTitle}</h1>
+          <p className="setup-subtitle">{genre.setupSubtitle}</p>
         </div>
 
         <form onSubmit={handleSubmit} className="setup-form">
+          <div className="form-group">
+            <label htmlFor="genre">Genre</label>
+            <select id="genre" value={genreId} onChange={e => setGenreId(e.target.value)}>
+              {Object.values(GENRES).map(g => (
+                <option key={g.id} value={g.id}>{g.label}</option>
+              ))}
+            </select>
+            <span className="form-hint">
+              Sets the Game Master's ruleset, voice, and continuity tracking.
+            </span>
+          </div>
+
           <div className="form-group">
             <label htmlFor="model">AI Model</label>
             <select id="model" value={model} onChange={e => setModel(e.target.value)}>
@@ -70,7 +86,7 @@ export default function CampaignSetup({ onSetup }) {
               type="text"
               value={name}
               onChange={e => setName(e.target.value)}
-              placeholder="The Lost Mine of Phandelver..."
+              placeholder={genre.namePlaceholder}
               autoFocus
             />
           </div>
@@ -83,12 +99,10 @@ export default function CampaignSetup({ onSetup }) {
               id="campaign-details"
               value={details}
               onChange={e => setDetails(e.target.value)}
-              placeholder="Forgotten Realms, 4 players at level 3, dark and gritty tone, house rules: flanking enabled..."
+              placeholder={genre.detailsPlaceholder}
               rows={3}
             />
-            <span className="form-hint">
-              Setting, party composition, tone, house rules — the DM will use this as context.
-            </span>
+            <span className="form-hint">{genre.detailsHint}</span>
           </div>
 
           <div className="form-group">
@@ -119,7 +133,7 @@ export default function CampaignSetup({ onSetup }) {
           </div>
 
           <button type="submit" className="btn-begin">
-            <span>⚔</span> Begin the Campaign
+            <span>{genre.emblem}</span> {genre.beginLabel}
           </button>
         </form>
       </div>
