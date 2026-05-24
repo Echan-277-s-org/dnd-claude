@@ -1,6 +1,9 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import CampaignSetup from './components/ApiKeySetup'
 import Chat from './components/Chat'
+
+// Genre drives the visual theme — there is no independent theme toggle.
+const THEME_FOR_GENRE = { dnd: 'dnd', starwars: 'void' }
 
 const DEFAULT_CHARACTER = {
   name: 'Adventurer',
@@ -35,6 +38,14 @@ export default function App() {
     context: localStorage.getItem('dnd_campaign_context') || '',
   }))
   const [character, setCharacter] = useState(loadCharacter)
+  // Tracks the genre selected on the setup screen so the theme previews before "Begin".
+  const [draftGenre, setDraftGenre] = useState(campaign.genre)
+
+  // Reflect the active genre onto <html data-theme> so App.css theme blocks apply.
+  useEffect(() => {
+    const activeGenre = ready ? campaign.genre : draftGenre
+    document.documentElement.dataset.theme = THEME_FOR_GENRE[activeGenre] || 'dnd'
+  }, [ready, campaign.genre, draftGenre])
 
   function handleSetup({ genre, name, details, model, context }) {
     localStorage.setItem('dnd_setup_done', '1')
@@ -53,7 +64,7 @@ export default function App() {
   }
 
   if (!ready) {
-    return <CampaignSetup onSetup={handleSetup} />
+    return <CampaignSetup onSetup={handleSetup} onGenreChange={setDraftGenre} />
   }
 
   return (
