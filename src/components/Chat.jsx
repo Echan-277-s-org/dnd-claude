@@ -19,7 +19,16 @@ function parseMarkdown(text) {
     .map(para => `<p>${para.replace(/\n/g, '<br>')}</p>`)
     .join('')
 
-  return html || '<p></p>'
+  // Single shared drop-cap hook: wrap the first visible letter of the first
+  // paragraph in <span class="dropcap"> (matches even when the paragraph opens
+  // with <strong>/<em>). Theme A illuminates this span; Theme B leaves it plain
+  // and surfaces the GM identity via the [GM] HUD label instead.
+  const withDropcap = html.replace(
+    /^(<p>(?:<(?:strong|em|code)>)*)([^<\s])/,
+    '$1<span class="dropcap">$2</span>'
+  )
+
+  return withDropcap || '<p></p>'
 }
 
 export default function Chat({ campaign, onReset, character, setCharacter }) {

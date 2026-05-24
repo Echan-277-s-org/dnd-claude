@@ -1209,6 +1209,20 @@ body {
   box-shadow: 0 -2px 20px var(--shadow);
 }
 
+/* Composer prefix glyph — gold ‹›› in the display font at the left of the input
+   (handoff "Composer": › prefix, gold, Cinzel 18px). Token-driven so both
+   themes inherit it; Orbitron renders it in Theme B for free. */
+.input-area::before {
+  content: '\203A';
+  flex-shrink: 0;
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--gold);
+  padding-bottom: 13px;
+}
+
 .message-input {
   flex: 1;
   background: var(--surface-2);
@@ -1332,7 +1346,9 @@ body {
 }
 
 /* ── 3. Illuminated drop-cap on GM's first paragraph ─────────────────── */
-[data-theme="dnd"] .dm-bubble .message-content > p:first-child::first-letter {
+/* Targets the shared <span class="dropcap"> hook (Chat.jsx parseMarkdown), not
+   ::first-letter — so Theme B can reuse the same markup without forking JSX. */
+[data-theme="dnd"] .dm-bubble .message-content > p:first-child .dropcap {
   font-family:  var(--font-display);
   font-size:    2.8em;
   font-weight:  700;
