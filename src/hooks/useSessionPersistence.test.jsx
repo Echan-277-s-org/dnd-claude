@@ -503,3 +503,144 @@ describe('Phase 7 — M7 gate blocks stale WS session:update adoption', () => {
     expect(setMessages).not.toHaveBeenCalled()
   })
 })
+
+// ─── D-03: per-turn push suppressed when socketConnected (MP server-authoritative) ──
+//
+// In multiplayer the server writes the .md via persistRoom; the client must NOT
+// issue HTTP PUTs (they race and clobber characters/roomCode). Mirror the poll's
+// socketConnected guard on the push effect.
+//
+// INVARIANT: wasLoading.current and adopting.current bookkeeping must STILL run on
+// every render even when socketConnected=true — only the network call is suppressed.
+describe('D-03 — per-turn push suppressed when socketConnected=true', () => {
+  // When WS is OPEN (socketConnected=true), a loading falling edge must NOT call
+  // saveSyncSession. The server's persistRoom is the sole writer in MP.
+  it('does NOT call saveSyncSession on loading falling edge when socketConnected=true', async () => {
+    const { rerender } = renderHook(props => useSessionPersistence(props), {
+      initialProps: baseProps({ isLoading: true, socketConnected: true }),
+    })
+    await act(async () => {}) // let mount settle
+
+    // Falling edge: isLoading true → false while WS is OPEN
+    rerender(baseProps({
+      isLoading: false,
+      socketConnected: true,
+      messages: [{ role: 'assistant', content: 'dm response' }],
+    }))
+    await act(async () => {})
+
+    // No PUT must fire — server handles persistence in MP
+    expect(saveSyncSession).not.toHaveBeenCalled()
+  })
+
+  // When WS is NOT open (socketConnected=false/absent), the push MUST still fire
+  // (existing single-player behavior unchanged).
+  it('DOES call saveSyncSession on loading falling edge when socketConnected=false (SP unchanged)', async () => {
+    const { rerender } = renderHook(props => useSessionPersistence(props), {
+      initialProps: baseProps({ isLoading: true, socketConnected: false }),
+    })
+    await act(async () => {})
+
+    rerender(baseProps({
+      isLoading: false,
+      socketConnected: false,
+      messages: [{ role: 'assistant', content: 'dm response' }],
+    }))
+    await waitFor(() => expect(saveSyncSession).toHaveBeenCalledTimes(1))
+  })
+
+  // Transition: WS disconnects (socketConnected flips false) — the NEXT falling edge
+  // after disconnect should fire a PUT (back to SP-with-sync path).
+  it('resumes push after socketConnected transitions true → false', async () => {
+    const { rerender } = renderHook(props => useSessionPersistence(props), {
+      initialProps: baseProps({ isLoading: false, socketConnected: true }),
+    })
+    await act(async () => {})
+
+    // Simulate a turn while WS is OPEN — no PUT
+    rerender(baseProps({ isLoading: true, socketConnected: true }))
+    rerender(baseProps({ isLoading: false, socketConnected: true, messages: [{ role: 'assistant', content: 'turn1' }] }))
+    await act(async () => {})
+    expect(saveSyncSession).not.toHaveBeenCalled()
+
+    // WS closes, next turn should fire PUT
+    rerender(baseProps({ isLoading: true, socketConnected: false, messages: [{ role: 'assistant', content: 'turn1' }] }))
+    rerender(baseProps({ isLoading: false, socketConnected: false, messages: [{ role: 'assistant', content: 'turn2' }] }))
+    await waitFor(() => expect(saveSyncSession).toHaveBeenCalledTimes(1))
+  })
+
+  // Bookkeeping invariant: wasLoading and adopting.current still update correctly
+  // when socketConnected=true so that the subsequent turn (after disconnect) behaves
+  // correctly — adopting.current must be cleared on an adopt-cycle, wasLoading must track.
+  it('adopting.current is cleared on a WS-sourced adopt even when socketConnected=true (bookkeeping)', async () => {
+    const setMessages = vi.fn()
+    const { result, rerender } = renderHook(props => useSessionPersistence(props), {
+      initialProps: baseProps({ isLoading: false, socketConnected: true, setMessages }),
+    })
+    await act(async () => {})
+
+    // Simulate the WS session:update setting adopting.current (via onSessionUpdate)
+    // and then the loading falling edge (dm:done) clearing it — no PUT, but
+    // adopting.current must be reset so the NEXT (post-disconnect) turn can push.
+    act(() =>
+      result.current.onSessionUpdate({
+        savedAt: '2026-05-25T10:00:00.000Z',
+        turnSequence: 1,
+        messages: [{ role: 'assistant', content: 'WS UPDATE' }],
+        sessionLog: [],
+        party: [],
+      })
+    )
+
+    // Falling edge while socketConnected=true — adopting.current SHOULD be cleared,
+    // no PUT fired.
+    rerender(baseProps({ isLoading: true, socketConnected: true, setMessages }))
+    rerender(baseProps({ isLoading: false, socketConnected: true, setMessages, messages: [{ role: 'assistant', content: 'WS UPDATE' }] }))
+    await act(async () => {})
+    expect(saveSyncSession).not.toHaveBeenCalled()
+
+    // Now WS closes. The NEXT turn's falling edge must fire a PUT (adopting.current
+    // was already cleared by the previous falling-edge pass, so no suppression).
+    rerender(baseProps({ isLoading: true, socketConnected: false, setMessages, messages: [{ role: 'assistant', content: 'WS UPDATE' }] }))
+    rerender(baseProps({ isLoading: false, socketConnected: false, setMessages, messages: [{ role: 'assistant', content: 'offline turn' }] }))
+    await waitFor(() => expect(saveSyncSession).toHaveBeenCalledTimes(1))
+  })
+})
+
+// ─── D-01: characters + roomCode props forwarded in the push payload ──────────
+//
+// The push payload previously used serializeSession({campaign,messages,sessionLog,party})
+// which defaults characters:{} and roomCode:null. Now the hook accepts these as
+// optional props and threads them into the serializeSession call.
+describe('D-01 — push payload carries characters and roomCode props', () => {
+  it('push payload includes characters when provided', async () => {
+    const chars = { Alice: { name: 'Alice', charClass: 'Rogue', race: 'Elf', abilities: { STR: 10, DEX: 16, CON: 12, INT: 12, WIS: 10, CHA: 14 }, ac: 14, hpMax: 30 } }
+    const { rerender } = renderHook(props => useSessionPersistence(props), {
+      initialProps: baseProps({ isLoading: true, characters: chars, roomCode: 'dnd-abc123' }),
+    })
+    await act(async () => {})
+
+    rerender(baseProps({ isLoading: false, characters: chars, roomCode: 'dnd-abc123', messages: [{ role: 'assistant', content: 'x' }] }))
+    await waitFor(() => expect(saveSyncSession).toHaveBeenCalledTimes(1))
+
+    const pushedPayload = saveSyncSession.mock.calls[0][0]
+    // characters map must survive the push — pickCharacters normalizes it
+    expect(Object.keys(pushedPayload.characters ?? {}).length).toBeGreaterThan(0)
+    expect(pushedPayload.roomCode).toBe('dnd-abc123')
+  })
+
+  it('push payload defaults characters:{} and roomCode:null when props absent (backward-compat)', async () => {
+    const { rerender } = renderHook(props => useSessionPersistence(props), {
+      initialProps: baseProps({ isLoading: true }),
+      // No characters or roomCode props — existing SP callers
+    })
+    await act(async () => {})
+
+    rerender(baseProps({ isLoading: false, messages: [{ role: 'assistant', content: 'x' }] }))
+    await waitFor(() => expect(saveSyncSession).toHaveBeenCalledTimes(1))
+
+    const pushedPayload = saveSyncSession.mock.calls[0][0]
+    expect(pushedPayload.characters).toEqual({})
+    expect(pushedPayload.roomCode).toBeNull()
+  })
+})

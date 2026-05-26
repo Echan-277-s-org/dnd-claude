@@ -5,7 +5,7 @@ import CharacterPanel from './CharacterPanel'
 import PartyStrip from './PartyStrip'
 import DiceChip from './DiceChip'
 import { getGenre } from '../lib/genres'
-import { serializeSession, deserializeSession, getLanHost, toMarkdown, sessionFileName, markOrphanedDice, applyPartyUpdate, makeRoomCode } from '../lib/session'
+import { serializeSession, deserializeSession, getLanHost, toMarkdown, sessionFileName, markOrphanedDice, applyPartyUpdate, makeRoomCode, buildPlayersForPrompt } from '../lib/session'
 import { useSessionPersistence } from '../hooks/useSessionPersistence'
 import { useWebSocket } from '../hooks/useWebSocket'
 import { isActiveTurn } from '../lib/turnStateMachine.js'
@@ -246,10 +246,36 @@ export default function Chat({
   // (hooks must not be conditional), but it does nothing when disabled.
   const isMultiplayer = !!(roomCode && displayName)
 
+  // mp-character-sync: derive the static SyncedCharacter subset from the full local
+  // character. Only the fields defined in the locked contract are forwarded; all
+  // other local fields (hpCurrent, initiative, speed, conditions) stay local.
+  // When the character prop is absent/null, joinCharacter is null and the server
+  // will use DEFAULT_CHARACTER.
+  const joinCharacter = character
+    ? {
+        name: character.name ?? 'Adventurer',
+        race: character.race ?? 'Human',
+        charClass: character.charClass ?? 'Fighter',
+        abilities: character.abilities
+          ? {
+              STR: character.abilities.STR ?? 10,
+              DEX: character.abilities.DEX ?? 10,
+              CON: character.abilities.CON ?? 10,
+              INT: character.abilities.INT ?? 10,
+              WIS: character.abilities.WIS ?? 10,
+              CHA: character.abilities.CHA ?? 10,
+            }
+          : { STR: 10, DEX: 10, CON: 10, INT: 10, WIS: 10, CHA: 10 },
+        ac: character.ac ?? 10,
+        hpMax: character.hpMax ?? 10,
+      }
+    : null
+
   const { readyState: wsReadyState, send: wsSend, shouldPoll } = useWebSocket({
     roomCode: roomCode ?? '',
     sessionId: campaign.sessionId,
     displayName: displayName ?? '',
+    joinCharacter: isMultiplayer ? joinCharacter : null,
     onMessage: handleWsMessage,
     onSessionState: handleSessionState,
     enabled: isMultiplayer,
@@ -271,6 +297,11 @@ export default function Chat({
   const { onNewSession, onSessionState, onSessionUpdate } = useSessionPersistence({
     campaign, messages, setMessages, sessionLog, setSessionLog, party, setParty, isLoading,
     socketConnected: isMultiplayer && wsReadyState === WebSocket.OPEN,
+    // D-01: thread characters + roomCode into the push payload so a SP-with-sync PUT
+    // does not strip them. In SP (roomCode=null), characters is {} (server-authoritative
+    // in MP; client never holds the full map as local React state).
+    characters: {}, // characters are server-authoritative; the client doesn't hold them
+    roomCode: roomCode ?? null,
   })
 
   // Wire the session persistence callbacks to the WS handler via refs so the
@@ -321,7 +352,23 @@ export default function Chat({
     if (!isLoading) textareaRef.current?.focus()
   }, [isLoading])
 
-  const systemPrompt = buildSystemPrompt(campaign)
+  // Phase 4: pass per-player character data to the DM prompt so it can reference
+  // stats, HP, and AC. Build a characters-map from the local `character` prop
+  // (the static synced subset keyed by the character's own name), then derive
+  // the PlayerEntry[] with live HP from the current party array.
+  // When character is absent or party is empty, players=[] → prompt unchanged.
+  const localCharactersMap = character
+    ? { [character.name ?? 'Adventurer']: {
+        name: character.name ?? 'Adventurer',
+        race: character.race ?? 'Human',
+        charClass: character.charClass ?? 'Fighter',
+        abilities: character.abilities ?? { STR: 10, DEX: 10, CON: 10, INT: 10, WIS: 10, CHA: 10 },
+        ac: character.ac ?? 10,
+        hpMax: character.hpMax ?? 10,
+      } }
+    : {}
+  const players = buildPlayersForPrompt(localCharactersMap, party)
+  const systemPrompt = buildSystemPrompt({ ...campaign, players })
 
   // ─── Post-stream structured-block apply ─────────────────────────────────────
   // Shared by both the single-player finally block and the multiplayer dm:done handler.

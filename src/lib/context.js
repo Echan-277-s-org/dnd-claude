@@ -11,8 +11,11 @@
 // buildSystemPrompt
 // ─────────────────────────────────────────────────────────────────────────────
 
-export function buildSystemPrompt({ name, details, context } = {}) {
-  return `You are an expert, creative Dungeon Master running a Dungeons & Dragons 5th Edition campaign${name ? ` called "${name}"` : ''}.${details ? `\n\nCampaign context: ${details}` : ''}${context ? `\n\n---\nCampaign notes (use this as your knowledge of prior events, NPCs, and world state):\n\n${context}\n---` : ''}
+import { buildPlayerSection } from './session.js'
+
+export function buildSystemPrompt({ name, details, context, players } = {}) {
+  const playerSection = players?.length ? buildPlayerSection(players) : ''
+  const body = `You are an expert, creative Dungeon Master running a Dungeons & Dragons 5th Edition campaign${name ? ` called "${name}"` : ''}.${details ? `\n\nCampaign context: ${details}` : ''}${context ? `\n\n---\nCampaign notes (use this as your knowledge of prior events, NPCs, and world state):\n\n${context}\n---` : ''}
 
 CONTINUITY: You must track and build on everything established in this session — character names, locations named, decisions made, NPCs encountered, items found, relationships formed. Reference prior events naturally. Never contradict established facts unless there is a deliberate narrative reason.
 
@@ -62,7 +65,8 @@ You press flat against the cold stone, but a loose buckle scrapes the wall and t
 \`\`\`
 \`\`\`verdict
 {"skill":"STEALTH","dc":15,"roll":17,"result":"FAIL"}
-\`\`\`
+\`\`\``
+  return `${body}${playerSection ? '\n\n' + playerSection : ''}
 
 Stay in the DM role. Make every choice feel meaningful. Keep the adventure moving.`
 }

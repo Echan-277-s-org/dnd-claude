@@ -403,8 +403,9 @@ describe('Phase 1 — WebSocket /ws endpoint', () => {
       roomCode: ROOM, sessionId: SESSION, displayName: 'Riley', lastTurnSequence: 0
     })
 
-    // Set up to collect the next message ws1 receives.
-    const presencePromise = new Promise(r => ws1.once('message', d => r(JSON.parse(d))))
+    // Use waitForMessage (predicate-based) instead of once('message') because the
+    // G-C7 new-joiner broadcast sends a session:state to ws1 BEFORE presence:update.
+    const presencePromise = waitForMessage(ws1, m => m.type === 'presence:update')
 
     // Second client joins — should trigger a presence:update to ws1.
     const { ws: ws2 } = await connectClient(ctx.wsBase, {
@@ -1620,11 +1621,12 @@ describe('Phase 7 — HTTP endpoints still pass against updated schema (R2 regre
 
     const got = await (await fetch(`${ctx.base}/session/${ID}`)).json()
     expect(got.sessionId).toBe(ID)
-    // serializeSession fills safe v2 defaults for absent fields
+    // serializeSession fills safe v3 defaults for absent fields
     expect(got.phase).toBe('free-roam')
     expect(got.roomCode).toBeNull()
     expect(got.turnSequence).toBe(0)
-    expect(got.schemaVersion).toBe(2)
+    // schema is always bumped to the current SCHEMA_VERSION (now 3)
+    expect(got.schemaVersion).toBe(3)
   })
 
   // ── (3) 409 LWW guard still applies to stale PUTs in v2 schema ───────────────
@@ -1698,8 +1700,8 @@ describe('Phase 7 — HTTP endpoints still pass against updated schema (R2 regre
     const files = await readdir(ctx.dir)
     expect(files).toContain(`${ID}.md`)
 
-    // v2 schema returned even for a v1-shaped write (schema is always bumped)
-    expect(got.schemaVersion).toBe(2)
+    // v3 schema returned even for a v1-shaped write (schema is always bumped to current SCHEMA_VERSION)
+    expect(got.schemaVersion).toBe(3)
     expect(got.phase).toBe('free-roam')   // default — no phase in body
     expect(got.turnSequence).toBe(0)      // default — no turnSequence in body
   })
@@ -1719,4 +1721,948 @@ describe('Phase 7 — HTTP endpoints still pass against updated schema (R2 regre
     // All three are active (no .skip) and cover the dual-authority gate exhaustively.
     expect(true).toBe(true) // pointer test — real assertions are in the hook unit test file
   })
+})
+
+// ─── Phase 2+3 (mp-character-sync) — per-player character join/store/broadcast ─
+//
+// Tests the joinCharacter WS wire: the server sanitizes joinCharacter at join time,
+// stores it in room.characters, and includes it in session:state for all clients.
+// Also verifies: forged character is clamped; late joiner (G-C7) receives all
+// characters; rejoin restores the stored character without overwriting; and the
+// HP/conditions mutable channel still flows on session:update.
+
+describe('mp-character-sync — join handler stores and broadcasts characters', () => {
+  let ctx
+
+  let csSeq = 0
+  function freshIds() {
+    csSeq += 1
+    const hex = String(csSeq).padStart(8, '0')
+    return { sessionId: `${hex}-0000-0000-0000-000000000CS0`, roomCode: `dnd-cs${hex}` }
+  }
+
+  beforeAll(async () => {
+    ctx = await startTestServer()
+  })
+  afterAll(async () => {
+    if (typeof ctx.server.closeAllConnections === 'function') {
+      ctx.server.closeAllConnections()
+    }
+    await new Promise(r => ctx.server.close(r))
+    await cleanupDir(ctx.dir)
+  })
+
+  it('join with a valid joinCharacter stores it in session:state characters map', async () => {
+    const { sessionId, roomCode } = freshIds()
+    const joinCharacter = {
+      name: 'Aria Swiftwind',
+      race: 'Elf',
+      charClass: 'Ranger',
+      abilities: { STR: 12, DEX: 18, CON: 14, INT: 13, WIS: 16, CHA: 10 },
+      ac: 15,
+      hpMax: 38,
+    }
+
+    const { ws, firstMessage } = await connectClient(ctx.wsBase, {
+      roomCode, sessionId, displayName: 'Aria', lastTurnSequence: 0,
+      joinCharacter,
+    })
+
+    expect(firstMessage.type).toBe('session:state')
+    expect(firstMessage.payload.characters).toBeDefined()
+    expect(firstMessage.payload.characters['Aria']).toBeDefined()
+    const stored = firstMessage.payload.characters['Aria']
+    expect(stored.name).toBe('Aria Swiftwind')
+    expect(stored.race).toBe('Elf')
+    expect(stored.charClass).toBe('Ranger')
+    expect(stored.abilities.DEX).toBe(18)
+    expect(stored.ac).toBe(15)
+    expect(stored.hpMax).toBe(38)
+
+    ws.close()
+  })
+
+  it('join with null joinCharacter stores DEFAULT_CHARACTER in room.characters', async () => {
+    const { sessionId, roomCode } = freshIds()
+
+    const { ws, firstMessage } = await connectClient(ctx.wsBase, {
+      roomCode, sessionId, displayName: 'DefaultHero', lastTurnSequence: 0,
+      // No joinCharacter — server should use DEFAULT_CHARACTER.
+    })
+
+    expect(firstMessage.type).toBe('session:state')
+    const stored = firstMessage.payload.characters['DefaultHero']
+    expect(stored).toBeDefined()
+    // DEFAULT_CHARACTER defaults from server/sync-server.mjs
+    expect(typeof stored.name).toBe('string')
+    expect(typeof stored.race).toBe('string')
+    expect(typeof stored.charClass).toBe('string')
+    expect(typeof stored.ac).toBe('number')
+    expect(typeof stored.hpMax).toBe('number')
+
+    ws.close()
+  })
+
+  it('FORGED joinCharacter (STR:999, ac:NaN, hpMax:9999, extra fields) is clamped/stripped', async () => {
+    const { sessionId, roomCode } = freshIds()
+    const forgedCharacter = {
+      name: '<script>alert(1)</script>',
+      race: 'Human',
+      charClass: 'Fighter',
+      abilities: { STR: 999, DEX: -5, CON: 10, INT: 10, WIS: 10, CHA: 10 },
+      ac: NaN,
+      hpMax: 9999,
+      // Extra fields that must be stripped.
+      OLLAMA_HOST: 'http://evil.example.com',
+      injected: 'malicious',
+    }
+
+    const { ws, firstMessage } = await connectClient(ctx.wsBase, {
+      roomCode, sessionId, displayName: 'Attacker', lastTurnSequence: 0,
+      joinCharacter: forgedCharacter,
+    })
+
+    expect(firstMessage.type).toBe('session:state')
+    const stored = firstMessage.payload.characters['Attacker']
+    expect(stored).toBeDefined()
+
+    // STR: 999 → clamped to 20 (clampInt uses [3,20]).
+    expect(stored.abilities.STR).toBe(20)
+    // DEX: -5 → clamped to 3 (clampInt clamps to minimum 3).
+    expect(stored.abilities.DEX).toBe(3)
+    // ac: NaN → fallback 10 (rangeInt returns fallback for NaN).
+    expect(stored.ac).toBe(10)
+    // hpMax: 9999 → fallback 10 (rangeInt [1,999] → 9999 out of range → fallback).
+    expect(stored.hpMax).toBe(10)
+    // Extra keys must not appear.
+    expect(stored).not.toHaveProperty('OLLAMA_HOST')
+    expect(stored).not.toHaveProperty('injected')
+    // Name injection chars stripped.
+    expect(stored.name).not.toContain('<')
+    expect(stored.name).not.toContain('>')
+
+    ws.close()
+  })
+
+  it('session:state includes the characters map with all existing players (G-C7 late joiner)', async () => {
+    const { sessionId, roomCode } = freshIds()
+
+    // Player 1 joins with a character.
+    const char1 = {
+      name: 'Theron',
+      race: 'Human',
+      charClass: 'Fighter',
+      abilities: { STR: 16, DEX: 12, CON: 14, INT: 10, WIS: 10, CHA: 10 },
+      ac: 16,
+      hpMax: 45,
+    }
+    const { ws: ws1 } = await connectClient(ctx.wsBase, {
+      roomCode, sessionId, displayName: 'Theron', lastTurnSequence: 0,
+      joinCharacter: char1,
+    })
+
+    // Player 2 joins with a different character.
+    const char2 = {
+      name: 'Wren',
+      race: 'Halfling',
+      charClass: 'Rogue',
+      abilities: { STR: 8, DEX: 18, CON: 12, INT: 14, WIS: 14, CHA: 16 },
+      ac: 14,
+      hpMax: 32,
+    }
+    const { ws: ws2 } = await connectClient(ctx.wsBase, {
+      roomCode, sessionId, displayName: 'Wren', lastTurnSequence: 0,
+      joinCharacter: char2,
+    })
+
+    // Late joiner (3rd player) — must receive all 3 characters in session:state.
+    const char3 = {
+      name: 'Sage',
+      race: 'Elf',
+      charClass: 'Wizard',
+      abilities: { STR: 8, DEX: 14, CON: 12, INT: 18, WIS: 16, CHA: 12 },
+      ac: 12,
+      hpMax: 28,
+    }
+    const { ws: ws3, firstMessage } = await connectClient(ctx.wsBase, {
+      roomCode, sessionId, displayName: 'Sage', lastTurnSequence: 0,
+      joinCharacter: char3,
+    })
+
+    expect(firstMessage.type).toBe('session:state')
+    const chars = firstMessage.payload.characters
+    expect(chars).toBeDefined()
+
+    // All 3 players' characters must be present and non-null.
+    expect(chars['Theron']).toBeDefined()
+    expect(chars['Theron'].name).toBe('Theron')
+    expect(chars['Wren']).toBeDefined()
+    expect(chars['Wren'].name).toBe('Wren')
+    expect(chars['Sage']).toBeDefined()
+    expect(chars['Sage'].name).toBe('Sage')
+
+    ws1.close()
+    ws2.close()
+    ws3.close()
+  })
+
+  it('G-C7: existing clients receive session:state with new joiner character when a new player joins', async () => {
+    const { sessionId, roomCode } = freshIds()
+
+    // First client joins.
+    const char1 = {
+      name: 'Kira',
+      race: 'Dwarf',
+      charClass: 'Paladin',
+      abilities: { STR: 16, DEX: 10, CON: 16, INT: 10, WIS: 14, CHA: 12 },
+      ac: 18,
+      hpMax: 50,
+    }
+    const { ws: ws1 } = await connectClient(ctx.wsBase, {
+      roomCode, sessionId, displayName: 'Kira', lastTurnSequence: 0,
+      joinCharacter: char1,
+    })
+
+    // Set up to receive the G-C7 session:state broadcast.
+    const statePromise = waitForMessage(ws1, m => m.type === 'session:state')
+
+    // Second client joins — ws1 should receive session:state containing both characters.
+    const char2 = {
+      name: 'Lyra',
+      race: 'Half-Elf',
+      charClass: 'Bard',
+      abilities: { STR: 10, DEX: 14, CON: 12, INT: 14, WIS: 12, CHA: 18 },
+      ac: 13,
+      hpMax: 35,
+    }
+    const { ws: ws2 } = await connectClient(ctx.wsBase, {
+      roomCode, sessionId, displayName: 'Lyra', lastTurnSequence: 0,
+      joinCharacter: char2,
+    })
+
+    const stateMsg = await statePromise
+    expect(stateMsg.type).toBe('session:state')
+    const chars = stateMsg.payload.characters
+    expect(chars).toBeDefined()
+    // ws1 must now see both its own character and Lyra's.
+    expect(chars['Kira']).toBeDefined()
+    expect(chars['Lyra']).toBeDefined()
+    expect(chars['Lyra'].name).toBe('Lyra')
+    expect(chars['Lyra'].charClass).toBe('Bard')
+
+    ws1.close()
+    ws2.close()
+  })
+
+  it('rejoin via NAME_TAKEN path restores the stored character (not a fresh DEFAULT)', async () => {
+    const { sessionId, roomCode } = freshIds()
+
+    const char = {
+      name: 'Dorin Ironforge',
+      race: 'Dwarf',
+      charClass: 'Cleric',
+      abilities: { STR: 14, DEX: 10, CON: 16, INT: 10, WIS: 18, CHA: 12 },
+      ac: 17,
+      hpMax: 48,
+    }
+
+    // Initial join.
+    const { ws: ws1 } = await connectClient(ctx.wsBase, {
+      roomCode, sessionId, displayName: 'Dorin', lastTurnSequence: 0,
+      joinCharacter: char,
+    })
+
+    // Close the socket (simulates disconnect).
+    ws1.close()
+    // Wait for the socket close to propagate to the server.
+    await new Promise(r => setTimeout(r, 100))
+
+    // Rejoin with a DIFFERENT joinCharacter — the server must preserve the original.
+    const differentChar = {
+      name: 'Imposter',
+      race: 'Human',
+      charClass: 'Fighter',
+      abilities: { STR: 10, DEX: 10, CON: 10, INT: 10, WIS: 10, CHA: 10 },
+      ac: 10,
+      hpMax: 10,
+    }
+    const { ws: ws2, firstMessage } = await connectClient(ctx.wsBase, {
+      roomCode, sessionId, displayName: 'Dorin', lastTurnSequence: 0,
+      joinCharacter: differentChar,
+    })
+
+    expect(firstMessage.type).toBe('session:state')
+    const stored = firstMessage.payload.characters['Dorin']
+    expect(stored).toBeDefined()
+    // Must be the ORIGINAL character, not the imposter's values.
+    expect(stored.name).toBe('Dorin Ironforge')
+    expect(stored.race).toBe('Dwarf')
+    expect(stored.charClass).toBe('Cleric')
+    expect(stored.abilities.WIS).toBe(18)
+    expect(stored.hpMax).toBe(48)
+
+    ws2.close()
+  })
+
+  it('G-C7 end-to-end: all 3 clients receive session:state with all 3 characters when 3rd joins', async () => {
+    // Phase 6 integration: verifies the G-C7 gate from all client perspectives,
+    // not just the joiner. ws1 and ws2 (existing) AND ws3 (late joiner) must all
+    // see the complete characters map with none null/missing.
+    const { sessionId, roomCode } = freshIds()
+
+    // Player 1 joins.
+    const char1 = { name: 'Brennan', race: 'Human', charClass: 'Barbarian',
+      abilities: { STR: 18, DEX: 12, CON: 16, INT: 8, WIS: 10, CHA: 10 }, ac: 13, hpMax: 52 }
+    const { ws: ws1 } = await connectClient(ctx.wsBase, {
+      roomCode, sessionId, displayName: 'Brennan', lastTurnSequence: 0, joinCharacter: char1,
+    })
+    // Drain any immediate post-join messages (presence:update) before setting listeners.
+    await new Promise(r => setTimeout(r, 50))
+
+    // Player 2 joins — ws1 gets session:state with 2 characters.
+    const char2 = { name: 'Faelan', race: 'Elf', charClass: 'Druid',
+      abilities: { STR: 10, DEX: 14, CON: 12, INT: 12, WIS: 18, CHA: 14 }, ac: 14, hpMax: 35 }
+    const { ws: ws2 } = await connectClient(ctx.wsBase, {
+      roomCode, sessionId, displayName: 'Faelan', lastTurnSequence: 0, joinCharacter: char2,
+    })
+    // Wait for the session:state that ws1 receives (broadcast when ws2 joins).
+    await waitForMessage(ws1, m => m.type === 'session:state', 5000)
+    // Drain remaining messages so listeners are clean before ws3 joins.
+    await new Promise(r => setTimeout(r, 50))
+
+    // Player 3 (late joiner) — set up listeners on ws1 and ws2 BEFORE ws3 connects.
+    const ws1State3 = waitForMessage(ws1, m => m.type === 'session:state', 5000)
+    const ws2State3 = waitForMessage(ws2, m => m.type === 'session:state', 5000)
+
+    const char3 = { name: 'Riona', race: 'Half-Orc', charClass: 'Paladin',
+      abilities: { STR: 16, DEX: 10, CON: 14, INT: 10, WIS: 14, CHA: 14 }, ac: 18, hpMax: 48 }
+    const { ws: ws3, firstMessage: ws3State } = await connectClient(ctx.wsBase, {
+      roomCode, sessionId, displayName: 'Riona', lastTurnSequence: 0, joinCharacter: char3,
+    })
+
+    // ws3 (late joiner) must see all 3 characters in its join session:state.
+    expect(ws3State.type).toBe('session:state')
+    const c3 = ws3State.payload.characters
+    expect(c3['Brennan']).toBeDefined()
+    expect(c3['Faelan']).toBeDefined()
+    expect(c3['Riona']).toBeDefined()
+    expect(Object.values(c3).every(c => c !== null && c !== undefined)).toBe(true)
+
+    // ws1 (existing) must receive session:state with all 3 characters.
+    const ws1Msg = await ws1State3
+    expect(ws1Msg.type).toBe('session:state')
+    const c1 = ws1Msg.payload.characters
+    expect(c1['Brennan']).toBeDefined()
+    expect(c1['Faelan']).toBeDefined()
+    expect(c1['Riona']).toBeDefined()
+
+    // ws2 (existing) must receive session:state with all 3 characters.
+    const ws2Msg = await ws2State3
+    expect(ws2Msg.type).toBe('session:state')
+    const c2 = ws2Msg.payload.characters
+    expect(c2['Brennan']).toBeDefined()
+    expect(c2['Faelan']).toBeDefined()
+    expect(c2['Riona']).toBeDefined()
+
+    ws1.close()
+    ws2.close()
+    ws3.close()
+  }, 20000)
+
+  it('mid-session party-row HP/conditions still broadcast on session:update after character sync', async () => {
+    // Verify that the existing party-row mutable channel is unaffected:
+    // after a character join, a DM action that updates hpPct is broadcast in session:update.
+    let prevOllamaHost = process.env.OLLAMA_HOST
+    const mockOllama = await startMockOllama({
+      chunks: [
+        'The goblin strikes! ',
+        '\n```party\n[{"name":"Mira","role":"Ranger","hpPct":65,"isActive":true}]\n```',
+      ],
+    })
+    process.env.OLLAMA_HOST = mockOllama.host
+
+    try {
+      const { sessionId, roomCode } = freshIds()
+      const char = {
+        name: 'Mira',
+        race: 'Half-Elf',
+        charClass: 'Ranger',
+        abilities: { STR: 12, DEX: 16, CON: 14, INT: 12, WIS: 14, CHA: 14 },
+        ac: 14,
+        hpMax: 40,
+      }
+
+      const { ws } = await connectClient(ctx.wsBase, {
+        roomCode, sessionId, displayName: 'Mira', lastTurnSequence: 0,
+        joinCharacter: char,
+      })
+
+      // Wait for the session:update after DM action that carries updated hpPct.
+      const updatePromise = waitForMessage(
+        ws,
+        m => m.type === 'session:update' &&
+          Array.isArray(m.payload?.party) &&
+          m.payload.party.some(p => p.name === 'Mira' && p.hpPct === 65)
+      )
+
+      ws.send(JSON.stringify({
+        type: 'action',
+        roomCode,
+        payload: { content: 'I dodge the goblin.', type: 'user' },
+      }))
+
+      const update = await updatePromise
+      expect(update.type).toBe('session:update')
+      const miraRow = update.payload.party.find(p => p.name === 'Mira')
+      expect(miraRow).toBeDefined()
+      // hpPct updated by the DM party block.
+      expect(miraRow.hpPct).toBe(65)
+      // characters map is NOT in session:update (only in session:state).
+      expect(update.payload.characters).toBeUndefined()
+
+      ws.close()
+    } finally {
+      if (prevOllamaHost === undefined) delete process.env.OLLAMA_HOST
+      else process.env.OLLAMA_HOST = prevOllamaHost
+      mockOllama.destroy()
+      await new Promise(r => mockOllama.server.close(r))
+    }
+  }, 15000)
+})
+
+// ─── Phase 5 — Server DM-proxy prompt assembly + mid-session HP persistence ───
+//
+// Tests for Phase 5 of the per-player character sync feature:
+//   (a) Server assembles `players` from room.characters + room.party and passes
+//       them to engine.buildSystemPrompt → the DM sees class/stats/current HP.
+//   (b) Forged character reaches the DM as clamped values (via sanitizeCharacter
+//       at join time, then buildPlayersForPrompt reading the sanitized values).
+//   (c) Mid-session HP: a DM party-block update lowering hpPct (+ adding a
+//       condition) persists across session:update, .md save/reload, and disconnect→rejoin.
+//   (d) Static characters map is unchanged by a party-block HP update.
+//
+// All tests use a mock Ollama that captures the system prompt so assertions can
+// be made on the assembled content without a live model.
+
+import { buildPlayersForPrompt } from '../src/lib/session.js'
+import { sanitizeCharacter } from './sync-server.mjs'
+
+describe('Phase 5 — buildPlayersForPrompt: pure unit assertions', () => {
+  // Verify the helper that feeds buildSystemPrompt produces the expected shape.
+
+  it('returns [] when characters is empty', () => {
+    expect(buildPlayersForPrompt({}, [])).toEqual([])
+    expect(buildPlayersForPrompt(null, [])).toEqual([])
+  })
+
+  it('merges characters with party row for hpCurrent derivation', () => {
+    const characters = {
+      Theron: {
+        name: 'Theron',
+        race: 'Human',
+        charClass: 'Fighter',
+        abilities: { STR: 16, DEX: 12, CON: 14, INT: 10, WIS: 10, CHA: 10 },
+        ac: 16,
+        hpMax: 45,
+      },
+    }
+    // Party row with 60% HP → hpCurrent = round(0.60 * 45) = 27
+    const party = [{ id: 'p1', name: 'Theron', role: 'Fighter', hpPct: 60, isActive: false }]
+    const players = buildPlayersForPrompt(characters, party)
+    expect(players).toHaveLength(1)
+    const p = players[0]
+    expect(p.name).toBe('Theron')
+    expect(p.charClass).toBe('Fighter')
+    expect(p.race).toBe('Human')
+    expect(p.hpMax).toBe(45)
+    expect(p.hpCurrent).toBe(Math.round(0.60 * 45))
+    expect(p.ac).toBe(16)
+    expect(p.abilities.STR).toBe(16)
+  })
+
+  it('carries conditions from the party row', () => {
+    const characters = {
+      Wren: {
+        name: 'Wren',
+        race: 'Halfling',
+        charClass: 'Rogue',
+        abilities: { STR: 8, DEX: 18, CON: 12, INT: 14, WIS: 14, CHA: 16 },
+        ac: 14,
+        hpMax: 32,
+      },
+    }
+    const party = [
+      { id: 'p2', name: 'Wren', role: 'Rogue', hpPct: 50, isActive: true, conditions: ['Poisoned', 'Frightened'] },
+    ]
+    const players = buildPlayersForPrompt(characters, party)
+    expect(players[0].conditions).toEqual(['Poisoned', 'Frightened'])
+  })
+
+  it('falls back to hpMax when character has no matching party row (100% HP assumed)', () => {
+    const characters = {
+      Sage: {
+        name: 'Sage',
+        race: 'Elf',
+        charClass: 'Wizard',
+        abilities: { STR: 8, DEX: 14, CON: 12, INT: 18, WIS: 16, CHA: 12 },
+        ac: 12,
+        hpMax: 28,
+      },
+    }
+    // No matching party row → hpPct defaults to 100 → hpCurrent = hpMax
+    const players = buildPlayersForPrompt(characters, [])
+    expect(players[0].hpCurrent).toBe(28)
+    expect(players[0].conditions).toEqual([])
+  })
+
+  it('forged character (STR:999, hpMax:9999) via sanitizeCharacter stores clamped → prompt has clamped values', () => {
+    // Simulate what sanitizeCharacter produces for a forged join payload.
+    // This is the same value that would be stored in room.characters after join.
+    const forged = {
+      name: 'Attacker',
+      race: 'Human',
+      charClass: 'Fighter',
+      abilities: { STR: 999, DEX: 10, CON: 10, INT: 10, WIS: 10, CHA: 10 },
+      ac: 5,
+      hpMax: 9999,
+    }
+    const sanitized = sanitizeCharacter(forged)
+    // Store the sanitized value in a mock characters map.
+    const characters = { Attacker: sanitized }
+    const party = [{ id: 'px', name: 'Attacker', role: 'Fighter', hpPct: 100, isActive: false }]
+    const players = buildPlayersForPrompt(characters, party)
+    expect(players[0].abilities.STR).toBeLessThanOrEqual(20)
+    // hpMax:9999 → out of [1,999] → rangeInt fallback=10
+    expect(players[0].hpMax).toBe(10)
+    expect(players[0].hpCurrent).toBe(10)
+  })
+})
+
+describe('Phase 5 — server DM-proxy assembles players in system prompt', () => {
+  let ctx
+  let prevOllamaHost
+
+  let p5csSeq = 0
+  function freshIds() {
+    p5csSeq += 1
+    const hex = String(p5csSeq).padStart(8, '0')
+    return { sessionId: `${hex}-0000-0000-0000-P5CS000000A0`, roomCode: `dnd-p5cs${hex}` }
+  }
+
+  beforeEach(async () => {
+    prevOllamaHost = process.env.OLLAMA_HOST
+    ctx = await startTestServer()
+  })
+  afterEach(async () => {
+    if (prevOllamaHost === undefined) delete process.env.OLLAMA_HOST
+    else process.env.OLLAMA_HOST = prevOllamaHost
+    if (typeof ctx.server.closeAllConnections === 'function') ctx.server.closeAllConnections()
+    await new Promise(r => ctx.server.close(r))
+    if (ctx.mockOllama) {
+      try { ctx.mockOllama.destroy() } catch { /* already destroyed */ }
+      await new Promise(r => ctx.mockOllama.server.close(r)).catch(() => {})
+    }
+    await cleanupDir(ctx.dir)
+  })
+
+  it('system prompt sent to Ollama contains the player class, race, and current HP', async () => {
+    ctx.mockOllama = await startMockOllama({ chunks: ['The dungeon awaits.'] })
+    process.env.OLLAMA_HOST = ctx.mockOllama.host
+    const { sessionId, roomCode } = freshIds()
+
+    const char = {
+      name: 'Theron',
+      race: 'Human',
+      charClass: 'Fighter',
+      abilities: { STR: 16, DEX: 12, CON: 14, INT: 10, WIS: 10, CHA: 10 },
+      ac: 16,
+      hpMax: 45,
+    }
+
+    const { ws } = await connectClient(ctx.wsBase, {
+      roomCode, sessionId, displayName: 'Theron', lastTurnSequence: 0,
+      joinCharacter: char,
+    })
+
+    // Wait for the DM action to complete so the mock captures the request.
+    const done = waitForMessage(ws, m => m.type === 'dm:done')
+    ws.send(JSON.stringify({
+      type: 'action',
+      roomCode,
+      payload: { content: 'I enter the dungeon.', type: 'user' },
+    }))
+    await done
+
+    const body = ctx.mockOllama.getLastBody()
+    expect(body).toBeDefined()
+    const systemContent = body.messages[0].content
+
+    // The "Player Characters:" section must be present with class and race.
+    expect(systemContent).toMatch(/Player Characters:/i)
+    expect(systemContent).toContain('Fighter')
+    expect(systemContent).toContain('Human')
+    // HP must be present in "cur/max" format (e.g. "45/45" at full health).
+    expect(systemContent).toMatch(/HP\s+\d+\/45/)
+    // AC must be present.
+    expect(systemContent).toContain('AC 16')
+
+    ws.close()
+  }, 15000)
+
+  it('two players in the same room both appear in the DM system prompt', async () => {
+    ctx.mockOllama = await startMockOllama({ chunks: ['Both heroes stand ready.'] })
+    process.env.OLLAMA_HOST = ctx.mockOllama.host
+    const { sessionId, roomCode } = freshIds()
+
+    const charTheron = {
+      name: 'Theron',
+      race: 'Human',
+      charClass: 'Fighter',
+      abilities: { STR: 16, DEX: 12, CON: 14, INT: 10, WIS: 10, CHA: 10 },
+      ac: 16,
+      hpMax: 45,
+    }
+    const charWren = {
+      name: 'Wren',
+      race: 'Halfling',
+      charClass: 'Rogue',
+      abilities: { STR: 8, DEX: 18, CON: 12, INT: 14, WIS: 14, CHA: 16 },
+      ac: 14,
+      hpMax: 32,
+    }
+
+    const { ws: wsTheron } = await connectClient(ctx.wsBase, {
+      roomCode, sessionId, displayName: 'Theron', lastTurnSequence: 0,
+      joinCharacter: charTheron,
+    })
+    const { ws: wsWren } = await connectClient(ctx.wsBase, {
+      roomCode, sessionId, displayName: 'Wren', lastTurnSequence: 0,
+      joinCharacter: charWren,
+    })
+
+    const done = waitForMessage(wsTheron, m => m.type === 'dm:done')
+    wsTheron.send(JSON.stringify({
+      type: 'action',
+      roomCode,
+      payload: { content: 'We scout the area.', type: 'user' },
+    }))
+    await done
+
+    const body = ctx.mockOllama.getLastBody()
+    const systemContent = body.messages[0].content
+
+    expect(systemContent).toMatch(/Player Characters:/i)
+    // Both characters' classes must appear.
+    expect(systemContent).toContain('Fighter')
+    expect(systemContent).toContain('Rogue')
+
+    wsTheron.close()
+    wsWren.close()
+  }, 15000)
+
+  it('forged joinCharacter reaches the DM system prompt as clamped values (STR≤20, hpMax≤999)', async () => {
+    ctx.mockOllama = await startMockOllama({ chunks: ['The attacker enters.'] })
+    process.env.OLLAMA_HOST = ctx.mockOllama.host
+    const { sessionId, roomCode } = freshIds()
+
+    const forgedChar = {
+      name: 'Attacker',
+      race: 'Human',
+      charClass: 'Fighter',
+      abilities: { STR: 999, DEX: 10, CON: 10, INT: 10, WIS: 10, CHA: 10 },
+      ac: 5,
+      hpMax: 9999,
+      injected: 'payload',
+      OLLAMA_HOST: 'http://evil.example.com',
+    }
+
+    const { ws } = await connectClient(ctx.wsBase, {
+      roomCode, sessionId, displayName: 'Attacker', lastTurnSequence: 0,
+      joinCharacter: forgedChar,
+    })
+
+    const done = waitForMessage(ws, m => m.type === 'dm:done')
+    ws.send(JSON.stringify({
+      type: 'action',
+      roomCode,
+      payload: { content: 'I attack!', type: 'user' },
+    }))
+    await done
+
+    const body = ctx.mockOllama.getLastBody()
+    const systemContent = body.messages[0].content
+
+    // Must contain "Player Characters:" section.
+    expect(systemContent).toMatch(/Player Characters:/i)
+    // STR 999 must NOT appear — it was clamped to 20.
+    expect(systemContent).not.toContain('STR 999')
+    expect(systemContent).not.toContain('STR 999(')
+    // hpMax 9999 must NOT appear — it was clamped to 10 (rangeInt fallback).
+    expect(systemContent).not.toContain('9999')
+    // The clamped HP (10/10 at full health) must appear instead.
+    expect(systemContent).toMatch(/HP\s+\d+\/10/)
+    // STR clamped to 20 appears somewhere in stats.
+    expect(systemContent).toMatch(/STR 20/)
+
+    ws.close()
+  }, 15000)
+})
+
+describe('Phase 5 — mid-session HP persistence', () => {
+  let ctx
+  let prevOllamaHost
+
+  let p5hpSeq = 0
+  function freshIds() {
+    p5hpSeq += 1
+    const hex = String(p5hpSeq).padStart(8, '0')
+    return { sessionId: `${hex}-0000-0000-0000-P5HP0000000B`, roomCode: `dnd-p5hp${hex}` }
+  }
+
+  const openClients = new Set()
+
+  async function hpConnect(wsBase, joinPayload) {
+    const result = await connectClient(wsBase, joinPayload)
+    openClients.add(result.ws)
+    return result
+  }
+
+  beforeEach(async () => {
+    prevOllamaHost = process.env.OLLAMA_HOST
+    ctx = await startTestServer()
+    openClients.clear()
+  })
+  afterEach(async () => {
+    for (const ws of openClients) {
+      try { ws.terminate() } catch { /* already gone */ }
+    }
+    openClients.clear()
+    if (prevOllamaHost === undefined) delete process.env.OLLAMA_HOST
+    else process.env.OLLAMA_HOST = prevOllamaHost
+    if (typeof ctx.server.closeAllConnections === 'function') ctx.server.closeAllConnections()
+    await new Promise(r => ctx.server.close(r))
+    if (ctx.mockOllama) {
+      try { ctx.mockOllama.destroy() } catch { /* already destroyed */ }
+      await new Promise(r => ctx.mockOllama.server.close(r)).catch(() => {})
+    }
+    await cleanupDir(ctx.dir)
+  }, 15000)
+
+  it('DM party-block lowering hpPct is applied to room.party and broadcast in session:update', async () => {
+    ctx.mockOllama = await startMockOllama({
+      chunks: [
+        'The goblin strikes Lyra! ',
+        '\n```party\n[{"name":"Lyra","role":"Bard","hpPct":55,"isActive":true,"conditions":["Frightened"]}]\n```',
+      ],
+    })
+    process.env.OLLAMA_HOST = ctx.mockOllama.host
+    const { sessionId, roomCode } = freshIds()
+
+    const char = {
+      name: 'Lyra',
+      race: 'Half-Elf',
+      charClass: 'Bard',
+      abilities: { STR: 10, DEX: 14, CON: 12, INT: 14, WIS: 12, CHA: 18 },
+      ac: 13,
+      hpMax: 35,
+    }
+
+    const { ws } = await hpConnect(ctx.wsBase, {
+      roomCode, sessionId, displayName: 'Lyra', lastTurnSequence: 0,
+      joinCharacter: char,
+    })
+
+    // Watch for the session:update that carries the updated HP.
+    const updatePromise = waitForMessage(
+      ws,
+      m => m.type === 'session:update' &&
+        Array.isArray(m.payload?.party) &&
+        m.payload.party.some(p => p.name === 'Lyra' && p.hpPct === 55)
+    )
+
+    ws.send(JSON.stringify({
+      type: 'action',
+      roomCode,
+      payload: { content: 'I try to dodge!', type: 'user' },
+    }))
+
+    const update = await updatePromise
+    const lyraRow = update.payload.party.find(p => p.name === 'Lyra')
+    expect(lyraRow.hpPct).toBe(55)
+    expect(lyraRow.conditions).toEqual(['Frightened'])
+
+    ws.close()
+  }, 15000)
+
+  it('static characters map is unchanged after a DM party-block HP update', async () => {
+    ctx.mockOllama = await startMockOllama({
+      chunks: [
+        'Dorin takes damage! ',
+        '\n```party\n[{"name":"Dorin","role":"Cleric","hpPct":40,"isActive":true}]\n```',
+      ],
+    })
+    process.env.OLLAMA_HOST = ctx.mockOllama.host
+    const { sessionId, roomCode } = freshIds()
+
+    const char = {
+      name: 'Dorin',
+      race: 'Dwarf',
+      charClass: 'Cleric',
+      abilities: { STR: 14, DEX: 10, CON: 16, INT: 10, WIS: 18, CHA: 12 },
+      ac: 17,
+      hpMax: 48,
+    }
+
+    const { ws, firstMessage } = await hpConnect(ctx.wsBase, {
+      roomCode, sessionId, displayName: 'Dorin', lastTurnSequence: 0,
+      joinCharacter: char,
+    })
+
+    // Record the original characters map entry from session:state.
+    const originalChar = firstMessage.payload.characters['Dorin']
+    expect(originalChar).toBeDefined()
+    expect(originalChar.hpMax).toBe(48)
+
+    // Wait for a session:update after the DM lowers Dorin's HP.
+    const done = waitForMessage(ws, m => m.type === 'dm:done')
+    ws.send(JSON.stringify({
+      type: 'action',
+      roomCode,
+      payload: { content: 'I charge forward!', type: 'user' },
+    }))
+    await done
+
+    // After the DM action, rejoin to get a fresh session:state and verify the
+    // characters map is unchanged (hpMax still 48, no HP mutation on the static map).
+    ws.close()
+    await new Promise(r => setTimeout(r, 100))
+
+    const { ws: ws2, firstMessage: rejoinState } = await hpConnect(ctx.wsBase, {
+      roomCode, sessionId, displayName: 'Dorin', lastTurnSequence: 0,
+    })
+
+    expect(rejoinState.type).toBe('session:state')
+    const charAfterUpdate = rejoinState.payload.characters['Dorin']
+    expect(charAfterUpdate).toBeDefined()
+    // Static fields (hpMax, race, charClass, abilities, ac) must be unchanged.
+    expect(charAfterUpdate.hpMax).toBe(48)
+    expect(charAfterUpdate.race).toBe('Dwarf')
+    expect(charAfterUpdate.charClass).toBe('Cleric')
+    expect(charAfterUpdate.abilities.WIS).toBe(18)
+    expect(charAfterUpdate.ac).toBe(17)
+
+    ws2.close()
+  }, 20000)
+
+  it('mid-session HP persists across .md save/reload: rejoin sees reduced HP in party row', async () => {
+    ctx.mockOllama = await startMockOllama({
+      chunks: [
+        'Aria takes an arrow! ',
+        '\n```party\n[{"name":"Aria","role":"Ranger","hpPct":45,"isActive":false}]\n```',
+      ],
+    })
+    process.env.OLLAMA_HOST = ctx.mockOllama.host
+    const { sessionId, roomCode } = freshIds()
+
+    const char = {
+      name: 'Aria',
+      race: 'Elf',
+      charClass: 'Ranger',
+      abilities: { STR: 12, DEX: 18, CON: 14, INT: 13, WIS: 16, CHA: 10 },
+      ac: 15,
+      hpMax: 38,
+    }
+
+    const { ws } = await hpConnect(ctx.wsBase, {
+      roomCode, sessionId, displayName: 'Aria', lastTurnSequence: 0,
+      joinCharacter: char,
+    })
+
+    // Wait for the DM to lower HP to 45% and the .md to be written.
+    const donePromise = waitForMessage(ws, m => m.type === 'dm:done')
+    ws.send(JSON.stringify({
+      type: 'action',
+      roomCode,
+      payload: { content: 'I scout ahead.', type: 'user' },
+    }))
+    await donePromise
+
+    // Give the atomic rename a beat to settle on disk.
+    await new Promise(r => setTimeout(r, 100))
+
+    // Disconnect Aria.
+    ws.close()
+    await new Promise(r => setTimeout(r, 100))
+
+    // Aria rejoins with stale lastTurnSequence → server sends full session:state.
+    const { ws: ws2, firstMessage: rejoinState } = await hpConnect(ctx.wsBase, {
+      roomCode, sessionId, displayName: 'Aria', lastTurnSequence: 0,
+      joinCharacter: char,
+    })
+
+    expect(rejoinState.type).toBe('session:state')
+    // The party row must show the DM-updated HP (45%), NOT the join-time 100%.
+    const ariaRow = rejoinState.payload.party.find(p => p.name === 'Aria')
+    expect(ariaRow).toBeDefined()
+    expect(ariaRow.hpPct).toBe(45)
+
+    ws2.close()
+  }, 20000)
+
+  it('mid-session HP persists across disconnect→rejoin (rejoiner sees reduced HP)', async () => {
+    // Similar to the .md test above but focuses on the in-memory path (GC timer is
+    // large enough that the room stays in memory between close and rejoin).
+    ctx.mockOllama = await startMockOllama({
+      chunks: [
+        'Kira is struck! ',
+        '\n```party\n[{"name":"Kira","role":"Paladin","hpPct":30,"isActive":true,"conditions":["Stunned"]}]\n```',
+      ],
+    })
+    process.env.OLLAMA_HOST = ctx.mockOllama.host
+    const { sessionId, roomCode } = freshIds()
+
+    const char = {
+      name: 'Kira',
+      race: 'Dwarf',
+      charClass: 'Paladin',
+      abilities: { STR: 16, DEX: 10, CON: 16, INT: 10, WIS: 14, CHA: 12 },
+      ac: 18,
+      hpMax: 50,
+    }
+
+    const { ws } = await hpConnect(ctx.wsBase, {
+      roomCode, sessionId, displayName: 'Kira', lastTurnSequence: 0,
+      joinCharacter: char,
+    })
+
+    // Wait for DM to update HP to 30% with 'Stunned' condition.
+    const donePromise = waitForMessage(ws, m => m.type === 'dm:done')
+    ws.send(JSON.stringify({
+      type: 'action',
+      roomCode,
+      payload: { content: 'Kira braces for impact.', type: 'user' },
+    }))
+    const done = await donePromise
+    const advancedSeq = done.payload.turnSequence
+    expect(typeof advancedSeq).toBe('number')
+
+    // Disconnect.
+    ws.close()
+    await new Promise(r => setTimeout(r, 100))
+
+    // Rejoin with stale lastTurnSequence → server sends session:state with full snapshot.
+    const { ws: ws2, firstMessage: rejoinState } = await hpConnect(ctx.wsBase, {
+      roomCode, sessionId, displayName: 'Kira', lastTurnSequence: 0,
+    })
+
+    expect(rejoinState.type).toBe('session:state')
+    const kiraRow = rejoinState.payload.party.find(p => p.name === 'Kira')
+    expect(kiraRow).toBeDefined()
+    // Rejoiner must see the DM-reduced HP (30%), not join-time 100%.
+    expect(kiraRow.hpPct).toBe(30)
+    // Condition must persist too.
+    expect(kiraRow.conditions).toEqual(['Stunned'])
+
+    ws2.close()
+  }, 20000)
 })

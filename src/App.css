@@ -2428,3 +2428,400 @@ body {
     font-size: 10px;
   }
 }
+
+/* ═══════════════════════════════════════════════════════════════════════
+   PHASE MP-CHARACTER-SYNC — Join-tab character section + responsive CSS
+   Three character paths (A: existing, B: wizard, C: .md import) and the
+   SyncedCharacter preview. All mobile-first; breakpoints match the
+   existing 768px pattern (PartyStrip, PHASE B/C).
+   ═══════════════════════════════════════════════════════════════════════ */
+
+/* ─── Setup tabs (the New Campaign / Join Session switcher) ──────────── */
+
+.setup-tabs {
+  display: flex;
+  border: 1px solid var(--border-gold);
+  border-radius: 3px;
+  overflow: hidden;
+  margin-bottom: 24px;
+}
+
+.setup-tab {
+  flex: 1;
+  padding: 9px 14px;
+  background: var(--surface-2);
+  border: none;
+  border-right: 1px solid var(--border-gold);
+  color: var(--text-secondary);
+  font-family: var(--font-display);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.setup-tab:last-child {
+  border-right: none;
+}
+
+.setup-tab:hover {
+  color: var(--gold-bright);
+  background: var(--surface-3);
+}
+
+.setup-tab.active,
+.setup-tab[aria-selected="true"] {
+  background: color-mix(in oklab, var(--gold) 20%, var(--surface-3));
+  color: var(--gold-bright);
+}
+
+/* ─── Join-tab character path cards ─────────────────────────────────── */
+
+.join-char-paths {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.join-char-path-card {
+  border: 1px solid var(--border-gold);
+  border-radius: 3px;
+  background: var(--surface-2);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.join-char-path-label {
+  font-family: var(--font-display);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--gold);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.join-char-path-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+/* ─── Join-tab action buttons ────────────────────────────────────────── */
+
+.join-char-btn {
+  border-radius: 3px;
+  padding: 9px 16px;
+  font-family: var(--font-display);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: all 0.15s;
+  border: 1px solid transparent;
+  text-align: center;
+  display: inline-block;
+  min-height: 38px;
+  line-height: 1.2;
+}
+
+.join-char-btn--primary {
+  background: color-mix(in oklab, var(--gold) 28%, var(--surface-3));
+  border-color: var(--gold-dim);
+  color: var(--gold-bright);
+}
+
+.join-char-btn--primary:hover {
+  background: color-mix(in oklab, var(--gold) 38%, var(--surface-3));
+  border-color: var(--gold);
+}
+
+.join-char-btn--secondary {
+  background: var(--surface-3);
+  border-color: var(--border-gold);
+  color: var(--text-secondary);
+}
+
+.join-char-btn--secondary:hover {
+  border-color: var(--gold);
+  color: var(--gold-bright);
+  background: color-mix(in oklab, var(--gold) 12%, var(--surface-3));
+}
+
+.join-char-btn--ghost {
+  background: none;
+  border-color: var(--border);
+  color: var(--text-muted);
+}
+
+.join-char-btn--ghost:hover {
+  border-color: var(--border-gold);
+  color: var(--text-secondary);
+}
+
+/* Import label behaves like a button */
+.join-char-import-label {
+  cursor: pointer;
+}
+
+.join-char-import-error {
+  color: color-mix(in srgb, var(--red) 60%, #ffffff) !important;
+  font-style: italic;
+}
+
+/* ─── "Use default adventurer" inline link ───────────────────────────── */
+
+.join-char-path-default {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 0;
+}
+
+.join-char-default-link {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--text-secondary);
+  font-family: var(--font-body);
+  font-size: 13px;
+  font-style: italic;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  transition: color 0.15s;
+}
+
+.join-char-default-link:hover {
+  color: var(--gold-bright);
+}
+
+/* ─── Join-tab character actions (after a path is selected) ──────────── */
+
+.join-char-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-top: 4px;
+}
+
+/* ─── SyncedCharacter preview card ──────────────────────────────────── */
+
+.join-char-preview {
+  background: color-mix(in oklab, var(--gold) 6%, var(--surface-2));
+  border: 1px solid var(--border-gold);
+  border-radius: 3px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.join-char-preview-identity {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.join-char-preview-name {
+  font-family: var(--font-display);
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--gold-bright);
+}
+
+.join-char-preview-meta {
+  font-size: 13px;
+  color: var(--text-secondary);
+  font-style: italic;
+}
+
+.join-char-preview-stats {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 4px;
+}
+
+.join-char-preview-ability {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  background: var(--surface-3);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 5px 2px;
+}
+
+.join-char-preview-ability-key {
+  font-family: var(--font-display);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--gold-dim);
+}
+
+.join-char-preview-ability-val {
+  font-family: var(--font-display);
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--gold-bright);
+}
+
+.join-char-preview-combat {
+  display: flex;
+  gap: 12px;
+}
+
+.join-char-preview-combat-item {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.join-char-preview-combat-label {
+  font-family: var(--font-display);
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--gold-dim);
+}
+
+.join-char-preview-combat-val {
+  font-family: var(--font-display);
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   MOBILE RESPONSIVE — ~360–414px single-column reflow
+   Uses 480px breakpoint (slightly wider than 414px) so narrower devices
+   are covered without disrupting tablet layouts. Matches the existing
+   768px breakpoint approach used by PartyStrip (PHASE B).
+   ═══════════════════════════════════════════════════════════════════════ */
+
+@media (max-width: 480px) {
+  /* Setup card: reduce padding so form fits without overflow */
+  .setup-card {
+    padding: 28px 18px;
+  }
+
+  /* Setup header: tighter spacing */
+  .setup-header {
+    margin-bottom: 22px;
+  }
+
+  .setup-emblem {
+    font-size: 38px;
+  }
+
+  .setup-header h1 {
+    font-size: 20px;
+  }
+
+  /* Setup tabs: full-width, tap-friendly height */
+  .setup-tab {
+    padding: 11px 8px;
+    font-size: 11px;
+  }
+
+  /* Ensure form inputs are full-width (already flex-direction column) */
+  .form-group input,
+  .form-group textarea,
+  .form-group select {
+    font-size: 16px; /* prevent iOS zoom on focus */
+  }
+
+  /* Character preview: 3-column ability grid on narrow screens */
+  .join-char-preview-stats {
+    grid-template-columns: repeat(3, 1fr);
+  }
+
+  /* Join-tab path cards: full-width buttons */
+  .join-char-btn {
+    width: 100%;
+    padding: 12px 14px;
+    text-align: center;
+  }
+
+  .join-char-import-label {
+    width: 100%;
+    text-align: center;
+  }
+
+  .join-char-path-actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .join-char-actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  /* Wizard: ensure all step containers don't overflow */
+  .wizard-container {
+    padding: 14px 12px;
+  }
+
+  /* Ability grid rows: make +/- buttons tap-friendly */
+  .wizard-ability-btn {
+    width: 36px;
+    height: 36px;
+    font-size: 18px;
+  }
+
+  /* Ability select dropdowns: full available width */
+  .wizard-ability-select {
+    flex: 1;
+    min-width: 0;
+  }
+
+  /* Wizard nav: stack Cancel on left, Back+Next on right — but wrap on very narrow */
+  .wizard-nav {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .wizard-nav-right {
+    gap: 8px;
+  }
+
+  /* Method options: ensure radio label wraps cleanly */
+  .wizard-method-option {
+    padding: 12px 10px;
+  }
+
+  /* Pool chips: allow wrap naturally (already flex-wrap: wrap) */
+
+  /* Review abilities: 3-column grid at narrow width */
+  .wizard-review-abilities {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+  }
+
+  .wizard-review-ability {
+    min-width: 0;
+  }
+
+  /* SP/MP toggle: ensure buttons wrap if needed */
+  .spmp-toggle {
+    flex-wrap: wrap;
+  }
+
+  /* btn-begin: ensure it's comfortably tappable */
+  .btn-begin {
+    padding: 16px 20px;
+    font-size: 15px;
+  }
+}

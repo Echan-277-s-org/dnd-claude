@@ -518,3 +518,112 @@ describe('CharacterWizard — Escape key', () => {
     expect(onCancel).toHaveBeenCalledTimes(1)
   })
 })
+
+// ── initialCharacter pre-fill ─────────────────────────────────────────────────
+
+describe('CharacterWizard — initialCharacter pre-fill', () => {
+  const INITIAL = {
+    name: 'Frodo',
+    race: 'Halfling',
+    charClass: 'Rogue',
+    abilities: { STR: 8, DEX: 14, CON: 12, INT: 10, WIS: 13, CHA: 15 },
+    ac: 13,
+    hpMax: 8,
+  }
+
+  function renderWizardWithInitial(initial, genreId = 'dnd') {
+    const onCreateCharacter = vi.fn()
+    const onCancel = vi.fn()
+    const result = render(
+      <CharacterWizard
+        genreId={genreId}
+        onCreateCharacter={onCreateCharacter}
+        onCancel={onCancel}
+        initialCharacter={initial}
+      />
+    )
+    return { ...result, onCreateCharacter, onCancel }
+  }
+
+  it('pre-fills the name field from initialCharacter', () => {
+    renderWizardWithInitial(INITIAL)
+    expect(screen.getByDisplayValue('Frodo')).toBeInTheDocument()
+  })
+
+  it('Next button is enabled on step 1 when name is pre-filled', () => {
+    renderWizardWithInitial(INITIAL)
+    expect(screen.getByRole('button', { name: /next/i })).not.toBeDisabled()
+  })
+
+  it('pre-fills race when a matching race label exists for the genre', () => {
+    renderWizardWithInitial(INITIAL, 'dnd')
+    // Navigate to step 1 (already there), advance to step 2 (race)
+    fireEvent.click(screen.getByRole('button', { name: /next/i }))
+    const raceSelect = screen.getByLabelText(/Race|Species/i)
+    // Should be pre-selected to Halfling
+    const selectedOpt = Array.from(raceSelect.querySelectorAll('option')).find(o => o.selected)
+    expect(selectedOpt?.textContent).toBe('Halfling')
+  })
+
+  it('pre-fills class when a matching class label exists', () => {
+    renderWizardWithInitial(INITIAL, 'dnd')
+    // Advance through step 1 (name) and step 2 (race)
+    fireEvent.click(screen.getByRole('button', { name: /next/i })) // name → race
+    fireEvent.click(screen.getByRole('button', { name: /next/i })) // race → class
+    const classSelect = screen.getByLabelText(/Class/i)
+    const selectedOpt = Array.from(classSelect.querySelectorAll('option')).find(o => o.selected)
+    expect(selectedOpt?.textContent).toBe('Rogue')
+  })
+
+  it('pre-fills ability scores in point-buy (default method)', () => {
+    renderWizardWithInitial(INITIAL, 'dnd')
+    // Advance to step 4 (method) — should have point-buy pre-selected
+    fireEvent.click(screen.getByRole('button', { name: /next/i })) // name → race
+    fireEvent.click(screen.getByRole('button', { name: /next/i })) // race → class
+    fireEvent.click(screen.getByRole('button', { name: /next/i })) // class → method
+    // Point Buy should be pre-selected as the method
+    expect(screen.getByLabelText(/Point Buy/i)).toBeChecked()
+  })
+
+  it('null initialCharacter leaves wizard in clean default state', () => {
+    renderWizardWithInitial(null, 'dnd')
+    // Name should be empty
+    const nameInput = screen.getByLabelText(/Character Name/i)
+    expect(nameInput.value).toBe('')
+    // Next should be disabled (no name)
+    expect(screen.getByRole('button', { name: /next/i })).toBeDisabled()
+  })
+
+  it('undefined initialCharacter leaves wizard in clean default state', () => {
+    // Render without the prop at all
+    const { onCreateCharacter } = renderWizard({ genreId: 'dnd' })
+    const nameInput = screen.getByLabelText(/Character Name/i)
+    expect(nameInput.value).toBe('')
+    expect(screen.getByRole('button', { name: /next/i })).toBeDisabled()
+  })
+
+  it('existing create flow still works after adding initialCharacter support', () => {
+    // Render wizard without initialCharacter — full happy path unchanged
+    const { onCreateCharacter } = renderWizard({ genreId: 'dnd' })
+    fireEvent.change(screen.getByLabelText(/Character Name/i), { target: { value: 'Thorin' } })
+    fireEvent.click(screen.getByRole('button', { name: /next/i }))
+    const raceSelect = screen.getByLabelText(/Race/i)
+    const raceOpts = Array.from(raceSelect.querySelectorAll('option'))
+    const dwarf = raceOpts.find(o => o.textContent === 'Dwarf')
+    fireEvent.change(raceSelect, { target: { value: dwarf.value } })
+    fireEvent.click(screen.getByRole('button', { name: /next/i }))
+    const classSelect = screen.getByLabelText(/Class/i)
+    const classOpts = Array.from(classSelect.querySelectorAll('option'))
+    const fighter = classOpts.find(o => o.textContent === 'Fighter')
+    fireEvent.change(classSelect, { target: { value: fighter.value } })
+    fireEvent.click(screen.getByRole('button', { name: /next/i }))
+    fireEvent.click(screen.getByLabelText(/Point Buy/i))
+    fireEvent.click(screen.getByRole('button', { name: /next/i }))
+    fireEvent.click(screen.getByRole('button', { name: /next/i }))
+    fireEvent.click(screen.getByRole('button', { name: /Create Character/i }))
+    expect(onCreateCharacter).toHaveBeenCalledTimes(1)
+    const arg = onCreateCharacter.mock.calls[0][0]
+    expect(arg.name).toBe('Thorin')
+    expect(arg.charClass).toBe('Fighter')
+  })
+})

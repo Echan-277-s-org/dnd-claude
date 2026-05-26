@@ -363,6 +363,196 @@ describe('useWebSocket — poll suspension', () => {
   })
 })
 
+// ─── useWebSocket — joinCharacter in join message (mp-character-sync Phase 2/3) ─
+
+describe('useWebSocket — joinCharacter in join message', () => {
+  beforeEach(() => {
+    MockWebSocket.instances = []
+    vi.stubGlobal('WebSocket', MockWebSocket)
+    vi.useFakeTimers()
+  })
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.useRealTimers()
+  })
+
+  it('join message includes joinCharacter when provided', async () => {
+    const joinCharacter = {
+      name: 'Aria Swiftwind',
+      race: 'Elf',
+      charClass: 'Ranger',
+      abilities: { STR: 12, DEX: 18, CON: 14, INT: 13, WIS: 16, CHA: 10 },
+      ac: 15,
+      hpMax: 38,
+    }
+    renderHook(() => useWebSocket({ ...defaultOpts, joinCharacter }))
+    await act(async () => { vi.runAllTimers() })
+    const ws = MockWebSocket.instances[0]
+    const join = (ws.sent ?? []).find(m => m.type === 'join')
+    expect(join).toBeDefined()
+    expect(join.joinCharacter).toEqual(joinCharacter)
+  })
+
+  it('join message includes joinCharacter: null when none is provided (default)', async () => {
+    // No joinCharacter passed — should default to null in the join message.
+    renderHook(() => useWebSocket(defaultOpts))
+    await act(async () => { vi.runAllTimers() })
+    const ws = MockWebSocket.instances[0]
+    const join = (ws.sent ?? []).find(m => m.type === 'join')
+    expect(join).toBeDefined()
+    expect(join.joinCharacter).toBeNull()
+  })
+
+  it('join message includes joinCharacter: null when explicitly passed null', async () => {
+    renderHook(() => useWebSocket({ ...defaultOpts, joinCharacter: null }))
+    await act(async () => { vi.runAllTimers() })
+    const ws = MockWebSocket.instances[0]
+    const join = (ws.sent ?? []).find(m => m.type === 'join')
+    expect(join).toBeDefined()
+    expect(join.joinCharacter).toBeNull()
+  })
+
+  it('join message on reconnect also includes joinCharacter', async () => {
+    const joinCharacter = {
+      name: 'Thorn',
+      race: 'Dwarf',
+      charClass: 'Paladin',
+      abilities: { STR: 18, DEX: 10, CON: 16, INT: 10, WIS: 14, CHA: 12 },
+      ac: 18,
+      hpMax: 52,
+    }
+    const { unmount } = renderHook(() => useWebSocket({ ...defaultOpts, joinCharacter }))
+    await act(async () => { vi.runAllTimers() })
+    const ws1 = MockWebSocket.instances[0]
+
+    // Simulate disconnect → reconnect.
+    act(() => ws1.close())
+    await act(async () => { vi.advanceTimersByTime(2000) })
+    await act(async () => { vi.runAllTimers() })
+
+    const ws2 = MockWebSocket.instances[1]
+    if (ws2) {
+      const join = (ws2.sent ?? []).find(m => m.type === 'join')
+      expect(join?.joinCharacter).toEqual(joinCharacter)
+    }
+
+    unmount()
+  })
+
+  it('single-player (enabled=false) never creates a WebSocket regardless of joinCharacter', async () => {
+    const joinCharacter = {
+      name: 'Solo Hero',
+      race: 'Human',
+      charClass: 'Fighter',
+      abilities: { STR: 15, DEX: 13, CON: 14, INT: 10, WIS: 12, CHA: 8 },
+      ac: 16,
+      hpMax: 30,
+    }
+    renderHook(() => useWebSocket({ ...defaultOpts, joinCharacter, enabled: false }))
+    await act(async () => { vi.runAllTimers() })
+    // enabled=false → zero WebSocket created (absolute single-player invariant).
+    expect(MockWebSocket.instances).toHaveLength(0)
+  })
+
+  it('does NOT recreate the socket when only the joinCharacter object identity changes (reconnect storm fix)', async () => {
+    // This is the primary regression test for the reconnect storm bug.
+    // The bug: Chat.jsx builds a new joinCharacter object literal on every render.
+    // The old code had joinCharacter in the connect useCallback dep array, so each
+    // new reference caused connect() to be recreated → useEffect re-ran → socket
+    // torn down and reopened → readyState change → re-render → storm.
+    // The fix: joinCharacter is stored in a ref; connect() only depends on
+    // roomCode/sessionId/displayName/enabled.
+
+    const charV1 = {
+      name: 'Aria',
+      race: 'Elf',
+      charClass: 'Ranger',
+      abilities: { STR: 12, DEX: 18, CON: 14, INT: 13, WIS: 16, CHA: 10 },
+      ac: 15,
+      hpMax: 38,
+    }
+    // Deep-equal but a completely new object reference — mimics Chat.jsx re-render.
+    const charV2 = {
+      name: 'Aria',
+      race: 'Elf',
+      charClass: 'Ranger',
+      abilities: { STR: 12, DEX: 18, CON: 14, INT: 13, WIS: 16, CHA: 10 },
+      ac: 15,
+      hpMax: 38,
+    }
+
+    let joinCharacter = charV1
+    const { rerender, result } = renderHook(
+      () => useWebSocket({ ...defaultOpts, joinCharacter })
+    )
+
+    // Let the socket open.
+    await act(async () => { vi.runAllTimers() })
+    expect(MockWebSocket.instances).toHaveLength(1)
+    expect(result.current.readyState).toBe(1) // OPEN
+
+    // Re-render with a new joinCharacter object reference (same content, different identity).
+    joinCharacter = charV2
+    await act(async () => { rerender() })
+
+    // CRITICAL: WebSocket constructor must still have been called exactly once.
+    // No new socket should have been created — the existing one stays OPEN.
+    expect(MockWebSocket.instances).toHaveLength(1)
+    expect(result.current.readyState).toBe(1) // still OPEN, not torn down
+  })
+
+  it('join message on reconnect carries the LATEST joinCharacter value from the ref', async () => {
+    // Even though joinCharacter changes don't recreate the socket, a genuine
+    // reconnect (e.g. server-side close) must use the current ref value, not a
+    // stale snapshot captured at mount time.
+    const charV1 = {
+      name: 'Thorn',
+      race: 'Dwarf',
+      charClass: 'Paladin',
+      abilities: { STR: 18, DEX: 10, CON: 16, INT: 10, WIS: 14, CHA: 12 },
+      ac: 18,
+      hpMax: 52,
+    }
+    const charV2 = {
+      name: 'Thorn',
+      race: 'Dwarf',
+      charClass: 'Paladin',
+      abilities: { STR: 18, DEX: 10, CON: 16, INT: 10, WIS: 14, CHA: 12 },
+      ac: 20, // updated AC — simulates user editing their sheet between reconnects
+      hpMax: 52,
+    }
+
+    let joinCharacter = charV1
+    const { rerender, unmount } = renderHook(
+      () => useWebSocket({ ...defaultOpts, joinCharacter })
+    )
+
+    await act(async () => { vi.runAllTimers() })
+    const ws1 = MockWebSocket.instances[0]
+
+    // Update the character reference (simulating a re-render with new data).
+    joinCharacter = charV2
+    await act(async () => { rerender() })
+
+    // No new socket yet — existing one still open.
+    expect(MockWebSocket.instances).toHaveLength(1)
+
+    // Now simulate a genuine server-side disconnect.
+    act(() => ws1.close())
+    await act(async () => { vi.advanceTimersByTime(2000) })
+    await act(async () => { vi.runAllTimers() })
+
+    // A second socket should now have been created for the reconnect.
+    expect(MockWebSocket.instances.length).toBeGreaterThanOrEqual(2)
+    const ws2 = MockWebSocket.instances[1]
+    const join = (ws2?.sent ?? []).find(m => m.type === 'join')
+    // The join message must carry charV2 (the latest value), not the stale charV1.
+    expect(join?.joinCharacter?.ac).toBe(20)
+
+    unmount()
+  })
+})
+
 // ─── useWebSocket — M7 gate on session:update path (routing placeholder) ─────
 
 describe.skip('useWebSocket — M7 gate on session:update path', () => {

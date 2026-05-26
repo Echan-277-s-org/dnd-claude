@@ -1,11 +1,12 @@
 // @vitest-environment jsdom
 //
-// Multiplayer schema / session.js unit tests — Phase 0 gate (ACTIVE)
+// Multiplayer schema / session.js unit tests — Phase 0 + Phase 1 gate (ACTIVE)
 //
 // Activated 2026-05-26 when Phase 0 implementation landed. Covers:
-//   - SCHEMA_VERSION bump to 2
+//   - SCHEMA_VERSION bump to 2 (Phase 0) / 3 (Phase 1)
 //   - deserializeSession v1→v2 backward-compat branch
 //   - deserializeSession v2 native path (lenient read; clamp invalid phase)
+//   - deserializeSession v3 native path (characters map)
 //   - toMarkdown / fromMarkdown round-trip for v2 fields
 //   - applyPartyUpdate as a named export from session.js (moved from Chat.jsx)
 //   - roomCode derivation helper (makeRoomCode)
@@ -62,25 +63,27 @@ const baseState = () => ({
 
 // ─── SCHEMA_VERSION ───────────────────────────────────────────────────────────
 
-describe('SCHEMA_VERSION (v2)', () => {
-  it('SCHEMA_VERSION equals 2 after the Phase 0 bump', () => {
-    expect(SCHEMA_VERSION).toBe(2)
+describe('SCHEMA_VERSION (v3)', () => {
+  it('SCHEMA_VERSION equals 3 after the Phase 1 bump', () => {
+    expect(SCHEMA_VERSION).toBe(3)
   })
 })
 
-// ─── deserializeSession v1 → v2 backward-compat ───────────────────────────────
+// ─── deserializeSession v1 → v3 backward-compat ───────────────────────────────
 
-describe('deserializeSession — v1 → v2 backward-compat', () => {
-  it('accepts a v1 payload and fills v2 defaults', () => {
+describe('deserializeSession — v1 → v3 backward-compat', () => {
+  it('accepts a v1 payload and fills v3 defaults', () => {
     const result = deserializeSession(V1_PAYLOAD_STRING)
     expect(result).not.toBeNull()
-    expect(result.schemaVersion).toBe(2)
+    expect(result.schemaVersion).toBe(3)
     expect(result.phase).toBe('free-roam')
     expect(result.roomCode).toBeNull()
     expect(result.turnSequence).toBe(0)
+    // Phase 1: v1 payloads backfill characters to {}
+    expect(result.characters).toEqual({})
   })
 
-  it('preserves all v1 fields when upgrading to v2', () => {
+  it('preserves all v1 fields when upgrading to v3', () => {
     const result = deserializeSession(V1_PAYLOAD_STRING)
     expect(result.sessionId).toBe('v1-legacy-uuid')
     expect(result.messages).toHaveLength(1)
@@ -99,8 +102,8 @@ describe('deserializeSession — v1 → v2 backward-compat', () => {
     expect(deserializeSession(JSON.stringify({ schemaVersion: 0 }))).toBeNull()
   })
 
-  it('returns null for schemaVersion 3 (future; still unsupported)', () => {
-    expect(deserializeSession(JSON.stringify({ schemaVersion: 3 }))).toBeNull()
+  it('returns null for schemaVersion 4 (future; still unsupported)', () => {
+    expect(deserializeSession(JSON.stringify({ schemaVersion: 4 }))).toBeNull()
   })
 })
 
@@ -120,7 +123,7 @@ describe('deserializeSession — v2 native path', () => {
     expect(back.turnSequence).toBe(7)
   })
 
-  it('fills v2 defaults when optional v2 fields are omitted from a valid v2 object', () => {
+  it('fills v3 defaults when optional fields are omitted from a valid v2 object', () => {
     const bare = {
       schemaVersion: 2,
       sessionId: V2_SESSION_ID,
@@ -129,12 +132,14 @@ describe('deserializeSession — v2 native path', () => {
       messages: [],
       sessionLog: [],
       party: [],
-      // phase, roomCode, turnSequence intentionally absent
+      // phase, roomCode, turnSequence, characters intentionally absent
     }
     const result = deserializeSession(bare)
     expect(result.phase).toBe('free-roam')
     expect(result.roomCode).toBeNull()
     expect(result.turnSequence).toBe(0)
+    // Phase 1: v2 payloads backfill characters to {}
+    expect(result.characters).toEqual({})
   })
 
   it('accepts all four valid phase values on the read path', () => {
@@ -170,14 +175,14 @@ describe('deserializeSession — v2 native path', () => {
 
 // ─── serializeSession — write-path phase sanitize (MC-3 / MC-4) ───────────────
 
-describe('serializeSession — v2 carry + phase-sanitize', () => {
-  it('carries v2 fields supplied via the opts arg', () => {
+describe('serializeSession — v3 carry + phase-sanitize', () => {
+  it('carries v2/v3 fields supplied via the opts arg', () => {
     const p = serializeSession(baseState(), 'T', {
       phase: 'combat',
       roomCode: 'dnd-zzz',
       turnSequence: 4,
     })
-    expect(p.schemaVersion).toBe(2)
+    expect(p.schemaVersion).toBe(3)
     expect(p.phase).toBe('combat')
     expect(p.roomCode).toBe('dnd-zzz')
     expect(p.turnSequence).toBe(4)

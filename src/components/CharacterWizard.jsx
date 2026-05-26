@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { getClassesForGenre, getRacesForGenre } from '../lib/characterClasses.js'
 import {
   POINT_BUY_BUDGET,
@@ -66,6 +66,59 @@ function makeInitialState(genreId) {
     // Rolled values (only for roll-4d6)
     rolledValues: [],
   }
+}
+
+// Seed wizard state from an initialCharacter (SyncedCharacter or similar shape).
+// Pre-fills name, race (by label match), charClass (by label match), and
+// ability scores (via point-buy starting state). Falls back gracefully when
+// fields are missing. Returns a state patch (merged over makeInitialState).
+function seedFromInitialCharacter(initial, genreId) {
+  if (!initial || typeof initial !== 'object') return {}
+  const patch = {}
+
+  // Name
+  if (initial.name && typeof initial.name === 'string') {
+    patch.name = initial.name
+  }
+
+  // Abilities — seed as point-buy scores (the most permissive method: any values accepted).
+  // If the import values are outside point-buy bounds, the player can review/adjust.
+  // We also default the abilityMethod to 'point-buy' so the wizard can proceed.
+  if (initial.abilities && typeof initial.abilities === 'object') {
+    const ab = initial.abilities
+    patch.pointBuyScores = {
+      STR: Number(ab.STR) || 10,
+      DEX: Number(ab.DEX) || 10,
+      CON: Number(ab.CON) || 10,
+      INT: Number(ab.INT) || 10,
+      WIS: Number(ab.WIS) || 10,
+      CHA: Number(ab.CHA) || 10,
+    }
+    // Default to point-buy so the wizard can advance past step 4 with imported scores.
+    patch.abilityMethod = 'point-buy'
+  }
+
+  // Race — match by label (case-insensitive).
+  if (initial.race && typeof initial.race === 'string') {
+    const races = getRacesForGenre(genreId)
+    const match = races.find(r => r.label.toLowerCase() === initial.race.toLowerCase())
+    if (match) {
+      patch.raceId = match.id
+      patch.race = match.label
+    }
+  }
+
+  // Class — match by label (case-insensitive).
+  if (initial.charClass && typeof initial.charClass === 'string') {
+    const classes = getClassesForGenre(genreId)
+    const match = classes.find(c => c.label.toLowerCase() === initial.charClass.toLowerCase())
+    if (match) {
+      patch.classId = match.id
+      patch.charClass = match.label
+    }
+  }
+
+  return patch
 }
 
 // Build the final ability scores from the assignment state, then apply race bonuses.
@@ -536,16 +589,36 @@ function StepReview({ state, genreId, onCreateCharacter, onBack, onCancel }) {
  * Multi-step character creation wizard.
  *
  * Props:
- *   genreId         — 'dnd' | 'starwars' (controls available races/classes/methods)
+ *   genreId           — 'dnd' | 'starwars' (controls available races/classes/methods)
  *   onCreateCharacter — callback({ name, race, raceId, charClass, classId, abilities })
- *   onCancel        — callback when wizard is dismissed without creating
+ *   onCancel          — callback when wizard is dismissed without creating
+ *   initialCharacter  — optional SyncedCharacter (or similar shape) to pre-fill wizard
+ *                       state (name, race, charClass, abilities). The player still
+ *                       reviews and confirms through the normal wizard flow — no blind
+ *                       import. Missing/invalid fields fall back to empty defaults.
  */
-export default function CharacterWizard({ genreId = 'dnd', onCreateCharacter, onCancel }) {
-  const [state, setState] = useState(() => makeInitialState(genreId))
+export default function CharacterWizard({ genreId = 'dnd', onCreateCharacter, onCancel, initialCharacter }) {
+  const [state, setState] = useState(() => {
+    const base = makeInitialState(genreId)
+    if (initialCharacter) {
+      const seed = seedFromInitialCharacter(initialCharacter, genreId)
+      return { ...base, ...seed }
+    }
+    return base
+  })
+
+  // Track the mounted state so we can skip the genre-change reset on initial mount.
+  // This ensures that pre-filled race/class from initialCharacter are not wiped on render.
+  const mountedRef = useRef(false)
 
   // When genre changes, reset race/class selections (dropdowns repopulate)
   // but preserve name, method, and ability scores (genre-agnostic).
+  // Skip on initial mount so initialCharacter pre-fill is preserved.
   useEffect(() => {
+    if (!mountedRef.current) {
+      mountedRef.current = true
+      return
+    }
     setState(prev => ({
       ...prev,
       raceId: '',
