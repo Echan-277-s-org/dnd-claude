@@ -128,6 +128,114 @@ To reach the app and Ollama from a phone (or any device) on the same LAN:
 
 ---
 
+## Play Over the Internet
+
+The app is built for LAN play. Every network host is derived client-side from `window.location.hostname` via `getLanHost()` in `src/lib/session.js`. Whatever hostname the browser used to reach the Vite page is reused for the Ollama API (`http://<hostname>:11434`) and the sync server (`http://<hostname>:3001`). No code changes are needed; a remote device just needs to reach the desktop on those three ports.
+
+Two approaches follow. Tailscale is recommended.
+
+### Option A: Tailscale (recommended)
+
+Tailscale creates an encrypted peer-to-peer mesh (a "tailnet") between your devices. The remote player opens the app using the desktop's Tailscale IP or MagicDNS name; `getLanHost()` picks that up and routes all three ports through the tailnet. No router configuration, no public exposure.
+
+**On the desktop (DM machine)**
+
+1. Install Tailscale and sign in: https://tailscale.com/download
+
+2. Find the desktop's tailnet address. Either form works in the browser:
+
+   ```powershell
+   tailscale ip -4          # e.g. 100.x.y.z
+   # or use the MagicDNS name shown in the Tailscale admin console
+   # e.g.  my-desktop.tail12345.ts.net
+   ```
+
+3. Allow Ollama to accept connections from the tailnet interface:
+
+   ```powershell
+   $env:OLLAMA_HOST = "0.0.0.0"
+   ollama serve
+   ```
+
+4. In a second terminal, start the app (Vite + sync server together):
+
+   ```powershell
+   npm run dev
+   ```
+
+   Vite binds `0.0.0.0` (`server.host: true` in `vite.config.js`). The sync server also binds `0.0.0.0` (`server/sync-server.mjs`).
+
+**On the remote device (player machine)**
+
+5. Install Tailscale and sign in to **the same tailnet** (same Tailscale account, or an account invited to the tailnet).
+
+6. Open the app in a browser:
+
+   ```
+   http://<tailscale-ip>:5173
+   # or
+   http://<magicdns-name>:5173
+   ```
+
+   Because the page was opened via the desktop's Tailscale address, `window.location.hostname` resolves to that same address, and `getLanHost()` routes Ollama calls to `:11434` and sync calls to `:3001` through the tailnet. Identical to LAN behaviour, no code changes. Traffic stays inside the encrypted tunnel and is not exposed to the public internet.
+
+### Option B: Port forwarding (advanced)
+
+Port forwarding opens holes in your router so the remote player connects directly to the desktop over the public internet.
+
+> **Security warning. Read before proceeding.**
+>
+> This option exposes three unauthenticated services to the open internet over plain HTTP (no TLS):
+>
+> - **Ollama on :11434** — no authentication. Anyone who reaches this port can run inference on your GPU and enumerate models.
+> - **Sync server on :3001** — no authentication. The `PUT /session/:id` and `DELETE /session/:id` endpoints let anyone on the internet read, overwrite, or permanently delete your campaign sessions. There is no rate limiting.
+>
+> Use Tailscale (Option A) instead unless you fully understand and accept these risks.
+
+**Why all three ports must be forwarded.** Because `getLanHost()` derives all hosts from `window.location.hostname`, the remote player's browser makes Ollama and sync requests back to the same IP it used to open the page. Forwarding only port 5173 will not work: the browser then hits your public IP on :11434 and :3001 with no route through. All three ports must point to the same desktop machine.
+
+1. In your router admin panel, create three port-forwarding rules, all pointing to the desktop's local IP:
+
+   | External port | Internal port | Protocol |
+   |---|---|---|
+   | 5173 | 5173 | TCP |
+   | 3001 | 3001 | TCP |
+   | 11434 | 11434 | TCP |
+
+2. Allow Ollama to bind all interfaces and accept cross-origin requests from the Vite page (`:5173` and `:11434` are different origins, so Ollama's CORS policy applies):
+
+   ```powershell
+   $env:OLLAMA_HOST    = "0.0.0.0"
+   $env:OLLAMA_ORIGINS = "*"
+   ollama serve
+   ```
+
+   The sync server already uses `cors({ origin: true })`, so no extra variable is needed there.
+
+3. Start the app with `npm run dev`, find your public IP (e.g. https://ifconfig.me), and have the remote player open `http://<public-ip>:5173`.
+
+### Internet-play troubleshooting
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| Page loads but the AI never responds | Ollama still bound to `localhost`, or port 11434 unreachable | Set `$env:OLLAMA_HOST = "0.0.0.0"` and restart `ollama serve`; for port forwarding, verify the 11434 rule and firewall |
+| CORS error in the browser console when the AI is called | `OLLAMA_ORIGINS` not set, so Ollama blocks the `:5173` origin | Add `$env:OLLAMA_ORIGINS = "*"` before `ollama serve` |
+| AI works but sessions never sync | Port 3001 unreachable, or sync server not running. Degrades **silently** to localStorage — no error banner | Use `npm run dev` (not `dev:vite`); check the Network tab for failed `:3001` requests; for port forwarding, verify the 3001 rule |
+| Tailscale works on one device but a second player can't connect | Second device not on the same tailnet | Both devices must be signed into the same tailnet, or the node must be shared via the Tailscale admin console |
+| "Blocked insecure request" / mixed-content error | Page served over HTTPS while Ollama/sync are HTTP | This app is plain HTTP end to end — don't front Vite with an HTTPS proxy unless you proxy all three through the same HTTPS origin |
+
+### Tailscale vs. port forwarding
+
+| | Tailscale | Port forwarding |
+|---|---|---|
+| Public internet exposure | None | Yes — all three ports |
+| Ollama / sync auth | N/A (private tailnet) | None (open to anyone) |
+| Router configuration | None | Three forwarding rules |
+| Encryption | Yes (WireGuard) | No (plain HTTP) |
+| Recommendation | ✅ Recommended | ⚠️ Not recommended |
+
+---
+
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |
