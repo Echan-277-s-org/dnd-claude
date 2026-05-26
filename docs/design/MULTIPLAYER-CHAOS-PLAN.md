@@ -752,6 +752,397 @@ whose name does not start with `chaos-test-`).
 
 ---
 
+## Post-revision refresh (G2)
+
+> **Added by:** chaos-engineer
+> **Against:** `MULTIPLAYER-ARCHITECTURE.md` status "DESIGN-ARC (revised post-review)" — post D3 (MC-1…MC-9) + D3b (A…J).
+> All new/amended experiments remain bounded to the LAN dev environment. No production sessions,
+> no WAN, no real user data. All existing experiments (EX-1 through EX-9) are preserved and
+> cross-linked below; their text is not altered.
+
+---
+
+### G2.1 — Re-anchored citations for existing experiments
+
+The revised architecture folds several formerly-open items into explicit design guarantees.
+The citations below update the traceability for EX-1, EX-2, and EX-9 without changing their
+injection methods, assertions, or abort conditions.
+
+**EX-1 (DM double-trigger) — updated citation:**
+EX-1 maps to §3.3 "Structural impossibility of double-trigger" (the per-room Promise-chain
+queue is the primary guard) AND §3.6 (the server is the sole Ollama caller in multiplayer
+mode — no client code path reaches Ollama when `isMultiplayerMode()` is true). The F1 §8
+residual risk note ("a client on a very slow connection might enqueue an action just as the
+phase changes") identifies the `DM_BUSY` rejection path as the expected outcome — not a
+double call. The mode-flip boundary case that the D3 review flagged as a residual for F1
+is now covered by the new MC-5 experiment (EX-MC5 below); EX-1 itself validates only the
+queue-serialization guarantee where both clients are already in confirmed multiplayer mode.
+
+**EX-2 (dropped WS / network partition) — updated citation:**
+EX-2's adopt-gate assertion ("M7 gate accepts the server state") is now anchored to the
+dual-authority gate in §2.2 (MC-6). The relevant criterion is `turnSequence > localTurnSequence`
+OR `savedAt > local` — not strictly-greater `savedAt` alone. The poll-path scenario (Scenario A
+step 4b using fake timers) must verify the poll path still uses strict-greater `savedAt` (no
+change). The WS reconnect path must verify the `turnSequence`-primary check. For the
+same-millisecond `savedAt` case introduced by MC-6, see EX-2b below. The `9999` sentinel
+deafness case introduced by MC-7 is covered by EX-6b below.
+
+**EX-9 (.md save during active turn) — updated citation:**
+EX-9's core premise (a `.md` file carrying `awaiting-dm` on load) is now closed at the design
+level by the phase-sanitize rule in §1.2 (MC-4): any non-resting phase value is coerced to
+`free-roam` by both `serializeSession` (write path) and `deserializeSession` / `fromMarkdown`
+(load path). EX-9 therefore becomes a regression test for the phase-sanitize rule rather than
+a newly-discovered vulnerability. It is also anchored to §4.1 (state-name definitions stating
+`AWAITING_DM` "NEVER persisted to .md") and §6.3 (`.md` save/continue preservation under MC-4).
+The abort condition (loaded client stuck in `awaiting-dm`) would mean the phase-sanitize
+coercion regressed. No change to injection method or assertions.
+
+---
+
+### EX-3C contract — Ollama stream never-completes (MC-8 / item E tightened)
+
+**Applies to:** EX-3 sub-scenario 3C. This entry tightens EX-3C into an explicit contract
+against the §3.5 90-second timeout guarantee (MC-8, security item E cross-reference), which
+was absent from the architecture pre-revision and was the plan's documented "most dangerous
+failure mode."
+
+**Maps to:** §3.5 (Ollama timeout), §8 F5 Scenario B, MC-8, item E; R1, R5.
+
+**What changed post-revision:** Before the revised architecture, EX-3C noted "if no timeout
+guard exists, this experiment will reveal a permanent wedge (abort condition)." The revised
+§3.5 specifies the guard: an `AbortController` with `OLLAMA_TIMEOUT_MS = 90_000`, clearing
+in the `finally` block, and a specific five-step recovery sequence. EX-3C now validates
+that concrete contract rather than probing for the guard's existence.
+
+**Steady-state hypothesis (tightened):**
+When the server's Ollama fetch is held open by a mock that accepts the connection and sends
+no data, the `AbortController` timer fires at ~90 seconds. The server then:
+1. Receives `AbortError` from the fetch
+2. Broadcasts `dm:done { error: true, partial: "" }` to all clients in the room
+3. Resets `phase` to the resting phase that was active before the action was dequeued
+   (`free-roam` or `combat`, whichever it was — NOT `awaiting-dm`)
+4. Releases the per-room action-queue lock
+5. Does NOT increment `turnSequence`; does NOT write to the `.md` store
+
+After (5), the next queued action (or the next action submitted by any eligible client)
+fires a clean Ollama call and completes successfully.
+
+**Injection method (replaces the stub in EX-3 3C):**
+```
+1. Start the mock Ollama in 'hang' mode on :11435.
+   (Accepts the TCP connection and sends HTTP 200 + Transfer-Encoding: chunked,
+    then writes nothing. The socket stays open. Achieves "connected but silent".)
+2. Override OLLAMA_HOST=http://localhost:11435 for the test server instance only.
+3. Client A joins chaos-test room (chaos-test-ex3c-<timestamp>). Verify steady state.
+4. Client B joins as a second observer (to confirm broadcast reaches all clients).
+5. Client A sends an action. Server dequeues it, sets phase=awaiting-dm, calls mock Ollama.
+6. Observe: both clients receive the awaiting-dm phase broadcast (phase field in session:update).
+7. Wait for the timeout to fire. Observation window: 91 s (1 s buffer above the 90 s bound).
+   The wrapper script records the exact elapsed time between the action send and dm:done receipt.
+8. Assert: dm:done { error: true } received by both clients within [90s, 95s] of step 5.
+   (Lower bound confirms the guard didn't fire prematurely; upper bound is the abort threshold.)
+9. Assert: phase on both clients = the pre-action resting phase (free-roam in the default case).
+10. Assert: turnSequence on both clients = value from before step 5 (no increment).
+11. Assert: .md file's turnSequence and phase are unchanged.
+12. Client A sends a second action. Mock Ollama is switched to 'normal' mode (server restarts
+    with real Ollama or mock switched). Assert clean turn cycle: dm:done without error, turnSequence N+1.
+```
+
+**Expected behavior / assertions:**
+1. `dm:done { error: true, partial: "" }` received by ALL clients (both A and B) within the
+   [90 s, 95 s] window. Partial is empty string (no bytes streamed before timeout).
+2. `phase` on both clients = pre-action resting phase immediately after `dm:done`.
+3. `turnSequence` unchanged on both clients.
+4. `.md` file: no new entry, `turnSequence` = pre-experiment value.
+5. Action-queue lock released: Client A's next action is accepted (not rejected with `DM_BUSY`).
+6. Recovery turn (step 12): exactly one Ollama call, `turnSequence` N+1, `dm:done` without error.
+
+**Abort conditions:**
+- `awaiting-dm` phase persists past 95 s after the action was sent: the timeout guard is
+  absent or firing too late. Record elapsed time. This is the primary abort.
+- `dm:done { error: true }` reaches Client A but NOT Client B: the broadcast is not fan-out
+  to all room clients. Abort and inspect the broadcast loop in §3.4.
+- `turnSequence` advances despite the error: abort. The guard at step 4 of §3.5 ("does NOT
+  increment `turnSequence`") has regressed.
+- Any subsequent action permanently returns `DM_BUSY` (lock not released): abort. Capture
+  the Promise-chain state.
+- The real Ollama process is contacted (confirmed by checking the real `:11434` access log):
+  abort. The `OLLAMA_HOST` override is not being respected (security item H regression).
+
+**Blast-radius limits:**
+- Observation window is 91–95 s — the longest in this plan. The experiment wrapper captures
+  the PID of the test server instance and can be manually aborted with `Ctrl+C`; the mock
+  Ollama on `:11435` is shut down on exit. The 90 s window is isolated to the test server;
+  the real Ollama process on `:11434` is not contacted or blocked.
+- Test room `chaos-test-ex3c-<timestamp>` only.
+- `sessions/` temp directory wiped after the run.
+
+---
+
+### EX-MC5 — Mode-flip boundary (MC-5 new experiment)
+
+**Maps to:** §3.7 "Single-player ↔ multiplayer mode predicate" (MC-5), §3.3 structural
+impossibility of double-trigger; §8 F1 residual; R1.
+
+**Failure mode being probed:**
+The mode predicate `isMultiplayerMode() = (wsState === WS_OPEN && roomJoined === true)`
+has two critical boundary windows:
+- **Pre-state window:** WS is OPEN but `session:state` has not yet arrived — `roomJoined`
+  is still `false`. An action submitted in this window must take the single-player path
+  (direct Ollama fetch), not the WS path.
+- **Leave window:** A second player leaves, `presence:update` fires reducing `connectionCount`
+  to 1. But `roomJoined` remains `true` and `wsState === WS_OPEN`. The mode predicate does
+  NOT flip to single-player; the remaining client stays on the WS path. An action submitted
+  mid-leave must not produce two Ollama calls (one client-side, one server-side).
+
+The hypothesis from §3.7: "A turn MUST NOT be executed by both the client-side Ollama fetch
+AND the server proxy."
+
+**Steady-state hypothesis:**
+At no timing of the mode boundary (pre-state window, mid-leave window, or mid-turn when the
+WS closes) does a single player action produce more than one Ollama call in total across both
+the client-side fetch path and the server-side proxy path. The mock-Ollama call counter (the
+same counter used in EX-1) confirms this. Specifically:
+- Pre-state window action: count = 1 on the client-side mock (`:11434`), 0 on the server-side mock (`:11435`).
+- Post-`session:state` action: count = 0 on `:11434`, 1 on `:11435`.
+- Mid-leave action (second player leaves while action is in flight): count = 0 on `:11434`, 1 on `:11435`.
+- Mid-turn WS close action: depends on the state of `roomJoined` at the moment of close —
+  if `roomJoined` is reset to `false` synchronously in the `close` handler (§3.7 guarantee),
+  count = 0 on `:11434` for the already-queued server action; any subsequent action goes to
+  `:11434` (single-player path).
+
+**Injection method — three boundary sub-scenarios:**
+
+_MC5-A: Action submitted before `session:state` arrives (pre-state window):_
+```
+1. Client A opens a WS connection. The WS fires 'open'.
+2. Before the server sends session:state, pause the server's session:state dispatch
+   (inject a 500ms delay into the test server's join handler using a Promise+setTimeout shim).
+3. Client A submits an action during the delay window (roomJoined is still false).
+4. Assert: the action takes the single-player path (client-side Ollama mock on :11434 receives 1 call).
+5. Assert: the server-side mock on :11435 receives 0 calls (no WS action forwarded).
+6. Assert: no error on Client A.
+7. Allow session:state to arrive. Client A submits another action.
+8. Assert: :11434 receives 0 additional calls; :11435 receives 1 call (server-side proxy).
+```
+
+_MC5-B: Action submitted exactly at the `presence:update` that removes the last other player:_
+```
+1. Client A (host) and Client B join the chaos-test room. Both receive session:state; roomJoined=true.
+2. Client B disconnects (ws.terminate()).
+3. Simultaneously (same event loop tick): Client A receives presence:update AND submits an action.
+4. Assert: exactly 1 Ollama call total across :11434 and :11435.
+   (The mode predicate should remain true — WS is open, roomJoined is true — so :11435 gets the call.)
+5. Assert: Client A does not see an error; turn completes normally.
+```
+
+_MC5-C: WS closes mid-turn (after action sent, before dm:done):_
+```
+1. Client A joins, roomJoined=true. Mock Ollama on :11435 is in 'slow-drip' mode (1 chunk/500ms).
+2. Client A sends an action. Server queues it; starts streaming. dm:delta events begin.
+3. After 2 chunks, call ws.terminate() on Client A's connection from outside.
+4. Observe: Client A's 'close' handler fires; roomJoined is reset to false synchronously.
+5. Client A attempts to send a second action (the UI re-enables because phase appears unset).
+6. Assert: the second action takes the single-player path (:11434 receives 1 call);
+   the server-side in-flight stream completes on its own (the server doesn't crash on disconnect).
+7. Assert: :11435 receives exactly 1 call (the original in-flight action, not the retry).
+8. Total across both mocks: 2 calls (1 server in-flight + 1 client-side retry). This is
+   acceptable — the server's in-flight action predates the disconnect; it was already executing.
+   The abort condition is > 2 total calls or any error from the in-flight stream.
+```
+
+**Expected behavior / assertions:**
+1. MC5-A: call counts (:11434, :11435) = (1, 0) before `session:state`; (1, 1) after it.
+2. MC5-B: call counts = (0, 1); Client A's turn completes; no double-call.
+3. MC5-C: total call count ≤ 2; no uncaught exception in the server or client; the server's
+   in-flight stream completes (or errors cleanly) without crashing the room.
+4. In all sub-scenarios: `turnSequence` advances by exactly the number of successful dm:done
+   events (1 in A and B; 1 from the server in-flight in C, possibly 1 more from the client retry).
+5. No client shows a duplicate assistant message (even if two Ollama calls fire in MC5-C,
+   they are on different action contents and cannot produce a duplicate in the same message log).
+
+**Abort conditions:**
+- Any sub-scenario produces more Ollama calls than asserted above: abort immediately.
+  This is the double-trigger regression for the mode-flip path.
+- `roomJoined` is not reset to `false` synchronously in the `close` handler (MC5-C):
+  abort. The synchronous reset is the §3.7 safety invariant; its absence makes MC5-B/C both unsafe.
+- Client A crashes (unhandled exception) during any boundary transition: abort.
+- The server room enters an inconsistent state (action queue locked, no dm:done ever
+  broadcast) after any sub-scenario: abort.
+
+**Blast-radius limits:**
+- Two separate mock Ollama servers run simultaneously: `:11434` (client-side path) and
+  `:11435` (server-side path). Each records calls independently. The real Ollama process
+  is not contacted.
+- WS delay shim (MC5-A) is a test-harness-only in-process hook; it does not affect the
+  production join handler.
+- Test rooms `chaos-test-ex-mc5a-<ts>`, `chaos-test-ex-mc5b-<ts>`, `chaos-test-ex-mc5c-<ts>`.
+- `sessions/` temp directory wiped after each sub-scenario.
+
+---
+
+### EX-2b — Same-millisecond `savedAt` tie under server-push (MC-6 new sub-experiment)
+
+**Applies to:** EX-2. Fold as EX-2b or run as a standalone extension of EX-2 Scenario A.
+**Maps to:** §2.2 dual-authority adopt gate (MC-6), §8 F2 revised, §8 F4 revised; R2, R5.
+
+**Failure mode being probed:**
+Under the old `savedAt`-only M7 gate, two `dm:done` writes within the same millisecond produce
+equal `savedAt` strings. The strictly-greater check would reject the second update on every
+client. The dual-authority gate (§2.2 MC-6) resolves this by keying on `turnSequence` as
+the primary authority for live WS pushes: `seqNewer = payload.turnSequence > localTurnSequence.current`.
+This experiment confirms the fix holds at the designed boundary.
+
+**Steady-state hypothesis:**
+Two consecutive turns completing within the same millisecond (achievable on loopback with
+a zero-latency mock Ollama) produce two distinct `dm:done` broadcasts with `turnSequence` N+1
+and N+2 and the same `savedAt` string (same wall-clock millisecond). Both broadcasts are
+accepted by all clients' `adopt()` gate via the `seqNewer` path. After both turns, all
+clients converge to `turnSequence = N+2` with no silent desync.
+
+**Injection method:**
+```
+1. Use the mock Ollama in 'instant' mode: responds with the full canned response in one flush,
+   no streaming delay. On loopback this makes two consecutive turns very likely to land in the
+   same millisecond's savedAt.
+2. Client A and Client B join the chaos-test room.
+3. In FREE_ROAM phase: Client A sends action → dm:done (turn N+1, savedAt T1).
+   Immediately: Client B sends action → dm:done (turn N+2, savedAt T2 ≈ T1).
+4. Repeat 10 times with zero inter-action delay to maximize the probability of T1 === T2.
+5. After each run, assert: turnSequence on Client A = N+2, on Client B = N+2. No desync.
+6. Capture the savedAt values across all 10 runs; in at least some runs they should be equal
+   (confirming the boundary was exercised).
+```
+
+**Expected behavior / assertions:**
+1. In runs where `T1 === T2`: both updates are accepted. `turnSequence` on both clients = N+2.
+2. In runs where `T1 < T2`: both updates accepted normally (no regression in the ordinary path).
+3. No run produces a `turnSequence` desync (one client at N+1, other at N+2) after both
+   `dm:done` events have been received by both clients.
+4. The `.md` file after both turns has `turnSequence = N+2` (the server wrote the latest state).
+
+**Abort conditions:**
+- After both `dm:done` events, either client shows `turnSequence = N+1` (i.e., the second
+  update was silently rejected): abort. The `seqNewer` path of the dual-authority gate is not
+  functioning. Capture the `savedAt` values from both `dm:done` events and the local gate
+  comparison at the time of rejection.
+- Any client displays a `session:update` rejection warning in the console: abort.
+
+**Blast-radius limits:**
+- Mock Ollama 'instant' mode on `:11435`. No real Ollama involved.
+- Test room `chaos-test-ex2b-<timestamp>`.
+- `sessions/` temp directory wiped after the run.
+
+---
+
+### EX-6b — Sentinel deafness after session clear + server push (MC-7 new sub-experiment)
+
+**Applies to:** EX-6. Add as EX-6b or fold as Scenario C within EX-6's experiment block.
+**Maps to:** §2.2 `9999` sentinel reset under server-push (MC-7), §8 F2 revised; R2.
+
+**Failure mode being probed:**
+In single-player, `onNewSession` sets `lastSavedAt.current = '9999-...'` to prevent a stale
+poll from resurrecting the cleared session. In multiplayer, the client issues no HTTP PUT —
+the server writes on every `dm:done`. Without a reset mechanism, the sentinel permanently
+blocks all `session:state` and `session:update` events from being adopted, making the client
+permanently deaf to server pushes after a session clear.
+
+The revised §2.2 (MC-7) specifies the reset rule: the `session:state` handler on join resets
+`lastSavedAt.current` and `localTurnSequence.current` authoritatively, without running the
+adopt gate. The `onNewSession` path sets `localTurnSequence.current = -1` so the next
+`session:state` for the new room (turnSequence ≥ 0) satisfies `seqNewer` and clears the
+deaf state.
+
+**Steady-state hypothesis:**
+After `onNewSession` sets the `9999` sentinel (and `localTurnSequence = -1`) with no client PUT,
+a `session:state` event received for the newly-created room is adopted unconditionally by the
+`onSessionState` handler (which bypasses the gate and resets both refs). Subsequent
+`session:update` events on the WS path are then adopted normally via the dual-authority gate
+(`seqNewer` check against the freshly-reset `localTurnSequence`). The client is NOT permanently
+deaf after a clear.
+
+**Injection method:**
+```
+1. Client A has an active session (turnSequence = 5, savedAt = some past ISO string).
+2. Call onNewSession() on Client A:
+   - This calls deleteSyncSession(id), sets lastSavedAt.current = '9999-...',
+     sets localTurnSequence.current = -1.
+   - No HTTP PUT is made (multiplayer mode — server writes; client does not PUT).
+3. Client A joins a NEW chaos-test room (different sessionId, turnSequence = 0).
+4. Server sends session:state { turnSequence: 0, savedAt: <now> } for the new room.
+5. Assert: Client A adopts the session:state (onSessionState is called unconditionally,
+   overriding the sentinel).
+6. Assert: Client A's lastSavedAt.current = <now> (sentinel cleared).
+7. Assert: Client A's localTurnSequence.current = 0.
+8. Server broadcasts session:update { turnSequence: 1 } (from another client's action).
+9. Assert: Client A adopts the update via seqNewer (1 > 0). No permanent deafness.
+10. Negative control: call onNewSession() again, then send a session:update (NOT a
+    session:state) with turnSequence = 0. Assert: Client A does NOT adopt it (seqNewer
+    is 0 > -1 = true... wait — this should be adopted per the seqNewer rule since 0 > -1).
+    The important distinction: a session:update from the OLD room's session with turnSequence
+    that is 0 > -1 must NOT be confused with the new room. Test that the roomCode field
+    in the update is checked before the adopt gate so stale updates from the cleared room
+    are discarded by the room-code mismatch, not the sentinel.
+```
+
+**Expected behavior / assertions:**
+1. After `onNewSession` + `session:state` for new room: Client A is NOT deaf. Both
+   `lastSavedAt.current` and `localTurnSequence.current` are updated to the new room's values.
+2. Subsequent `session:update` at `turnSequence = 1`: adopted by Client A (`seqNewer` path).
+3. Negative control: a `session:update` from the old/cleared room (wrong `roomCode`) is
+   discarded before the adopt gate — roomCode mismatch is checked first (not part of the gate
+   itself, but part of the WS message router that dispatches only matching-room events).
+4. No uncaught exception thrown during `onNewSession` → `session:state` → `session:update`
+   lifecycle.
+
+**Abort conditions:**
+- Client A ignores the `session:state` for the new room after `onNewSession` (permanent
+  deafness): this is the MC-7 failure. Capture `lastSavedAt.current` and `localTurnSequence.current`
+  at the time of the ignored event. Abort immediately.
+- `session:update` at step 8 is ignored (deafness extended past the session:state reset): abort.
+- A `session:update` from the cleared session's old roomCode is adopted (room-code mismatch
+  not checked): abort. This is a separate correctness regression, not the MC-7 failure, but
+  equally critical.
+
+**Blast-radius limits:**
+- All sentinel manipulation is in-process in the test harness; no real sessions are cleared.
+- The `deleteSyncSession` call in the test uses the `chaos-test-` prefixed session ID.
+  The cleanup guard (§0 scope) verifies no real session file was touched.
+- Test rooms `chaos-test-ex6b-old-<ts>` (cleared) and `chaos-test-ex6b-new-<ts>` (new room).
+- Mock Ollama on `:11435`; no real Ollama contact.
+
+---
+
+## 7. Updated Traceability Matrix
+
+The following rows extend the §6 matrix. The §6 matrix itself is not renumbered or modified.
+
+| Experiment | Architecture §8 Failure | Risk Register | Architecture Section | PRD Success Criterion |
+|------------|--------------------------|---------------|----------------------|-----------------------|
+| EX-1 (re-anchored) | F1, F7 | R1 | §3.3 (queue), §3.6 (single server caller) | §5.2 no DM double-output |
+| EX-2 (re-anchored) | F2 | R2, R5 | §2.2 MC-6 dual-authority gate | §5.2 no split-brain |
+| EX-3C (tightened) | F5 scenario B | R1, R5 | §3.5 MC-8 / item E 90s timeout | §5.2 stability; §5.5 error handling |
+| EX-MC5 | F1 residual (mode-flip) | R1 | §3.7 MC-5 mode predicate | §5.2 no DM double-output |
+| EX-2b | F2 (same-ms tie), F4 | R2, R5 | §2.2 MC-6 dual-authority gate (seqNewer) | §5.1 turn-state sync; §5.2 no split-brain |
+| EX-6b | F2 (sentinel deafness) | R2 | §2.2 MC-7 sentinel reset | §5.4 session continuity |
+| EX-9 (re-anchored) | (implied §6.3, §1.2) | R3 | §1.2 MC-4 phase-sanitize, §4.1, §6.3 | §5.4 session continuity; §5.6 .md handoff |
+
+---
+
+## Updated Priority Run Order (G2 addendum)
+
+The following inserts the new experiments into the run order from §1 by priority. Existing
+entries retain their positions; new entries are interspersed by risk level.
+
+| Priority | Experiment | Rationale |
+|----------|------------|-----------|
+| 2a (after EX-1) | EX-MC5 (mode-flip boundary) | Closes the D3-flagged residual for F1; must run while the mode predicate is fresh in mind; uses the same mock-Ollama call counter as EX-1 |
+| 2b (after EX-MC5) | EX-3C (tightened contract) | The most dangerous single failure (permanent wedge); now has a concrete 90 s bound to validate; observation window is 91–95 s |
+| 6a (after EX-6) | EX-2b (same-millisecond tie) | MC-6 fix validation; run after core convergence gate is confirmed working in EX-2 |
+| 6b (after EX-2b) | EX-6b (sentinel deafness) | MC-7 fix validation; depends on the adopt-gate mechanics confirmed by EX-2 and EX-2b |
+
+---
+
 ## References
 
 - `docs/design/MULTIPLAYER-ARCHITECTURE.md` — §8 F1–F7, §3.3 double-trigger prevention,

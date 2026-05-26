@@ -1,8 +1,9 @@
 # Multiplayer QA Plan -- D&D Campaign Assistant
 
 > **Owner:** qa-expert (D2-qa)
-> **Inputs:** MULTIPLAYER-ARCHITECTURE.md (section 4 state machine, section 7 phased build, section 8 failure modes F1-F7);
-> MULTIPLAYER-PRD.md (section 5 success criteria); MULTIPLAYER-ORCHESTRATION.md section 3.2 + section 5 risk register R1-R5.
+> **Inputs:** MULTIPLAYER-ARCHITECTURE.md (revised post-review: section 3.5 Ollama timeout, section 3.6 server-side prompt assembly, section 3.7 mode predicate, section 4.4 action acceptance, section 5.2 connection binding, section 5.4 input validation, section 7 Phase 4 CI smoke, section 8 failure modes F1-F7);
+> MULTIPLAYER-PRD.md (section 5 success criteria); MULTIPLAYER-ORCHESTRATION.md section 3.2 + section 5 risk register R1-R5;
+> MULTIPLAYER-ARCH-REVIEW.md (MC-1..MC-9, Folding note end of section 4); MULTIPLAYER-SECURITY-REVIEW.md (section 1.1/1.2/1.3/section 5).
 > **Status:** DESIGN-ARC -- plan only. No feature code exists. Execute in V2 after G1 clears.
 > **Existing test posture:** Vitest (jsdom + one node-env server suite), 274 tests, npm test -- --run.
 
@@ -483,6 +484,267 @@ The G3 post-validation gate passes when ALL of the following hold:
 Any single FAIL triggers defect filing and routes the fix to the implementing code agent for re-run of the impacted scenarios only (not the full suite, unless the fix touches cross-cutting code such as session.js or sync-server.mjs).
 
 ---
+
+---
+
+## Post-revision refresh (G2)
+
+This section was added after the D3 architecture review (MC-1..MC-9) and D3b security review (items A..J) were folded into `docs/design/MULTIPLAYER-ARCHITECTURE.md`. It records new and amended QA coverage for the items owned by the QA expert: MC-2, MC-5, MC-8, MC-9, and security items A, B, C, I, J. Existing scenarios (sections 1-10 above) are not deleted or renumbered; cross-links to them are noted inline.
+
+Each subsection follows the same scenario format used throughout: Automation classification, Setup, Steps/Expected, Pass gate, and a Traceability line tying the scenario to its MC/security item and to the PRD success criterion or risk it covers.
+
+---
+
+### G2.1 MC-2 -- Server-side prompt-assembly fidelity
+
+**Revised architecture reference:** section 3.6 (new section). The server-side DM call must reproduce the full `Chat.jsx#sendMessage` pipeline: `buildSystemPrompt(campaign)` via `getGenre(campaign.genre).engine`, `extractEntities(messages)`, the dice-message-to-text transform with `pendingCheck` folding from the `action` envelope, `trimContext([...messages + userMsg])`, and the Ollama `options` block (`num_ctx: 8192`, `num_predict: 900`, `temperature: 0.8`, `top_p: 0.9`, `top_k: 40`, `repeat_penalty: 1.15`, `repeat_last_n: 256`) plus validated `campaign.model`. Leaving any step out produces wrong inference quality or unbounded context growth (security item G).
+
+**Quality gate (new): QG-12 -- Prompt-assembly equivalence**
+
+- **Metric:** The server-assembled Ollama request body as captured by mock-Ollama must contain (a) a system prompt identical to what `buildSystemPrompt(campaign)` + `extractEntities(messages)` would produce for the same session, (b) a messages array whose context-window length is bounded by `trimContext` (no more than the window cap), and (c) an `options` object matching the five values listed above.
+- **Threshold:** Zero divergence between server-assembled prompt and a reference prompt assembled by the same genre engine on the same session state. Context window must not exceed the `trimContext` ceiling even when session messages exceed it.
+- **Measurement:** SCENARIO-G2-MC2-01 and SCENARIO-G2-MC2-02 below (node-env, mock-Ollama captures full request body).
+- **Pass:** Server request body matches reference prompt exactly; trimmed message count equals `trimContext` output length; Ollama `options` block is present with all five values; `model` passes the allowlist pattern.
+- **Fail:** Server omits `buildSystemPrompt`, `extractEntities`, or `trimContext`; context window grows unbounded with session length; `options` block absent or partial; invalid `model` string reaches Ollama.
+- **Traceability:** MC-2 (arch review section 1.3, section 2.1); security item G (security review section 2.1); PRD 5.2 (no garbled DM output); R1 (DM correctness under load).
+
+**SCENARIO-G2-MC2-01 -- Server prompt matches client-side reference assembly**
+- Automation: YES (node-env; mock-Ollama captures full POST body)
+- Setup: A two-player room with a known session state: `campaign.genre = 'dnd'`, five messages including two dice messages, one `pendingCheck: { skill: 'Stealth', dc: 14 }` active on the acting client.
+- Steps: (1) Client sends an action event with content 'I try to sneak past the guard' and `pendingCheck: { skill: 'Stealth', dc: 14 }`. (2) Mock-Ollama captures the request body. (3) Reference: call `buildSystemPrompt(campaign)` + `extractEntities(messages)` + dice-text transform + `trimContext` locally with the same inputs.
+- Expected: The captured `messages` array from mock-Ollama matches the reference array. The `system` string matches. The `pendingCheck` context appears in the most-recent dice line. The `options` object contains all five values.
+- Pass gate: Deep equality between captured and reference `messages`; `system` strings identical; `options` keys and values match; `pendingCheck` folded correctly into dice line text.
+- Traceability: MC-2; security item G; PRD 5.2; `src/lib/context.js` `buildSystemPrompt`/`extractEntities`/`trimContext`; `src/lib/genres.js` `getGenre`.
+
+**SCENARIO-G2-MC2-02 -- Context window bounded when session exceeds trimContext ceiling**
+- Automation: YES (node-env; mock-Ollama captures full POST body)
+- Setup: A room whose session has 60 messages (well above the `trimContext` ceiling of 4 system + 18 recent). `campaign.genre = 'dnd'`.
+- Steps: (1) Client sends an action. (2) Mock-Ollama captures the request body.
+- Expected: The `messages` array in the captured body contains at most the `trimContext` output length. The total does not grow proportionally with session length.
+- Pass gate: `messages.length` in captured body equals `trimContext` output for the same inputs; no unbounded growth across 10 repeated sends as the session grows.
+- Traceability: MC-2; security item G (section 2.1 "unbounded prompt size / compute DoS"); PRD 5.2 (no latency cliff); `src/lib/context.js` `trimContext`.
+
+**Amendment to existing coverage:** SCENARIO-EDGE-09 and SCENARIO-EDGE-10 (section 3.5) already cover the error-path side of the server DM call. QG-12 above covers the happy-path correctness of the prompt content. The Phase 3 test surface in section 9 should now include SCENARIO-G2-MC2-01 as a must-pass before Phase 4 proceeds.
+
+---
+
+### G2.2 MC-5 -- Single-player to multiplayer mode boundary
+
+The authoritative mode predicate is `wsState === WS_OPEN && roomJoined === true`, where `roomJoined` is set to `true` only on receipt of the first `session:state` event and reset to `false` on WS close, explicit `leave`, or `onNewSession` (revised architecture section 3.7). This closes the two boundary windows identified by the D3 review: (a) WS connected but no `session:state` yet, and (b) second player leaves and `presence:update` count has not yet propagated.
+
+**Quality gate (new): QG-13 -- No dual-path execution across mode flip**
+
+- **Metric:** Count of turns where both the client-side `fetch` to Ollama and a server-side WS `action` are dispatched for the same user input event.
+- **Threshold:** Zero dual-path executions across all mode-flip boundary scenarios.
+- **Measurement:** SCENARIO-G2-MC5-01 and SCENARIO-G2-MC5-02 below.
+- **Pass:** Every user input produces exactly one Ollama call regardless of the mode at input time; the path (client-direct vs server-proxy) is determined by `roomJoined` at the instant of submission, not by `connectionCount` or `wsState` alone.
+- **Fail:** Any test run where mock-Ollama receives a direct browser POST and the server also dispatches a WS action for the same turn; or where `turnSequence` advances on the server for a turn the client also processed locally.
+- **Traceability:** MC-5 (arch review section 2.2, D3 Folding note); PRD 5.2 (no garbled DM output, no duplicate DM response); R1 (DM double-trigger prevention).
+
+**SCENARIO-G2-MC5-01 -- Action submitted before session:state arrives uses single-player path**
+- Automation: YES (jsdom; mock WS that delays `session:state` by 500 ms after the WS `open` event)
+- Setup: Client connects a WebSocket. WS `open` fires but `session:state` has not yet arrived (`roomJoined = false`). User submits an action immediately.
+- Steps: (1) WS open fires. (2) User input submitted at t+10 ms. (3) `session:state` arrives at t+500 ms.
+- Expected: The action submitted at t+10 ms uses the direct Ollama fetch path (single-player). No `{ type: 'action' }` WS message is sent. After `session:state` arrives, subsequent actions use the WS path.
+- Pass gate: Mock-Ollama endpoint receives the direct POST; WS `send` is NOT called with `{ type: 'action' }` for the pre-`session:state` submission; after `session:state`, the next submission goes over WS only.
+- Traceability: MC-5; section 3.7 `roomJoined` predicate; PRD 5.2; R1.
+
+**SCENARIO-G2-MC5-02 -- Action submitted after second player leaves but before presence:update uses correct path**
+- Automation: YES (node-env; two ws clients; second client disconnects; first client submits action before receiving presence:update)
+- Setup: Two-player room. Player B disconnects. Player A submits an action within the window before A's client processes the `presence:update` showing count = 1.
+- Steps: (1) B's WS is closed server-side via `ws.terminate()`. (2) A sends an action before receiving `presence:update`. (3) Verify which path is used.
+- Expected: Because `roomJoined` is still `true` on A's client (WS remains open and A has received `session:state`), A's action goes through the WS server-proxy path. No direct Ollama call from A's browser. No dual-path execution.
+- Pass gate: Server receives and processes the WS `action`; mock-Ollama is called by the server exactly once; no direct browser POST to mock-Ollama; `turnSequence` increments by 1 on the server.
+- Traceability: MC-5; section 3.7 `roomJoined` reset rule (reset on WS close, NOT on `presence:update`); PRD 5.2; R1.
+
+**Amendment to existing coverage:** SCENARIO-COMPAT-07 and COMPAT-08 (section 6.2) cover the case where the WS is fully disconnected or never connected. The two scenarios above fill the gap at the predicate boundary where `wsState === OPEN` but `roomJoined` is in a transient state. The Phase 3 test surface in section 9 should include SCENARIO-G2-MC5-01 and SCENARIO-G2-MC5-02 as must-pass items before Phase 4.
+
+---
+
+### G2.3 MC-8 -- Ollama hung-stream timeout and recovery
+
+Every server-side Ollama fetch is wrapped in an `AbortController` with a 90-second timeout (revised architecture section 3.5). On expiry: abort the stream, broadcast `dm:done { error: true, partial: fullTextSoFar }`, reset `phase` to the pre-action resting phase, release the per-room queue lock, do NOT increment `turnSequence`, do NOT write to `.md`. This closes chaos experiment EX-3C at the design level.
+
+**Amendment to existing edge cases:** SCENARIO-EDGE-09 covers mid-stream abort (Ollama drops the connection). SCENARIO-EDGE-10 covers connection refused. Neither covers the hung-stream case where the connection stays open but no data arrives. The following scenario fills that gap.
+
+**SCENARIO-G2-MC8-01 -- Ollama hangs indefinitely; room recovers after timeout**
+- Automation: YES (node-env; mock Ollama that accepts the connection and holds it open without sending any data)
+- Setup: A two-player room in FREE_ROAM. Mock Ollama is configured to accept the POST and hold the connection open indefinitely (no data, no close).
+- Steps: (1) Player A sends an action. (2) Server calls mock Ollama; stream begins but no data arrives. (3) Server's AbortController timeout fires. (4) Verify broadcast and state.
+- Expected: Server aborts the fetch after the timeout. Broadcasts `dm:done { error: true }` to all clients (no partial text since no data was received). `phase` resets to `free-roam`. Per-room queue lock is released. `turnSequence` is unchanged. No `.md` write occurs for this turn. Player A can immediately resubmit; a new Ollama call fires.
+- Pass gate: `dm:done { error: true }` received by both clients within (timeout + 5 s) of action submission; `phase` is `free-roam` after recovery; `turnSequence` delta = 0; mock-Ollama receives exactly one call (the hung one); a second action after recovery fires exactly one new call; no `awaiting-dm` wedge persists; no `.md` file modified for the hung turn.
+- Note on CI timing: `OLLAMA_TIMEOUT_MS` should be injectable as an environment constant (default 90,000 ms; overridable to e.g. 2,000 ms in test environments) so this scenario does not introduce a 90-second wall-clock wait in `npm test -- --run`.
+- Traceability: MC-8 (arch review section 3.5 must-change; chaos EX-3C); security item E (security review section 2.3 "Queue-wedge: one stalling client freezes the whole room"); PRD 5.4 (server failure recovery); F5 failure mode (section 8 F5 Scenario B).
+
+**Amendment to QG-11:** QG-11's measurement list should include SCENARIO-G2-MC8-01. The hung-stream path was not previously covered by SCENARIO-EDGE-09 or SCENARIO-EDGE-10. The Phase 3 test surface in section 9 should add SCENARIO-G2-MC8-01 as a must-pass before Phase 4.
+
+---
+
+### G2.4 MC-9 -- CI latency smoke (upper-bound propagation gate)
+
+The D3 review's Folding note (end of section 4 of the arch review) requires a CI-side upper-bound smoke so a gross regression is caught automatically, distinct from the precise manual measurement (SCENARIO-MANUAL-04 / QG-02). The architecture section 7 Phase 4 names this as a test surface requirement.
+
+**Quality gate (new): QG-14 -- CI propagation smoke**
+
+- **Metric:** Time from a client sending an `action` event to all other clients in the same room receiving the first `dm:delta`, measured on loopback (`localhost`).
+- **Threshold:** p95 under 2000 ms on loopback in the CI/test environment. (This is a generous bound to avoid false positives from test infrastructure variance; the precise 500 ms target lives in QG-02/MANUAL-04 on real LAN hardware.)
+- **Measurement:** SCENARIO-G2-MC9-01 below. Run as part of the Phase 4 test surface under `npm test -- --run`.
+- **Pass:** p95 propagation on loopback is under 2000 ms across 10 test iterations; no single iteration exceeds 5000 ms.
+- **Fail:** Any iteration where the first `dm:delta` on a second client arrives more than 2000 ms after the action was sent on loopback, indicating a gross regression in the WebSocket broadcast path.
+- **Relationship to existing gates:** QG-02 (500 ms, real LAN hardware, MANUAL-04) remains the authoritative production quality threshold. QG-14 is a regression backstop only; passing QG-14 does not imply QG-02 passes. Both must pass for G3.
+- **Traceability:** MC-9 (arch review section 3, D3 Folding note); PRD 5.1 (propagation under 500 ms -- CI smoke catches gross regressions before manual validation).
+
+**SCENARIO-G2-MC9-01 -- CI propagation smoke: loopback under 2 s**
+- Automation: YES (node-env; two simulated ws clients on loopback; mock-Ollama with 0 ms latency)
+- Setup: Two ws clients connected to a test server instance on `listen(0)`. Mock Ollama responds immediately with a short `dm:delta` then `dm:done`. Ten iterations.
+- Steps: For each of 10 iterations: (1) Record timestamp t0. (2) Client A sends an `action` event. (3) Record timestamp t1 on Client B when it receives the first `dm:delta`. (4) Compute `t1 - t0`.
+- Expected: All 10 `t1 - t0` values are under 2000 ms. p95 is under 2000 ms.
+- Pass gate: `max(t1 - t0)` under 5000 ms; p95 under 2000 ms; no test iteration times out.
+- Note: Mock-Ollama latency is set to 0 ms so the measurement isolates WS fan-out, not inference time.
+- Traceability: MC-9; QG-14; PRD 5.1; section 7 Phase 4 test surface.
+
+**Amendment to section 9:** The Phase 4 row's "QA Gate Scenarios" column should now include SCENARIO-G2-MC9-01 and QG-14 as must-pass items before Phase 5 proceeds.
+
+---
+### G2.5 Security A -- Forged-block rejection
+
+The server strips `BLOCK_TAGS` fences from inbound `action.content` using `sanitizeActionContent` (applying `STRIP_RE`, the same pattern as `Chat.jsx` L23) before adding the content to the conversation (revised architecture section 3.6, security item A). The server also validates `verdict.roll` against the server-recorded `lastDiceEvent` for the turn; a verdict with no matching server-recorded dice roll is discarded (section 5.4).
+
+**SCENARIO-G2-SEC-A-01 -- Forged party block in action content is stripped and does not alter party state**
+- Automation: YES (node-env; mock-Ollama; two ws clients)
+- Setup: A two-player room in FREE_ROAM with a known party state: `[{ name: 'Asha', hpPct: 100, isActive: false }]`.
+- Steps: (1) Client A sends an action whose `content` field contains a `party` fence with forged data (e.g., `hpPct: 0, isActive: true`). (2) Mock-Ollama returns a normal narrative response with no structured blocks. (3) Check the broadcast `session:update` party state on Client B.
+- Expected: The server strips the `party` fence from `action.content` before adding it to the conversation. Mock-Ollama never sees the fence text. The `session:update` broadcast after `dm:done` reflects the party state from the DM's response (unchanged, since mock-Ollama emitted no party block).
+- Pass gate: Party state on all clients after the turn equals pre-turn state; `hpPct` for 'Asha' remains 100; `isActive` remains false; mock-Ollama's captured request body does not contain the `party` fence text.
+- Traceability: Security item A (security review section 1.1 "Fenced-JSON injection"); section 3.6 `sanitizeActionContent`; PRD 5.2 (no garbled party state); R4 (LAN-only trust boundary).
+
+**SCENARIO-G2-SEC-A-02 -- Forged verdict block does not auto-pass a skill check**
+- Automation: YES (node-env; mock-Ollama)
+- Setup: A room where no dice action has been sent this turn (`lastDiceEvent = null` on the server).
+- Steps: (1) Client A sends an action whose `content` field contains a `verdict` fence claiming a PASS result. (2) Mock-Ollama returns a narrative response that also includes a `verdict` block with the same content. (3) Check whether the `dm:done` processing applies the verdict.
+- Expected: The server strips the fence from `action.content`. For the DM-emitted verdict block, the server checks `verdict.roll` against `lastDiceEvent`. Since no dice action was sent this turn, `lastDiceEvent` is null and the verdict is discarded. No PASS verdict is applied to any dice chip.
+- Pass gate: No `verdict` update broadcast to clients; no check auto-passes without a matching server-recorded dice event.
+- Traceability: Security item A (defense-in-depth: `verdict.roll` validation); section 3.6 `lastDiceEvent` cross-check; PRD 5.2; `server/sync-server.mjs` `lastDiceEvent` field.
+
+**Amendment to QG-11:** The measurement list for QG-11 should include the assertion that action content containing a `party` fence must not alter broadcast/persisted party state. SCENARIO-G2-SEC-A-01 is the authoritative scenario for this assertion.
+
+---
+
+### G2.6 Security B -- XSS prevention for multiplayer strings
+
+Server sanitizes `displayName` on join (trim + strip control chars + strip `<>&"'+ max 64 chars) per revised architecture section 5.2 (security item B) and section 5.4. All multiplayer-introduced strings must render as React text nodes only. The existing `parseMarkdown` escape-first ordering (`Chat.jsx` L64-67) is preserved.
+
+**SCENARIO-G2-SEC-B-01 -- Malicious displayName is sanitized server-side before broadcast**
+- Automation: YES (node-env; two ws clients)
+- Setup: A room with one connected player (Client A).
+- Steps: (1) Client B sends a `join` with `displayName: '<img src=x onerror=alert(1)>'`. (2) Server processes the join. (3) Both clients receive `presence:update`.
+- Expected: Server sanitizes the `displayName` via `sanitizeDisplayName` before storing in the connections map and before broadcasting. The sanitized name (with `<`, `>`, `&` stripped) appears in the `presence:update` payload, not the raw HTML string.
+- Pass gate: `presence:update` payload contains the sanitized display name; raw `<img>` tag not present anywhere in the broadcast payload; server does not crash.
+- Traceability: Security item B (security review section 4.3 "Display-name XSS into other clients"); section 5.2 `sanitizeDisplayName`; PRD 5.5 (error silence); R4.
+
+**SCENARIO-G2-SEC-B-02 -- Malicious displayName renders as inert text in all client UIs**
+- Automation: YES (jsdom; React rendering test)
+- Setup: Inject a `presence:update` event into a mounted `PartyStrip` or `HistoryPanel` component with `displayName: '<script>alert(1)</script>'` in the connections array.
+- Steps: (1) Mount the component with mock WS. (2) Dispatch the `presence:update` event. (3) Inspect the rendered DOM.
+- Expected: The rendered DOM contains the literal string as a text node, not as a parsed HTML element. No `<script>` tag appears in the DOM tree. React's text node auto-escaping provides the protection; no `dangerouslySetInnerHTML` is used for display names.
+- Pass gate: `document.querySelector('script')` returns null after render; no `dangerouslySetInnerHTML` attribute on any element containing the display name.
+- Traceability: Security item B; section 5.4 "all multiplayer-introduced strings render as React text nodes only"; `src/components/PartyStrip.jsx`, `src/components/HistoryPanel.jsx`; PRD 5.5.
+
+---
+### G2.7 Security C -- Connection-bound identity enforcement
+
+Turn authorization uses `clients.get(ws).displayName` (the identity bound at join), never any `displayName` field in an incoming `action` message (revised architecture section 4.4, security item C). The `action` envelope does not include `displayName` by design (section 2.4).
+
+**SCENARIO-G2-SEC-C-01 -- Spoofed displayName in action payload is ignored; connection-bound identity is used**
+- Automation: YES (node-env; two ws clients)
+- Setup: A room in COMBAT phase. Client A joined as 'Theron' (connection-bound). `isActive: true` is set for 'Theron' in the party. Client B joined as 'Mira' (connection-bound).
+- Steps: (1) Client B crafts a WS message that includes `displayName: 'Theron'` in the `payload` field. (2) Server processes the message.
+- Expected: Server ignores any `displayName` in the payload and uses `clients.get(ws).displayName` which is 'Mira'. Since 'Mira' is not the active member, the action is rejected with `{ code: 'NOT_YOUR_TURN' }`. No Ollama call fires.
+- Pass gate: Client B receives `error: NOT_YOUR_TURN`; mock-Ollama receives zero calls; `turnSequence` unchanged; Client A unaffected.
+- Traceability: Security item C (security review section 1.3 spoofed membership); section 4.4 connection-bound identity; section 3.6 server prompt assembly; PRD 5.3 (combat turns); F7 failure mode.
+
+---
+
+### G2.8 Security J -- NAME_TAKEN guard and rejoin of disconnected slot
+
+The server checks on join whether the normalized `displayName` is already bound to an active (non-closed) connection (revised architecture section 5.2, security item J). If so, it rejects with `{ code: 'NAME_TAKEN' }`. A disconnected slot (CLOSED socket) is available for the rejoining client to claim.
+
+**SCENARIO-G2-SEC-J-01 -- Second live connection claiming an active player's name is rejected**
+- Automation: YES (node-env; two ws clients)
+- Setup: Client A has joined with `displayName = 'Aldric'` and is connected (socket OPEN).
+- Steps: (1) Client B sends a `join` with `displayName = 'Aldric'` to the same room. (2) Server processes the join attempt.
+- Expected: Server finds 'Aldric' is already bound to an OPEN socket (Client A). Server rejects with `{ type: 'error', code: 'NAME_TAKEN' }`. Client B does not receive `session:state`. Client A is unaffected.
+- Pass gate: Client B receives `{ code: 'NAME_TAKEN' }`; Client B does NOT receive `session:state`; `presence:update` is NOT broadcast for a new join; room `clients` map still has exactly one entry.
+- Traceability: Security item J (security review section 1.2 party-slot hijack); section 5.2 `NAME_TAKEN` guard; PRD 5.5 (error silence); R4.
+
+**SCENARIO-G2-SEC-J-02 -- Rejoin of disconnected slot succeeds; NAME_TAKEN is not triggered**
+- Automation: YES (node-env; ws client with forced disconnect then reconnect)
+- Setup: Client A joins as 'Aldric' and then disconnects (server-side `ws.terminate()`). The connections map entry for 'Aldric' now has a CLOSED socket.
+- Steps: (1) Client A reconnects with a new WS and sends a `join` with `displayName = 'Aldric'` and `lastTurnSequence = N`. (2) Server processes the rejoin.
+- Expected: Server finds the 'Aldric' slot with a CLOSED socket. The name is NOT rejected as NAME_TAKEN. Server replaces the closed connection, sends `session:state`, and broadcasts `presence:update` showing 'Aldric' reconnected.
+- Pass gate: Client A receives `session:state` (not a `NAME_TAKEN` error); `turnSequence` in `session:state` matches the server current value; behavior is consistent with SCENARIO-EDGE-04.
+- Traceability: Security item J; section 5.2 rejoin-claims-disconnected-slot case; SCENARIO-EDGE-04 cross-link; PRD 5.4 (disconnect recovery).
+
+---
+### G2.9 Security I -- sessionId-keyed .md store; no roomCode-derived filenames
+
+The `.md` store is always keyed by the full `sessionId` (UUID) per revised architecture section 5.1 (security item I) and section 6.3. `roomCode` is resolved to `sessionId` before any `sessionPath()` call. No file named `${roomCode}.md` is ever created.
+
+**SCENARIO-G2-SEC-I-01 -- .md store keyed by sessionId; roomCode never used as filename**
+- Automation: YES (node-env; inspect temp sessions directory after join + turn)
+- Setup: A test server instance with a temp sessions directory. A client joins with `roomCode = 'dnd-a1b2c3d4'` and a full UUID `sessionId`. After a turn completes and `dm:done` fires, the sessions directory is inspected.
+- Steps: (1) Client joins; server processes join. (2) Client sends an action; mock-Ollama responds; `dm:done` fires; server writes `.md`. (3) List all `.md` files in the temp sessions directory.
+- Expected: The sessions directory contains exactly one file named by the UUID `sessionId`. No file named `dnd-a1b2c3d4.md` or any `roomCode`-derived name exists.
+- Pass gate: `fs.readdirSync(sessionsDir)` returns only UUID-format filenames; no `dnd-*.md` file present; the file's content is valid `toMarkdown` output with the correct `sessionId`.
+- Traceability: Security item I (security review section 4.1 room-code-derived filenames); section 5.1 path-safety invariant; section 6.3 path-safety; `server/sync-server.mjs` `sessionPath()` / `ID_RE`; PRD 5.4 (.md round-trip fidelity).
+
+**SCENARIO-G2-SEC-I-02 -- Two rooms with colliding short roomCode prefixes do not cross-read state**
+- Automation: YES (node-env; two concurrent room sessions in the same temp directory)
+- Setup: Two sessions exist in the temp directory with distinct `sessionId` values but similarly-prefixed `roomCode` values (e.g., both start with 'dnd-aabb').
+- Steps: (1) Client for Room X joins using Room X's `roomCode`; server resolves to Room X's `sessionId`. (2) Server reads `sessionPath(sessionId_X)`. (3) Verify the content served is Room X's session, not Room Y's.
+- Expected: `sessionPath` is derived from the full `sessionId` resolved at join time. The two rooms' files are distinct. No cross-read occurs regardless of how similar the `roomCode` values are.
+- Pass gate: The `session:state` sent to Room X's client contains Room X's `campaign.name` and `messages`; Room Y's data is not present; both `.md` files exist independently in the sessions directory.
+- Traceability: Security item I; section 5.1 `roomCode -> sessionId` resolution; section 6.3 path-safety; PRD 5.4; R3 (.md preservation).
+
+---
+
+### G2.10 Traceability supplement for G2 scenarios
+
+The following table maps each new G2 scenario to its originating MC/security item, the revised architecture section, and the PRD success criterion or risk it covers. All new scenarios run under `npm test -- --run` (Vitest, node-env or jsdom as noted) and do not require multi-device hardware.
+
+| Scenario | MC / Security item | Arch section | PRD criterion / Risk |
+|----------|-------------------|-------------|----------------------|
+| SCENARIO-G2-MC2-01 | MC-2 | section 3.6 | PRD 5.2 (no garbled DM output); R1 |
+| SCENARIO-G2-MC2-02 | MC-2; security item G | section 3.6, section 5.4 | PRD 5.2 (no latency cliff); security section 2.1 |
+| QG-12 (prompt-assembly equivalence) | MC-2; security item G | section 3.6 | PRD 5.2; R1 |
+| SCENARIO-G2-MC5-01 | MC-5 | section 3.7 | PRD 5.2 (no duplicate DM); R1 |
+| SCENARIO-G2-MC5-02 | MC-5 | section 3.7 | PRD 5.2; R1 |
+| QG-13 (no dual-path execution) | MC-5 | section 3.7 | PRD 5.2; R1 |
+| SCENARIO-G2-MC8-01 | MC-8; security item E | section 3.5 | PRD 5.4 (server failure recovery); F5; security section 2.3 |
+| SCENARIO-G2-MC9-01 | MC-9 | section 7 Phase 4 | PRD 5.1 (propagation < 500 ms -- CI backstop) |
+| QG-14 (CI propagation smoke) | MC-9 | section 7 Phase 4 | PRD 5.1; D3 Folding note |
+| SCENARIO-G2-SEC-A-01 | Security item A | section 3.6, section 5.4 | PRD 5.2; R4; security section 1.1 |
+| SCENARIO-G2-SEC-A-02 | Security item A | section 3.6 lastDiceEvent | PRD 5.2; security section 1.1 defense-in-depth |
+| SCENARIO-G2-SEC-B-01 | Security item B | section 5.2, section 5.4 | PRD 5.5; R4; security section 4.3 |
+| SCENARIO-G2-SEC-B-02 | Security item B | section 5.4 React text nodes | PRD 5.5; security section 4.3 |
+| SCENARIO-G2-SEC-C-01 | Security item C | section 4.4, section 3.6 | PRD 5.3 (combat turns); F7; security section 1.3 |
+| SCENARIO-G2-SEC-J-01 | Security item J | section 5.2 NAME_TAKEN | PRD 5.5; R4; security section 1.2 |
+| SCENARIO-G2-SEC-J-02 | Security item J | section 5.2 rejoin | PRD 5.4 (disconnect recovery); EDGE-04 cross-link |
+| SCENARIO-G2-SEC-I-01 | Security item I | section 5.1, section 6.3 | PRD 5.4 (.md fidelity); security section 4.1 |
+| SCENARIO-G2-SEC-I-02 | Security item I | section 5.1, section 6.3 | PRD 5.4; R3; security section 4.1 |
+
+**Updated automation count for G2:**
+
+| Category | New items | Automatable | Manual / Multi-device |
+|----------|-----------|-------------|----------------------|
+| New quality gates (QG-12, QG-13, QG-14) | 3 | 3 | 0 |
+| New scenarios (G2 section) | 15 | 15 | 0 |
+| G2 subtotal | 18 | 18 (100%) | 0 |
+
+Cumulative totals (sections 1-10 plus G2): 14 quality gates (QG-01..QG-14), approximately 63 automatable scenarios, approximately 13 manual / multi-device scenarios, approximately 79 total items.
+
+**G3 exit criteria amendment (amends section 10):** Item 1 extends to "All 14 quality gates (QG-01 through QG-14) are at or within their stated thresholds." Item 3 extends to "All automatable scenarios including G2 produce green test runs in CI." All other G3 exit criteria in section 10 remain unchanged.
+
 
 ## References
 

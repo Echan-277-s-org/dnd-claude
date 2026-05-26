@@ -224,13 +224,16 @@ DONE before the row may start.
 
 | Stage | Agent | Artifact (`docs/design/`) | Status | Blocks-on |
 |-------|-------|---------------------------|--------|-----------|
-| D1 | `product-manager` | `MULTIPLAYER-PRD.md` | NOT STARTED | this plan |
-| D2 | `game-developer` | `MULTIPLAYER-ARCHITECTURE.md` | NOT STARTED | D1 (PRD "Decisions that flow forward") |
-| D2-qa | `qa-expert` | `MULTIPLAYER-QA-PLAN.md` | NOT STARTED | D2 architecture draft |
-| D2-test | `test-automator` | `MULTIPLAYER-TEST-AUTOMATION.md` | NOT STARTED | D2 architecture draft |
-| D2-chaos | `chaos-engineer` | `MULTIPLAYER-CHAOS-PLAN.md` | NOT STARTED | D2 architecture draft (D2.8 failure list) |
-| D3 | `architect-reviewer` | `MULTIPLAYER-ARCH-REVIEW.md` | NOT STARTED | D2 + D2-qa + D2-test + D2-chaos |
-| **G1** | **User** | — (approval) | NOT STARTED | D3 verdict + 3 test-readiness artifacts |
+| D1 | `product-manager` | `MULTIPLAYER-PRD.md` | **DONE** | this plan |
+| D2 | `game-developer` | `MULTIPLAYER-ARCHITECTURE.md` | **DONE** | D1 (PRD "Decisions that flow forward") |
+| D2-qa | `qa-expert` | `MULTIPLAYER-QA-PLAN.md` | **DONE** | D2 architecture draft |
+| D2-test | `test-automator` | `MULTIPLAYER-TEST-AUTOMATION.md` | **DONE** | D2 architecture draft |
+| D2-chaos | `chaos-engineer` | `MULTIPLAYER-CHAOS-PLAN.md` | **DONE** | D2 architecture draft (D2.8 failure list) |
+| D3 | `architect-reviewer` | `MULTIPLAYER-ARCH-REVIEW.md` | **DONE — verdict APPROVE-WITH-CHANGES (MC-1…MC-9)** | D2 + D2-qa + D2-test + D2-chaos |
+| D3b | `security-auditor` | `MULTIPLAYER-SECURITY-REVIEW.md` | **DONE — 10 findings A–J, all block-G1** | D2 architecture (parallel to D3) |
+| G2-fold | `game-developer` | `MULTIPLAYER-ARCHITECTURE.md` (revised) | **DONE — MC-1…MC-9 + A–J folded in (see "Revision log (post-review)")** | D3 + D3b |
+| G2-refresh | `qa-expert` + `test-automator` + `chaos-engineer` (PARALLEL) | `MULTIPLAYER-QA-PLAN.md` / `-TEST-AUTOMATION.md` / `-CHAOS-PLAN.md` (refreshed) | **DONE — all three carry a `Post-revision refresh (G2)` section (QG-12/13/14 + MC-8; MC-1…MC-7 + sec D/F/G/H skeletons, ~417 CI tests; EX-3C/EX-MC5/EX-2b/EX-6b)** | G2-fold |
+| **G1** | **User** | — (approval) | NOT STARTED | D3 verdict + D3b + 3 test-readiness artifacts refreshed (G2-refresh DONE) |
 | V1 | code agents (coordinator routes per CLAUDE.md: `react-specialist` for `Chat.jsx`/client, `websocket-engineer` for transport, `backend-developer` for the server, `llm-architect` for the single-DM-trigger) | implementation | NOT STARTED | **G1 cleared** + D2 phased build plan |
 | V2-qa | `qa-expert` | (executes `MULTIPLAYER-QA-PLAN.md`) | NOT STARTED | V1 |
 | V2-test | `test-automator` | (implements + runs suites in CI) | NOT STARTED | V1 |
@@ -242,3 +245,20 @@ DONE before the row may start.
 - D3 must wait for **all** of D2 + the three test-readiness artifacts.
 - V2-qa, V2-test, V2-chaos run **in parallel** after V1.
 - On a G2 REVISE: re-run D2, then re-dispatch the three test-readiness agents in parallel, then re-run D3.
+
+**Note on D3b and the G2 post-fold refresh (added in execution):**
+- **D3b** (`security-auditor` → `MULTIPLAYER-SECURITY-REVIEW.md`) was not enumerated in the original §2/§3
+  sequence; it ran in **parallel with D3** against the same D2 architecture and produced 10 findings (A–J),
+  all flagged block-G1. It is a real, completed stage and is tracked above.
+- The D3 verdict was **APPROVE-WITH-CHANGES**, not REVISE — so per §4 G2/G1 the must-changes (MC-1…MC-9)
+  plus the security items (A–J) were **folded into** `MULTIPLAYER-ARCHITECTURE.md` (stage **G2-fold**, DONE;
+  see that file's "Revision log (post-review)" mapping each item to a section) rather than looping back to a
+  full D2 re-run.
+- The fold commit touched **only** the architecture file. Per the D3 review's "Folding note", the three
+  test-readiness artifacts must be **refreshed against the revised sections** (notably MC-2 prompt assembly,
+  MC-6 `turnSequence` convergence gate, MC-7 sentinel reset, MC-8 Ollama timeout / EX-3C). That refresh is the
+  **G2-refresh** loop above (**DONE**). It is a lighter-weight variant of the §2 "loop on REVISE" rule:
+  no D2 re-run and no D3 re-review (the verdict already cleared as APPROVE-WITH-CHANGES) — only the three
+  plans realign to the folded architecture. With G2-refresh **DONE**, G1's blocks-on (D3 verdict + D3b +
+  3 refreshed test-readiness artifacts) is now satisfied and **G1 is reachable** — but it remains
+  **NOT STARTED** as the hard user-approval pause. **No V1 code begins until the user clears G1.**
