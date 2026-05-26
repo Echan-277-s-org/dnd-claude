@@ -1,6 +1,8 @@
-# D&D Campaign Assistant
+# Daniel and Dragons
 
-A local-first AI Dungeon Master (and Star Wars Game Master) powered by a locally running **Ollama** instance. No cloud API, no API key, no data leaving your machine.
+A local-first AI Dungeon Master (and Star Wars Game Master) powered by a locally running **Ollama** instance. Nothing is sent to the cloud, and no API key is required.
+
+The project is named after my friend Dan, a longtime Dungeon Master. He's always the one running the game for everyone else, so I built this to let the AI handle the DM seat and give Dan a turn as a player.
 
 ![Setup screen](docs/screenshots/setup-screen.png)
 
@@ -13,7 +15,7 @@ A local-first AI Dungeon Master (and Star Wars Game Master) powered by a locally
 - **LLM-managed party HUD** — the AI DM appends fenced ` ```party ` JSON blocks to each response; the app parses them and renders the live party roster in the header turn-pill (desktop), the mobile PartyStrip, and the Campaign History panel.
 - **Dice roller + skill-check verdicts** — roll d4 through d100 in-chat. The DM emits ` ```check ` (skill + DC) and ` ```verdict ` (PASS/FAIL) structured blocks; these upgrade bare dice messages into resolved DiceChip components.
 - **Session persistence (localStorage)** — the full session (messages, party, campaign) is saved to `localStorage` on every settled turn with a `QuotaExceededError` trim-and-retry.
-- **Markdown save/continue** — download a self-contained, LLM-loadable `.md` handoff from the header button; load it on any device via the setup screen's "Load .md file" button to resume play in full.
+- **Markdown save/continue** — download a self-contained, LLM-loadable `.md` handoff from the header button; load it on any device via the setup screen's "Load .md file" button to resume the session.
 - **LAN cross-device sync** — an Express sync server (`server/sync-server.mjs`) stores sessions as `.md` files and serves them over your local network. The app auto-derives the desktop host from `window.location.hostname`, so opening `http://<desktop-IP>:5173` on a phone targets the desktop's Ollama and sync server automatically.
 
 ---
@@ -150,7 +152,7 @@ Place Markdown files in `campaigns/`. Use the setup screen's "Load .md file" but
 
 ## Author
 
-**Eric Chan**
+**Eric Chan** — [@EricChan277](https://github.com/EricChan277)
 
 ---
 
