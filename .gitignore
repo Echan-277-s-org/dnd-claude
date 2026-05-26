@@ -9,9 +9,8 @@ server/sessions/
 # Screenshot capture tooling (dev-only; regenerates docs/screenshots/*.png via puppeteer).
 docs/screenshots/*.cjs
 
-# Personal campaign notes — keep only the documented example tracked (see CLAUDE.md).
+# Personal campaign notes — untracked (loaded at runtime via the setup screen).
 campaigns/*
-!campaigns/jaycen-hawke-day2.md
 
 # Development/testing scaffolding — planning, coordination, QA, and review docs.
 # Collected under docs/design/; kept on disk but untracked. The design docs

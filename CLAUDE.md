@@ -115,10 +115,10 @@ Full design + rationale: `docs/design/CROSS-DEVICE-SYNC-EVALUATION.md` (canonica
 
 ## Campaign notes
 
-`campaigns/` holds saved campaign-notes Markdown files. The setup screen's **Load .md file** button
-reads one into `campaign.context`, injected into the system prompt as prior world state (see
-`buildSystemPrompt`). Bold every NPC/location name (`**Name**`) so the continuity tracker
-(`extractEntities`) picks them up. Example: `campaigns/jaycen-hawke-day2.md`.
+`campaigns/` holds saved campaign-notes Markdown files (untracked; loaded at runtime). The setup
+screen's **Load .md file** button reads one into `campaign.context`, injected into the system prompt
+as prior world state (see `buildSystemPrompt`). Bold every NPC/location name (`**Name**`) so the
+continuity tracker (`extractEntities`) picks them up.
 
 > Historical note: `docs/design/CONTEXT.md` documents the (now-complete) Anthropic→Ollama migration. The app
 > already runs on local Ollama; that doc is kept for reference only.
