@@ -3,6 +3,7 @@ import CampaignSetup from './components/ApiKeySetup'
 import Chat from './components/Chat'
 import { serializeSession } from './lib/session'
 import { makeRoomCode } from './lib/session'
+import { buildCharacter } from './lib/characterBuilder'
 
 // Genre drives the visual theme — there is no independent theme toggle.
 const THEME_FOR_GENRE = { dnd: 'dnd', starwars: 'void' }
@@ -147,7 +148,7 @@ export default function App() {
     document.documentElement.dataset.theme = THEME_FOR_GENRE[activeGenre] || 'dnd'
   }, [ready, campaign.genre, draftGenre])
 
-  function handleSetup({ genre, name, details, model, context, displayName: dn }) {
+  function handleSetup({ genre, name, details, model, context, displayName: dn, character: wizardOutput }) {
     localStorage.setItem('dnd_setup_done', '1')
     localStorage.setItem('dnd_genre', genre)
     localStorage.setItem('dnd_campaign_name', name)
@@ -157,6 +158,25 @@ export default function App() {
     const sessionId = loadSessionId() // mint-or-reuse; stable across settings edits
     const rc = makeRoomCode(sessionId)
     setCampaign({ genre, name, details, model, context, sessionId })
+
+    // Phase 5 & 6: if the wizard produced output, build the full character and seed
+    // the party display cache. Otherwise fall through to existing loadCharacter() /
+    // loadParty() fallback behaviour (no localStorage key changes for the skip path).
+    if (wizardOutput) {
+      const builtChar = buildCharacter(wizardOutput, genre)
+      localStorage.setItem('dnd_character', JSON.stringify(builtChar))
+      const partyEntry = [{
+        id: 'seed-0',
+        name: builtChar.name,
+        role: builtChar.charClass,
+        hpPct: 100,
+        isActive: true,
+      }]
+      localStorage.setItem('dnd_party', JSON.stringify(partyEntry))
+      setCharacter(builtChar)
+      setParty(partyEntry)
+    }
+
     // Phase 4: if the host supplied a display name, enter multiplayer mode.
     // Otherwise stay single-player (roomCode/displayName remain null → no WS opened).
     if (dn && dn.trim()) {

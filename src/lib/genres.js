@@ -5,6 +5,9 @@
 import * as dndEngine from './context.js'
 import * as starwarsEngine from './context.starwars.js'
 
+// Re-export character wizard helpers so consumers can import from one place.
+export { getClassesForGenre, getRacesForGenre } from './characterClasses.js'
+
 const dndCombat = ['attack', 'sword', 'enemy', 'creature', 'monster', 'fight', 'weapon', 'combat', 'battle', 'strike']
 const dndSocial = ['says', 'asks', 'merchant', 'guard', 'innkeeper', 'tavern', 'town', 'village', 'noble', 'coin', 'price']
 const dndExploration = ['door', 'chest', 'hallway', 'dungeon', 'trap', 'ruin', 'passage', 'stairs', 'forest', 'cave']

@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { GENRES, getGenre } from '../lib/genres'
 import { fromMarkdown, getLanHost } from '../lib/session'
+import CharacterWizard from './CharacterWizard'
 
 const OLLAMA_MODELS = [
   { value: 'qwen2.5:14b', label: 'Qwen 2.5 14B — Fast & capable (recommended)' },
@@ -41,8 +42,12 @@ export default function CampaignSetup({ onSetup, onJoin, onGenreChange, onRestor
   const [model, setModel] = useState(() => localStorage.getItem('dnd_model') || 'qwen2.5:14b')
   const [context, setContext] = useState(() => localStorage.getItem('dnd_campaign_context') || '')
   const [contextFileName, setContextFileName] = useState('')
-  // Phase 4 — multiplayer: optional display name for hosting
+
+  // SP/MP toggle: 'single' | 'multi'
+  const [playMode, setPlayMode] = useState('single')
+  // Host display name (only used in multiplayer mode)
   const [hostDisplayName, setHostDisplayName] = useState('')
+
   // Phase 4 — multiplayer: join existing session sub-flow
   // When urlRoomCode is present, default to the join tab.
   const [tab, setTab] = useState(() => urlRoomCode ? 'join' : 'create')
@@ -50,6 +55,11 @@ export default function CampaignSetup({ onSetup, onJoin, onGenreChange, onRestor
   const [joinDisplayName, setJoinDisplayName] = useState('')
   const [joinError, setJoinError] = useState('')
   const [joinLoading, setJoinLoading] = useState(false)
+
+  // Character wizard state
+  const [showWizard, setShowWizard] = useState(false)
+  const [createdCharacter, setCreatedCharacter] = useState(null)
+
   const fileInputRef = useRef(null)
 
   // Prefill room code from URL param whenever it changes (first render only).
@@ -84,15 +94,30 @@ export default function CampaignSetup({ onSetup, onJoin, onGenreChange, onRestor
     if (fileInputRef.current) fileInputRef.current.value = ''
   }
 
+  function handleWizardCreate(wizardOutput) {
+    setCreatedCharacter(wizardOutput)
+    setShowWizard(false)
+  }
+
+  function handleWizardCancel() {
+    setShowWizard(false)
+  }
+
   function handleSubmit(e) {
     e.preventDefault()
+    // SP mode: displayName is null → single-player (no WS opened).
+    // MP mode: displayName is the trimmed host name → multiplayer.
+    const displayName = playMode === 'multi' && hostDisplayName.trim()
+      ? hostDisplayName.trim()
+      : null
     onSetup({
       genre: genreId,
       name: name.trim(),
       details: details.trim(),
       model,
       context,
-      displayName: hostDisplayName.trim() || null,
+      displayName,
+      character: createdCharacter || undefined,
     })
   }
 
@@ -194,12 +219,51 @@ export default function CampaignSetup({ onSetup, onJoin, onGenreChange, onRestor
         ) : (
           /* ── Create new campaign ── */
           <form onSubmit={handleSubmit} className="setup-form">
+
+            {/* SP/MP Segmented Control */}
+            <div className="form-group">
+              <label>Play Mode</label>
+              <div className="spmp-toggle" role="group" aria-label="Play mode">
+                <button
+                  type="button"
+                  className={`spmp-btn ${playMode === 'single' ? 'spmp-btn--active' : ''}`}
+                  aria-pressed={playMode === 'single'}
+                  onClick={() => setPlayMode('single')}
+                >
+                  Single-Player
+                </button>
+                <button
+                  type="button"
+                  className={`spmp-btn ${playMode === 'multi' ? 'spmp-btn--active' : ''}`}
+                  aria-pressed={playMode === 'multi'}
+                  onClick={() => setPlayMode('multi')}
+                >
+                  Multiplayer
+                </button>
+              </div>
+              <span className="form-hint">
+                {playMode === 'single'
+                  ? 'Solo adventure — no room code, no WebSocket.'
+                  : 'Host a session. Others join with your room code.'}
+              </span>
+            </div>
+
+            <div className="form-divider">
+              <span>Campaign Settings</span>
+            </div>
+
             <div className="form-group">
               <label htmlFor="genre">Genre</label>
               <select
                 id="genre"
                 value={genreId}
-                onChange={e => { setGenreId(e.target.value); onGenreChange?.(e.target.value) }}
+                onChange={e => {
+                  setGenreId(e.target.value)
+                  onGenreChange?.(e.target.value)
+                  // Reset created character if genre changes (races/classes differ)
+                  setCreatedCharacter(null)
+                  setShowWizard(false)
+                }}
               >
                 {Object.values(GENRES).map(g => (
                   <option key={g.id} value={g.id}>{g.label}</option>
@@ -282,28 +346,75 @@ export default function CampaignSetup({ onSetup, onJoin, onGenreChange, onRestor
               </span>
             </div>
 
-            {/* Phase 4: optional display name to enter multiplayer mode as host */}
+            {/* Character Section (shown in both SP and MP modes) */}
             <div className="form-divider">
-              <span>Multiplayer (optional)</span>
+              <span>Character</span>
             </div>
-            <div className="form-group">
-              <label htmlFor="host-display-name">
-                Your Name <span className="optional">(leave blank for single-player)</span>
-              </label>
-              <input
-                id="host-display-name"
-                type="text"
-                value={hostDisplayName}
-                onChange={e => setHostDisplayName(e.target.value)}
-                placeholder="e.g. DM, or your character name"
-                autoComplete="off"
-                maxLength={64}
+
+            {showWizard ? (
+              <CharacterWizard
+                genreId={genreId}
+                onCreateCharacter={handleWizardCreate}
+                onCancel={handleWizardCancel}
               />
-              <span className="form-hint">
-                Enter a name to host a multiplayer session. Others can join with your room code.
-                Leave blank to play solo.
-              </span>
-            </div>
+            ) : (
+              <div className="form-group">
+                {createdCharacter ? (
+                  <div className="wizard-character-summary">
+                    <span className="wizard-character-name">{createdCharacter.name}</span>
+                    <span className="wizard-character-meta">
+                      {createdCharacter.race} / {createdCharacter.charClass}
+                    </span>
+                    <button
+                      type="button"
+                      className="wizard-character-change"
+                      onClick={() => { setCreatedCharacter(null); setShowWizard(true) }}
+                    >
+                      Change
+                    </button>
+                  </div>
+                ) : (
+                  <div className="wizard-character-actions">
+                    <button
+                      type="button"
+                      className="wizard-btn-open"
+                      onClick={() => setShowWizard(true)}
+                    >
+                      Create a Character
+                    </button>
+                    <span className="wizard-skip-hint">
+                      or skip to use the default adventurer
+                    </span>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Multiplayer display name (only visible in MP mode) */}
+            {playMode === 'multi' && (
+              <>
+                <div className="form-divider">
+                  <span>Multiplayer</span>
+                </div>
+                <div className="form-group">
+                  <label htmlFor="host-display-name">
+                    Host Display Name
+                  </label>
+                  <input
+                    id="host-display-name"
+                    type="text"
+                    value={hostDisplayName}
+                    onChange={e => setHostDisplayName(e.target.value)}
+                    placeholder="e.g. DM, or your character name"
+                    autoComplete="off"
+                    maxLength={64}
+                  />
+                  <span className="form-hint">
+                    How your messages appear to other players. Others join with your room code.
+                  </span>
+                </div>
+              </>
+            )}
 
             <button type="submit" className="btn-begin">
               <span>{genre.emblem}</span> {genre.beginLabel}
