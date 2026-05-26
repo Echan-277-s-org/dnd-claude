@@ -341,58 +341,122 @@ describe('Phase 1 — WebSocket /ws endpoint', () => {
 
 // ─── Phase 2 — Server-authoritative state + broadcast ─────────────────────────
 
-describe.skip('Phase 2 — session:update broadcast to all clients', () => {
-  let ctx, clientA, clientB
+describe('Phase 2 — session:update broadcast to all clients', () => {
+  let ctx
+
+  // Use distinct session/room IDs to avoid cross-test state collisions.
+  const P2_SESSION = 'f6a7b8c9-0000-0000-0000-000000000010'
+  const P2_ROOM = 'dnd-f6a7b8c9'
+  const p2Join = { roomCode: P2_ROOM, sessionId: P2_SESSION, lastTurnSequence: 0 }
 
   beforeAll(async () => {
-    // ctx = await startTestServer()
+    ctx = await startTestServer()
   })
   afterAll(async () => {
-    // clientA?.ws.close(); clientB?.ws.close()
-    // ctx.server.close()
-    // ctx.mockOllama.server.close()
-    // await rm(ctx.dir, { recursive: true, force: true })
+    await new Promise(r => ctx.server.close(r))
+    await rm(ctx.dir, { recursive: true, force: true })
   })
 
   it('client B receives session:update when client A sends an action (echo path)', async () => {
-    // clientA = await connectClient(ctx.wsBase, { ...baseJoin, displayName: 'Alex' })
-    // clientB = await connectClient(ctx.wsBase, { ...baseJoin, displayName: 'Jordan' })
-    // const updatePromise = collectMessages(clientB.ws, 1)
-    // clientA.ws.send(JSON.stringify({
-    //   type: 'action',
-    //   roomCode: ROOM_CODE,
-    //   payload: { content: 'I look around.', type: 'user', displayName: 'Alex' }
-    // }))
-    // const [update] = await updatePromise
-    // expect(update.type).toBe('session:update')
-    // expect(update.payload.messages.length).toBeGreaterThan(0)
+    const clientA = await connectClient(ctx.wsBase, { ...p2Join, displayName: 'Alex' })
+    expect(clientA.firstMessage.type).toBe('session:state')
+
+    const clientB = await connectClient(ctx.wsBase, { ...p2Join, displayName: 'Jordan' })
+    expect(clientB.firstMessage.type).toBe('session:state')
+
+    // Drain the presence:update that clientA got when B joined.
+    const drainA = collectMessages(clientA.ws, 1)
+
+    // Send action from A — B should receive session:update.
+    const updatePromiseB = new Promise(resolve => {
+      clientB.ws.once('message', d => resolve(JSON.parse(d)))
+    })
+    clientA.ws.send(JSON.stringify({
+      type: 'action',
+      roomCode: P2_ROOM,
+      payload: { content: 'I look around the tavern.', type: 'user' },
+    }))
+
+    // Wait for A's presence drain and then the real update on B.
+    await drainA
+    const updateB = await updatePromiseB
+
+    expect(updateB.type).toBe('session:update')
+    expect(updateB.payload.messages.length).toBeGreaterThan(0)
+    expect(updateB.payload.messages.some(m => m.content === 'I look around the tavern.')).toBe(true)
+
+    clientA.ws.close()
+    clientB.ws.close()
   })
 
   it('phase field is included in every session:update', async () => {
-    // clientA = await connectClient(ctx.wsBase, { ...baseJoin, displayName: 'Alex' })
-    // const updatePromise = collectMessages(clientA.ws, 1)
-    // clientA.ws.send(JSON.stringify({
-    //   type: 'action',
-    //   roomCode: ROOM_CODE,
-    //   payload: { content: 'Test action', type: 'user', displayName: 'Alex' }
-    // }))
-    // const [update] = await updatePromise
-    // expect(update.payload).toHaveProperty('phase')
-    // expect(['free-roam', 'combat', 'awaiting-dm', 'resolving']).toContain(update.payload.phase)
+    const P2B_SESSION = 'a7b8c9d0-0000-0000-0000-000000000011'
+    const P2B_ROOM = 'dnd-a7b8c9d0'
+    const clientA = await connectClient(ctx.wsBase, {
+      roomCode: P2B_ROOM, sessionId: P2B_SESSION, displayName: 'Alex', lastTurnSequence: 0,
+    })
+    expect(clientA.firstMessage.type).toBe('session:state')
+
+    // Collect the next message after sending action (may be presence:update first,
+    // then session:update — collect until we find session:update).
+    let update = null
+    const found = new Promise(resolve => {
+      clientA.ws.on('message', d => {
+        const parsed = JSON.parse(d)
+        if (parsed.type === 'session:update') resolve(parsed)
+      })
+    })
+
+    clientA.ws.send(JSON.stringify({
+      type: 'action',
+      roomCode: P2B_ROOM,
+      payload: { content: 'Test action', type: 'user' },
+    }))
+
+    update = await found
+    expect(update.payload).toHaveProperty('phase')
+    expect(['free-roam', 'combat', 'awaiting-dm', 'resolving']).toContain(update.payload.phase)
+
+    clientA.ws.close()
   })
 
   it('reconnecting client with stale lastTurnSequence receives session:state (not delta)', async () => {
-    // clientA = await connectClient(ctx.wsBase, {
-    //   ...baseJoin, displayName: 'Alex', lastTurnSequence: 0
-    // })
-    // expect(clientA.firstMessage.type).toBe('session:state')
-    // // Advance the server's turnSequence by completing a DM turn, then reconnect with old seq
-    // // ...
-    // const staleClient = await connectClient(ctx.wsBase, {
-    //   ...baseJoin, displayName: 'Alex', lastTurnSequence: 0
-    // })
-    // expect(staleClient.firstMessage.type).toBe('session:state') // full snapshot, not delta
-    // staleClient.ws.close()
+    const P2C_SESSION = 'b8c9d0e1-0000-0000-0000-000000000012'
+    const P2C_ROOM = 'dnd-b8c9d0e1'
+
+    // First client joins and sends an action to advance turnSequence.
+    const clientA = await connectClient(ctx.wsBase, {
+      roomCode: P2C_ROOM, sessionId: P2C_SESSION, displayName: 'Alex', lastTurnSequence: 0,
+    })
+    expect(clientA.firstMessage.type).toBe('session:state')
+    const initialSeq = clientA.firstMessage.payload.turnSequence
+
+    // Send an action to advance the server's turnSequence.
+    const updatePromise = new Promise(resolve => {
+      clientA.ws.on('message', d => {
+        const m = JSON.parse(d)
+        if (m.type === 'session:update') resolve(m)
+      })
+    })
+    clientA.ws.send(JSON.stringify({
+      type: 'action',
+      roomCode: P2C_ROOM,
+      payload: { content: 'I advance the turn.', type: 'user' },
+    }))
+    const updateMsg = await updatePromise
+    const advancedSeq = updateMsg.payload.turnSequence
+    expect(advancedSeq).toBeGreaterThan(initialSeq)
+    clientA.ws.close()
+
+    // Now reconnect with the stale lastTurnSequence (0 < advancedSeq).
+    const staleClient = await connectClient(ctx.wsBase, {
+      roomCode: P2C_ROOM, sessionId: P2C_SESSION, displayName: 'Alex', lastTurnSequence: 0,
+    })
+    // Server must send session:state (full snapshot) because lastTurnSequence < turnSequence.
+    expect(staleClient.firstMessage.type).toBe('session:state')
+    // The snapshot's turnSequence must be at least the advanced value.
+    expect(staleClient.firstMessage.payload.turnSequence).toBeGreaterThanOrEqual(advancedSeq)
+    staleClient.ws.close()
   })
 })
 

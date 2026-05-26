@@ -276,3 +276,107 @@ describe('useSessionPersistence', () => {
     await waitFor(() => expect(saveSyncSession).toHaveBeenCalledTimes(1))
   })
 })
+
+// ─── Phase 2 — dual-authority adopt gate + onSessionState sentinel reset ──────
+//
+// These tests exercise the ADDITIVE Phase 2 changes to useSessionPersistence.
+// The same mock setup from the top of the file applies.
+// Existing single-player tests above are NOT modified.
+describe('useSessionPersistence Phase 2 — WS adopt gate + sentinel reset', () => {
+  // (a) ws-source adopt ADMITS when turnSequence advances even if savedAt is equal or older.
+  it('ws adopt: admits update when turnSequence advances even if savedAt is equal', async () => {
+    // Start with a local session stamped at T1.
+    seedLocal('2026-05-25T10:00:00.000Z')
+    loadSyncSession.mockResolvedValue(null)
+
+    const setMessages = vi.fn()
+    const { result } = renderHook(() =>
+      useSessionPersistence(baseProps({ setMessages }))
+    )
+    await act(async () => {}) // mount settle
+
+    setMessages.mockClear()
+
+    // Simulate a ws session:update with the SAME savedAt but a higher turnSequence.
+    act(() =>
+      result.current.onSessionUpdate({
+        savedAt: '2026-05-25T10:00:00.000Z', // same — would fail M7 poll gate
+        turnSequence: 5,                       // but seqNewer passes (5 > 0)
+        messages: [{ role: 'assistant', content: 'WS UPDATE' }],
+        sessionLog: [],
+        party: [],
+      })
+    )
+
+    // setMessages MUST have been called (update admitted via turnSequence path).
+    expect(setMessages).toHaveBeenCalledWith(
+      expect.arrayContaining([expect.objectContaining({ content: 'WS UPDATE' })])
+    )
+  })
+
+  // (b) onSessionState resets the sentinel so a session:state at turnSequence 0 IS applied
+  //     even after onNewSession() set localTurnSequence to -1 (the MC-7 sentinel reset).
+  it('onSessionState resets the sentinel — after onNewSession, a session:state at seq 0 is applied', async () => {
+    loadSyncSession.mockResolvedValue(null)
+
+    const setMessages = vi.fn()
+    const { result } = renderHook(() =>
+      useSessionPersistence(baseProps({ setMessages }))
+    )
+    await act(async () => {}) // mount settle
+
+    // onNewSession sets localTurnSequence to -1 and savedAt sentinel to '9999-...'.
+    act(() => result.current.onNewSession())
+    setMessages.mockClear()
+
+    // onSessionState UNCONDITIONALLY applies — no gate check.
+    // A session:state at turnSequence 0 passes because onSessionState does NOT use the gate.
+    act(() =>
+      result.current.onSessionState({
+        savedAt: '2026-05-25T10:00:00.000Z', // well below '9999-...' sentinel
+        turnSequence: 0,
+        messages: [{ role: 'assistant', content: 'NEW ROOM STATE' }],
+        sessionLog: [],
+        party: [],
+      })
+    )
+
+    // setMessages MUST be called — sentinel reset, state applied.
+    expect(setMessages).toHaveBeenCalledWith(
+      expect.arrayContaining([expect.objectContaining({ content: 'NEW ROOM STATE' })])
+    )
+  })
+
+  // (c) poll-source payload after onNewSession is still blocked by the 9999 sentinel.
+  //     Regression guard for the existing resurrection guard (the poll path must remain unchanged).
+  it('poll adopt after onNewSession is still blocked by the 9999 sentinel (regression)', async () => {
+    loadSyncSession.mockResolvedValue({
+      savedAt: '2026-05-25T10:00:00.000Z',
+      messages: [{ role: 'assistant', content: 'OLD SESSION' }],
+      sessionLog: [],
+      party: [],
+    })
+    const setMessages = vi.fn()
+    const { result } = renderHook(() =>
+      useSessionPersistence(baseProps({ setMessages }))
+    )
+    await waitFor(() => expect(setMessages).toHaveBeenCalledTimes(1))
+
+    act(() => result.current.onNewSession())
+    setMessages.mockClear()
+
+    // Simulate the poll callback firing with a post-clear savedAt (still < '9999-...').
+    const pollCallback = pollSyncSession.mock.calls[0][2]
+    act(() =>
+      pollCallback({
+        savedAt: '2026-05-25T11:00:00.000Z', // newer than old session, but < '9999-...'
+        messages: [{ role: 'assistant', content: 'RESURRECTED' }],
+        sessionLog: [],
+        party: [],
+      })
+    )
+
+    // The '9999-...' sentinel blocks the poll adoption — no resurrection.
+    expect(setMessages).not.toHaveBeenCalled()
+  })
+})

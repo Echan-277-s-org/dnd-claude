@@ -182,11 +182,89 @@ export function createSyncServer({ sessionsDir = DEFAULT_DIR } = {}) {
   // ─── MC-1: wrap in http.Server so WS can share the same port ────────────────
   const server = http.createServer(app)
 
-  // ─── Phase 1: WebSocket /ws endpoint ────────────────────────────────────────
+  // ─── Phase 1 & 2: WebSocket /ws endpoint ─────────────────────────────────────
   // Per-room in-memory state (keyed by sessionId — never roomCode, per sec item I).
   // { sessionId, roomCode, clients: Map<ws, {displayName, partyId, connectedAt}>,
-  //   phase: 'free-roam', turnSequence: 0 }
+  //   phase: 'free-roam', turnSequence: 0, messages: [], party: [],
+  //   actionQueue: Promise }  ← Phase 2: per-room serialization queue
   const rooms = new Map()
+
+  // ─── Phase 2: per-room action queue (withLock pattern) ───────────────────────
+  // Appends fn to the tail of the room's Promise chain so concurrent actions
+  // execute strictly in order. Mirrors the HTTP PUT withLock pattern.
+  function withRoomLock(room, fn) {
+    const prev = room.actionQueue ?? Promise.resolve()
+    const next = prev.then(fn, fn)
+    const guarded = next.catch(() => {})
+    room.actionQueue = guarded
+    return next
+  }
+
+  // ─── Phase 2: sanitize/cap action content (security item A) ──────────────────
+  const BLOCK_TAGS = ['party', 'check', 'verdict', 'session']
+  const STRIP_RE = new RegExp('```(?:' + BLOCK_TAGS.join('|') + ')[\\s\\S]*?```', 'g')
+  function sanitizeActionContent(content) {
+    return String(content ?? '').replace(STRIP_RE, '').trim().slice(0, 4096)
+  }
+
+  // ─── Phase 2: handle an inbound action message ───────────────────────────────
+  async function handleAction(ws, msg) {
+    try {
+      const { roomCode, payload } = msg ?? {}
+      const content = sanitizeActionContent(payload?.content)
+
+      // Look up the room by scanning for this ws in all rooms.
+      let room = null
+      for (const [, r] of rooms) {
+        if (r.clients.has(ws)) { room = r; break }
+      }
+      if (!room) {
+        ws.send(JSON.stringify({ type: 'error', payload: { code: 'not_in_room' } }))
+        return
+      }
+
+      // Validate roomCode matches the found room.
+      if (room.roomCode !== roomCode && room.sessionId !== roomCode) {
+        ws.send(JSON.stringify({ type: 'error', payload: { code: 'invalid_room' } }))
+        return
+      }
+
+      // Reject empty content.
+      if (!content) {
+        ws.send(JSON.stringify({ type: 'error', payload: { code: 'empty_action' } }))
+        return
+      }
+
+      // Serialize within the room's action queue.
+      await withRoomLock(room, async () => {
+        const savedAt = new Date().toISOString()
+
+        // Echo path (Phase 2 placeholder — Phase 3 replaces with Ollama call).
+        // Append the user message to the room's in-memory messages array.
+        const userMsg = { role: 'user', content, id: randomUUID() }
+        room.messages = [...(room.messages ?? []), userMsg]
+
+        // Increment turn counter.
+        room.turnSequence = (room.turnSequence ?? 0) + 1
+
+        // Broadcast session:update to ALL clients in the room (including sender).
+        broadcast(room, {
+          type: 'session:update',
+          roomCode: room.roomCode,
+          payload: {
+            messages: room.messages,
+            party: room.party ?? [],
+            phase: room.phase ?? 'free-roam',
+            turnSequence: room.turnSequence,
+            savedAt,
+          },
+        })
+      })
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error('[ws] handleAction error:', err?.message ?? err)
+    }
+  }
 
   const wss = new WebSocketServer({ noServer: true, maxPayload: 65536 })
 
@@ -276,8 +354,11 @@ export function createSyncServer({ sessionsDir = DEFAULT_DIR } = {}) {
           return
         }
 
-        // ─── action (Phase 2+; not implemented yet in Phase 1) ───────────────
-        // Drop silently — will be wired up in Phase 2.
+        // ─── action (Phase 2: echo path; Phase 3 replaces with Ollama) ─────
+        if (type === 'action') {
+          handleAction(ws, msg)
+          return
+        }
 
       } catch (err) {
         // eslint-disable-next-line no-console
@@ -337,6 +418,9 @@ export function createSyncServer({ sessionsDir = DEFAULT_DIR } = {}) {
           clients: new Map(),
           phase: 'free-roam',
           turnSequence: 0,
+          messages: [],   // Phase 2: in-memory message history
+          party: [],      // Phase 2: in-memory party state
+          actionQueue: Promise.resolve(), // Phase 2: per-room serialization queue
         })
       }
       const room = rooms.get(sessionId)
@@ -385,14 +469,39 @@ export function createSyncServer({ sessionsDir = DEFAULT_DIR } = {}) {
       // Bind this ws → connection info in the room's clients map.
       room.clients.set(ws, { displayName, partyId, connectedAt: new Date().toISOString() })
 
-      // Update room's turnSequence from stored data if this is the first join.
+      // Update room's turnSequence/phase/messages/party from stored data if
+      // this is the first join (or if stored is newer than in-memory).
       if (stored?.turnSequence != null && stored.turnSequence > room.turnSequence) {
         room.turnSequence = stored.turnSequence
+        // Also restore messages/party from the stored .md when loading fresh.
+        if (!room.messages?.length && stored.messages?.length) {
+          room.messages = stored.messages
+        }
+        if (!room.party?.length && stored.party?.length) {
+          room.party = stored.party
+        }
       }
       if (stored?.phase) room.phase = stored.phase
 
+      // Phase 2 reconnect: if joining client's lastTurnSequence is stale
+      // (< room.turnSequence), always send a full session:state with current in-memory
+      // state (which may be more up-to-date than the stored .md). This matches the
+      // architecture §2.2 / §5.3 reconnect behavior.
+      const inMemorySnapshot = {
+        messages: room.messages ?? snapshot.messages,
+        party: room.party ?? snapshot.party,
+        phase: room.phase,
+        turnSequence: room.turnSequence,
+        roomCode,
+        savedAt: snapshot.savedAt,
+        campaign: snapshot.campaign,
+      }
+      const sendSnapshot = typeof lastTurnSequence === 'number' && lastTurnSequence < room.turnSequence
+        ? inMemorySnapshot
+        : snapshot
+
       // Send session:state to the joining client.
-      ws.send(JSON.stringify({ type: 'session:state', roomCode, payload: snapshot }))
+      ws.send(JSON.stringify({ type: 'session:state', roomCode, payload: sendSnapshot }))
 
       // Broadcast presence:update to all clients in the room (including the new joiner).
       broadcast(room, {
