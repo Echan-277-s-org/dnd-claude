@@ -543,3 +543,167 @@ describe('CHANGE 4 — senderLabel attribution logic', () => {
     expect(container.querySelectorAll('script')).toHaveLength(0)
   })
 })
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CHANGE A — handleDiceRoll routing logic
+//
+// Mirrors the branching logic introduced in Chat.jsx handleDiceRoll:
+//   - Single-player: always pushes a local role:'dice' message; wsSend never called.
+//   - Multiplayer + myTurn true: forwards via wsSend as type:'dice' action, no local push,
+//     clears pendingCheck.
+//   - Multiplayer + myTurn false (non-active combat player): purely local push per §779.
+//
+// Because handleDiceRoll is a closure over component state, we test it via a thin
+// mirror function that captures the same branching logic.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Pure mirror of the handleDiceRoll branching logic from Chat.jsx.
+ * Returns an object describing what the function did:
+ *   { localPushed: bool, wsSent: object|null, pendingCheckCleared: bool }
+ */
+function simulateHandleDiceRoll({ isMultiplayer, myTurn, die, result, roomCode, campaign, pendingCheck }) {
+  let localPushed = false
+  let wsSent = null
+  let pendingCheckCleared = false
+
+  // Mirror of handleDiceRoll
+  if (isMultiplayer && myTurn) {
+    const rc = roomCode || campaign.roomCode
+    wsSent = {
+      type: 'action',
+      roomCode: rc,
+      payload: {
+        content: `[Dice roll: ${die} → ${result}]`,
+        type: 'dice',
+        die,
+        result,
+        pendingCheck: pendingCheck ?? null,
+      },
+    }
+    if (pendingCheck) pendingCheckCleared = true
+    return { localPushed, wsSent, pendingCheckCleared }
+  }
+
+  if (isMultiplayer && !myTurn) {
+    // §779: non-active dice rolls are purely local
+    localPushed = true
+    return { localPushed, wsSent, pendingCheckCleared }
+  }
+
+  // Single-player (or multiplayer not yet joined)
+  localPushed = true
+  return { localPushed, wsSent, pendingCheckCleared }
+}
+
+describe('CHANGE A — handleDiceRoll routing logic', () => {
+  it('single-player: pushes a local role:dice message, wsSend never called', () => {
+    const r = simulateHandleDiceRoll({
+      isMultiplayer: false,
+      myTurn: true,
+      die: 'd20',
+      result: 17,
+      roomCode: null,
+      campaign: { sessionId: 'abc' },
+      pendingCheck: null,
+    })
+    expect(r.localPushed).toBe(true)
+    expect(r.wsSent).toBeNull()
+    expect(r.pendingCheckCleared).toBe(false)
+  })
+
+  it('single-player with pendingCheck: pushes locally, wsSend never called, check not cleared', () => {
+    const r = simulateHandleDiceRoll({
+      isMultiplayer: false,
+      myTurn: true,
+      die: 'd20',
+      result: 12,
+      roomCode: null,
+      campaign: { sessionId: 'abc' },
+      pendingCheck: { skill: 'STEALTH', dc: 15 },
+    })
+    expect(r.localPushed).toBe(true)
+    expect(r.wsSent).toBeNull()
+    // Single-player does NOT consume pendingCheck on dice push
+    expect(r.pendingCheckCleared).toBe(false)
+  })
+
+  it('multiplayer myTurn=true: calls wsSend with type:dice action, does NOT push locally', () => {
+    const r = simulateHandleDiceRoll({
+      isMultiplayer: true,
+      myTurn: true,
+      die: 'd6',
+      result: 4,
+      roomCode: 'dnd-a1b2c3d4',
+      campaign: { sessionId: 'abc' },
+      pendingCheck: null,
+    })
+    expect(r.localPushed).toBe(false)
+    expect(r.wsSent).not.toBeNull()
+    expect(r.wsSent.type).toBe('action')
+    expect(r.wsSent.roomCode).toBe('dnd-a1b2c3d4')
+    expect(r.wsSent.payload.type).toBe('dice')
+    expect(r.wsSent.payload.die).toBe('d6')
+    expect(r.wsSent.payload.result).toBe(4)
+    expect(r.wsSent.payload.content).toBe('[Dice roll: d6 → 4]')
+  })
+
+  it('multiplayer myTurn=true with pendingCheck: pendingCheck is forwarded and then cleared', () => {
+    const r = simulateHandleDiceRoll({
+      isMultiplayer: true,
+      myTurn: true,
+      die: 'd20',
+      result: 18,
+      roomCode: 'dnd-a1b2c3d4',
+      campaign: { sessionId: 'abc' },
+      pendingCheck: { skill: 'ATHLETICS', dc: 14 },
+    })
+    expect(r.wsSent).not.toBeNull()
+    // pendingCheck must ride the payload
+    expect(r.wsSent.payload.pendingCheck).toEqual({ skill: 'ATHLETICS', dc: 14 })
+    // pendingCheck must be cleared after forwarding
+    expect(r.pendingCheckCleared).toBe(true)
+  })
+
+  it('multiplayer myTurn=true no pendingCheck: payload carries pendingCheck:null', () => {
+    const r = simulateHandleDiceRoll({
+      isMultiplayer: true,
+      myTurn: true,
+      die: 'd8',
+      result: 7,
+      roomCode: 'dnd-a1b2c3d4',
+      campaign: { sessionId: 'abc' },
+      pendingCheck: null,
+    })
+    expect(r.wsSent.payload.pendingCheck).toBeNull()
+    expect(r.pendingCheckCleared).toBe(false)
+  })
+
+  it('multiplayer myTurn=true uses campaign.roomCode when roomCode prop is null', () => {
+    const r = simulateHandleDiceRoll({
+      isMultiplayer: true,
+      myTurn: true,
+      die: 'd4',
+      result: 3,
+      roomCode: null, // no prop roomCode
+      campaign: { sessionId: 'abc', roomCode: 'dnd-fallback1' },
+      pendingCheck: null,
+    })
+    expect(r.wsSent.roomCode).toBe('dnd-fallback1')
+  })
+
+  it('multiplayer myTurn=false (non-active combat player): pushes locally per §779, wsSend not called', () => {
+    const r = simulateHandleDiceRoll({
+      isMultiplayer: true,
+      myTurn: false,
+      die: 'd20',
+      result: 9,
+      roomCode: 'dnd-a1b2c3d4',
+      campaign: { sessionId: 'abc' },
+      pendingCheck: null,
+    })
+    // §779: non-active dice rolls are purely local until free-roam resumes
+    expect(r.localPushed).toBe(true)
+    expect(r.wsSent).toBeNull()
+  })
+})

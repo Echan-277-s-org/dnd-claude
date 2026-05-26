@@ -49,6 +49,9 @@ const DEFAULT_MODEL = 'qwen2.5:14b'
 const MODEL_RE = /^[a-zA-Z0-9._:-]{1,64}$/
 // Per-connection min interval between actions (sec G), to throttle spam queuing.
 const ACTION_MIN_INTERVAL_MS = 500
+// Allowlist for a dice token ('d4'..'d100') — guards the regex-fallback path in the
+// dice handler so a forged payload.die can't be stored or reach the Ollama prompt (H1).
+const DIE_RE = /^d\d{1,3}$/i
 
 // ─── Phase 3: structured-block parser (server copy of Chat.jsx L18-42) ─────────
 // The architecture sanctions a verbatim server copy of the small parser so the
@@ -519,27 +522,53 @@ export function createSyncServer({ sessionsDir = DEFAULT_DIR, roomGcMs = 30 * 60
             },
           })
 
-          // (3b) Build the user message; record a server-side dice event so a forged
-          // verdict.roll (one not matching the real roll) can be discarded later.
+          // (3b) Build the stored message and record the server-side dice event when needed.
           // CHANGE 4: stamp senderName so every client (and .md reload) knows who spoke.
           // The field is set from the server-bound conn.displayName (never from payload).
-          const userMsg = {
-            role: 'user',
-            content,
-            id: randomUUID(),
-            senderName: conn?.displayName ?? null,
-          }
+          //
+          // For a dice action: the STORED message is role:'dice' (not role:'user') so that
+          // every client renders a DiceChip and the verdict block can resolve it.  The
+          // parsed die/result are computed once and reused for both lastDiceEvent and the
+          // stored message.  For a plain user action the stored message remains role:'user'.
+          let storedMsg
           if (actionType === 'dice') {
             const parsed = parseDiceContent(payload?.content) ?? {
               die: payload?.die ?? null,
               result: payload?.result != null ? Number(payload.result) : null,
             }
+            // H1: parseDiceContent already constrains the die token, but the regex-fallback
+            // path trusts raw payload.die/result. Validate both against an allowlist before
+            // they can be stored, broadcast, or interpolated into the Ollama prompt — an
+            // unparsed die like '```party …' would otherwise inject prompt structure
+            // (the same surface STRIP_RE closes on the content path). A non-dNN die / a
+            // non-finite result is dropped to null (renders harmlessly, never injects).
+            const die = DIE_RE.test(String(parsed.die ?? ''))
+              ? String(parsed.die).toLowerCase()
+              : null
+            const result = Number.isFinite(Number(parsed.result)) ? Number(parsed.result) : null
             room.lastDiceEvent = {
-              die: parsed.die,
-              result: parsed.result,
+              die,
+              result,
               turnSequence: room.turnSequence ?? 0,
             }
+            storedMsg = {
+              role: 'dice',
+              die,
+              result,
+              id: randomUUID(),
+              senderName: conn?.displayName ?? null,
+            }
+          } else {
+            storedMsg = {
+              role: 'user',
+              content,
+              id: randomUUID(),
+              senderName: conn?.displayName ?? null,
+            }
           }
+          // Keep a local alias for user messages so the existing Ollama-prompt code below
+          // can refer to `userMsg` without needing to be restructured.
+          const userMsg = actionType === 'dice' ? null : storedMsg
 
           // (3c) Assemble the prompt EXACTLY like Chat.jsx#sendMessage.
           const engine = getGenre(room.campaign?.genre).engine
@@ -553,8 +582,12 @@ export function createSyncServer({ sessionsDir = DEFAULT_DIR, roomGcMs = 30 * 60
             ? `${systemPrompt}\n\n---\nEstablished entities so far (stay consistent with these named NPCs, locations, and items): ${entities.join(', ')}.`
             : systemPrompt
 
-          // Most-recent dice index so pendingCheck folds into the right dice line.
-          const lastDiceIdx = (() => {
+          // Most-recent dice index so pendingCheck folds into the right dice line in the
+          // historical baseMessages.  When the CURRENT action is itself a dice action, the
+          // current roll is the intended pendingCheck target and is appended separately below,
+          // so we suppress the historical fold (set to -1) to avoid double-applying
+          // pendingCheck to a prior (already resolved/orphaned) dice message.
+          const lastDiceIdx = actionType === 'dice' ? -1 : (() => {
             for (let i = baseMessages.length - 1; i >= 0; i--) {
               if (baseMessages[i].role === 'dice') return i
             }
@@ -576,6 +609,10 @@ export function createSyncServer({ sessionsDir = DEFAULT_DIR, roomGcMs = 30 * 60
           const apiMessages = engine.trimContext([
             ...baseMessages.map((m, i) => {
               if (m.role === 'dice') {
+                // Historical dice messages: fold pendingCheck only at lastDiceIdx, which is
+                // -1 for a dice action (the current roll is appended separately below and is
+                // the real pendingCheck target). So this historical fold only ever fires for a
+                // NON-dice (user) action whose turn references a prior dice line.
                 const checkCtx =
                   i === lastDiceIdx && pendingCheck
                     ? ` | pending check: ${pendingCheck.skill} DC ${pendingCheck.dc}`
@@ -589,10 +626,21 @@ export function createSyncServer({ sessionsDir = DEFAULT_DIR, roomGcMs = 30 * 60
               }
               return m
             }),
-            // Prefix the new action with the current speaker (guarded: no-op when no displayName).
-            hasSender
-              ? { ...userMsg, content: prefixContent(conn.displayName, content) }
-              : userMsg,
+            // Append the current action for Ollama.
+            // Dice action: send as the canonical [Dice roll: dN → r] text line (with pendingCheck
+            // fold applied to THIS roll).  The senderName-prefix is intentionally omitted for dice
+            // lines (they have no speaker; the line format is its own attribution — CHANGE 5 invariant).
+            // User action: prefix with the speaker name as before (CHANGE 5).
+            actionType === 'dice'
+              ? (() => {
+                  const checkCtx = pendingCheck
+                    ? ` | pending check: ${pendingCheck.skill} DC ${pendingCheck.dc}`
+                    : ''
+                  return { role: 'user', content: `[Dice roll: ${storedMsg.die} → ${storedMsg.result}${checkCtx}]` }
+                })()
+              : hasSender
+                ? { ...userMsg, content: prefixContent(conn.displayName, content) }
+                : userMsg,
           ])
 
           // (3d) Validate the model against the allowlist (sec H).
@@ -659,8 +707,11 @@ export function createSyncServer({ sessionsDir = DEFAULT_DIR, roomGcMs = 30 * 60
             }
           }
 
-          // ── (4) Stream success: append the user message, parse blocks, persist
-          room.messages = [...baseMessages, userMsg]
+          // ── (4) Stream success: append the stored message (role:'dice' or role:'user'),
+          // parse blocks, persist.  The verdict block below searches room.messages for the
+          // most-recent unresolved role:'dice' message — for a dice action that is the one
+          // we just appended here, so verdict resolution works in the same turn.
+          room.messages = [...baseMessages, storedMsg]
 
           // verdict — discard a forged roll that doesn't match the server's record.
           // CHANGE 3 (L2): tighter forgery check with two invariants:
