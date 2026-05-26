@@ -16,7 +16,8 @@ The project is named after my friend Dan, a longtime Dungeon Master. He's always
 - **Dice roller + skill-check verdicts** — roll d4 through d100 in-chat. The DM emits ` ```check ` (skill + DC) and ` ```verdict ` (PASS/FAIL) structured blocks; these upgrade bare dice messages into resolved DiceChip components.
 - **Session persistence (localStorage)** — the full session (messages, party, campaign) is saved to `localStorage` on every settled turn with a `QuotaExceededError` trim-and-retry.
 - **Markdown save/continue** — download a self-contained, LLM-loadable `.md` handoff from the header button; load it on any device via the setup screen's "Load .md file" button to resume the session.
-- **LAN cross-device sync** — an Express sync server (`server/sync-server.mjs`) stores sessions as `.md` files and serves them over your local network. The app auto-derives the desktop host from `window.location.hostname`, so opening `http://<desktop-IP>:5173` on a phone targets the desktop's Ollama and sync server automatically.
+- **Real-time multiplayer** — the sync server now hosts a WebSocket endpoint (`ws://<host>:3001/ws`) in addition to the existing REST API on the same port. Players join a shared room via `?room=dnd-<8hex>` in the URL. The server owns the DM seat: it proxies Ollama server-side (one trigger per room per turn), broadcasts `dm:delta`/`dm:done`/`session:update`/`presence:update` events to all clients, and enforces combat turn order. With no `?room=` in the URL, no WebSocket is opened and single-player behaves exactly as before.
+- **LAN cross-device sync (single-player fallback)** — an Express sync server (`server/sync-server.mjs`) stores sessions as `.md` files and serves them over your local network. The app auto-derives the desktop host from `window.location.hostname`, so opening `http://<desktop-IP>:5173` on a phone targets the desktop's Ollama and sync server automatically. The 30-second HTTP poll is suspended while a WebSocket connection is open and resumes automatically on disconnect.
 
 ---
 
@@ -104,7 +105,7 @@ All scripts are defined in `package.json`.
 | `sync` | `node server/sync-server.mjs` | Sync server only |
 | `build` | `vite build` | Production build |
 | `preview` | `vite preview` | Preview the production build locally |
-| `test` | `vitest run` | Run the full test suite once (274 tests, jsdom + Node) |
+| `test` | `vitest run` | Run the full test suite once (405 passed \| 2 skipped, 407 total — jsdom + Node) |
 | `test:watch` | `vitest` | Run tests in watch mode |
 
 ---
@@ -120,11 +121,30 @@ To reach the app and Ollama from a phone (or any device) on the same LAN:
    ollama serve
    ```
 
+   The sync server also reads `OLLAMA_HOST` when running a multiplayer room — it proxies Ollama server-side using the same variable, so no separate server-side config is needed.
+
 2. Allow ports **5173**, **3001**, and **11434** through the Windows Firewall.
 
 3. Run `npm run dev` on the desktop.
 
 4. Open `http://<desktop-IP>:5173` on the phone. The app derives the Ollama and sync server host from `window.location.hostname` automatically — no config needed on the phone.
+
+**Joining a multiplayer room.** The host creates a session normally and shares their room code (`dnd-<8hex>`, shown in the session header). Other players open:
+
+```
+http://<desktop-IP>:5173?room=dnd-<8hex>
+```
+
+The `?room=` query param is read by `App.jsx` on mount and routes the player through the join form instead of the new-campaign setup screen.
+
+**WebSocket origin allowlist.** The sync server accepts WS upgrades only from origins listed in `WS_ALLOWED_ORIGINS` (comma-separated). The default is `http://localhost:5173`. On LAN or Tailscale, set this before starting the server:
+
+```powershell
+$env:WS_ALLOWED_ORIGINS = "http://192.168.1.10:5173"
+npm run dev
+```
+
+Empty/absent `Origin` headers (non-browser clients, test harness) are always allowed.
 
 ---
 
@@ -157,9 +177,10 @@ Tailscale creates an encrypted peer-to-peer mesh (a "tailnet") between your devi
    ollama serve
    ```
 
-4. In a second terminal, start the app (Vite + sync server together):
+4. In a second terminal, start the app (Vite + sync server together). If you are using multiplayer, also set the WebSocket origin allowlist to the Tailscale address players will open in their browsers:
 
    ```powershell
+   $env:WS_ALLOWED_ORIGINS = "http://<tailscale-ip>:5173"
    npm run dev
    ```
 
@@ -188,7 +209,7 @@ Port forwarding opens holes in your router so the remote player connects directl
 > This option exposes three unauthenticated services to the open internet over plain HTTP (no TLS):
 >
 > - **Ollama on :11434** — no authentication. Anyone who reaches this port can run inference on your GPU and enumerate models.
-> - **Sync server on :3001** — no authentication. The `PUT /session/:id` and `DELETE /session/:id` endpoints let anyone on the internet read, overwrite, or permanently delete your campaign sessions. There is no rate limiting.
+> - **Sync server on :3001** — no authentication. The `PUT /session/:id` and `DELETE /session/:id` REST endpoints let anyone read, overwrite, or delete your campaign sessions. The WebSocket endpoint at `ws://<host>:3001/ws` is also exposed; by default it only accepts connections from `http://localhost:5173`, but set `WS_ALLOWED_ORIGINS` to your public IP's Vite origin to allow remote players. There is no rate limiting beyond the per-connection 500ms action interval.
 >
 > Use Tailscale (Option A) instead unless you fully understand and accept these risks.
 
@@ -222,6 +243,7 @@ Port forwarding opens holes in your router so the remote player connects directl
 | CORS error in the browser console when the AI is called | `OLLAMA_ORIGINS` not set, so Ollama blocks the `:5173` origin | Add `$env:OLLAMA_ORIGINS = "*"` before `ollama serve` |
 | AI works but sessions never sync | Port 3001 unreachable, or sync server not running. Degrades **silently** to localStorage — no error banner | Use `npm run dev` (not `dev:vite`); check the Network tab for failed `:3001` requests; for port forwarding, verify the 3001 rule |
 | Tailscale works on one device but a second player can't connect | Second device not on the same tailnet | Both devices must be signed into the same tailnet, or the node must be shared via the Tailscale admin console |
+| WebSocket upgrade rejected (403) over Tailscale or port forwarding | `WS_ALLOWED_ORIGINS` still set to `http://localhost:5173` | Set `$env:WS_ALLOWED_ORIGINS` to the origin players use (e.g. `http://<tailscale-ip>:5173`) before starting the server |
 | "Blocked insecure request" / mixed-content error | Page served over HTTPS while Ollama/sync are HTTP | This app is plain HTTP end to end — don't front Vite with an HTTPS proxy unless you proxy all three through the same HTTPS origin |
 
 ### Tailscale vs. port forwarding
@@ -247,9 +269,13 @@ Port forwarding opens holes in your router so the remote player connects directl
 | Phone reaches `:5173` but AI never responds | Firewall blocking port **11434** | Allow inbound TCP on 5173, 3001, **and** 11434 on the desktop |
 | Phone can't reach the app at all | Firewall blocking port **5173** | Allow inbound TCP on 5173 (and 3001 for sync) |
 | Session not syncing across devices | Ran `npm run dev:vite` (no sync server) | Use `npm run dev`, or start sync separately with `npm run sync` |
-| Another device's saves don't appear immediately | Poll interval is 30 s, not real-time | Wait up to 30 s — the hook polls via `pollSyncSession` |
+| Another device's saves don't appear immediately (single-player) | Poll interval is 30 s, not real-time | Wait up to 30 s — the hook polls via `pollSyncSession`. In multiplayer, updates arrive instantly over WebSocket |
 | `409` logged after saving a turn | Stale-write conflict (another device saved first) | Non-destructive: local state is kept and the 30 s poll reconciles via `adopt()` |
 | Old session briefly reappears after "New Campaign" | In-flight poll adopted the stale server copy | The strictly-newer sentinel (`'9999-12-31T23:59:59.999Z'`) blocks adoption; resolves on the next poll tick |
+| WebSocket connection never opens (multiplayer) | `WS_ALLOWED_ORIGINS` does not include the page's origin, or the server is not reachable on port 3001 | Add the player's origin to `$env:WS_ALLOWED_ORIGINS` before starting the server; confirm port 3001 is open |
+| `NAME_TAKEN` error on joining a room | Another player in the room already has the same display name on an open connection | Choose a different display name; the slot is freed as soon as the other player disconnects |
+| AI never responds in a multiplayer room | `OLLAMA_HOST` not set on the desktop running the server, or port 11434 unreachable from the server process | Set `$env:OLLAMA_HOST = "0.0.0.0"` and restart `ollama serve`; the server-side DM proxy uses this variable, not the client's |
+| `DM_BUSY` error after submitting an action | Another player's action is already being processed (only one DM trigger per room at a time) | Wait for the DM response to finish; the client re-enables input automatically when a resting phase is broadcast |
 | `QuotaExceededError` in the console | localStorage full (very long session) | The app trims oldest messages and retries; if it persists, save a `.md` and start fresh |
 | "Load .md file" loads as plain context, not a restored session | The `.md` has no ` ```session ` block | Only files from the 💾 save button (`toMarkdown`) are machine-restorable |
 | Port 5173/3001 already in use | Another process holds the port | Free it, or override: `$env:SYNC_PORT = "3002"; npm run sync` |
@@ -264,8 +290,8 @@ Non-obvious behaviors that don't appear on the happy path:
 - **The DM owns the party HUD.** `Chat.jsx` reads a fenced ` ```party ` block off each response and treats it as authoritative; you can't edit party members in the UI — the LLM manages HP, roles, and active status.
 - **Entities are re-derived, not stored.** `extractEntities` re-runs over the message history on every load. Bold NPC/location names (`**Name**`) so the continuity tracker picks them up.
 - **`pendingCheck` is session-only.** A ` ```check ` block lives in React state for the current session and is *not* restored by `fromMarkdown`; after a reload the next roll won't carry a verdict until the DM emits a new check.
-- **The sync layer degrades silently by design.** Every `fetch` in `src/lib/session.js` catches and returns `null` / `{ ok: false }`; sync errors never surface to the user — localStorage and `.md` saves keep working.
-- **`SYNC_PORT` is the only runtime knob.** No API keys, no `.env`; all hosts are derived from `window.location.hostname` via `getLanHost()`.
+- **The sync layer degrades silently by design.** Every `fetch` in `src/lib/session.js` catches and returns `null` / `{ ok: false }`; sync errors never surface to the user — localStorage and `.md` saves keep working. The WebSocket client (`useWebSocket`) reconnects with exponential backoff (1 s → 30 s) and the 30-second HTTP poll resumes automatically while the socket is closed.
+- **Runtime environment variables.** No `.env` file. The available knobs are: `SYNC_PORT` (sync server port, default 3001), `OLLAMA_HOST` (Ollama base URL read by the sync server when proxying DM calls, default `http://localhost:11434`), `WS_ALLOWED_ORIGINS` (comma-separated allowed WebSocket upgrade origins, default `http://localhost:5173`), and `OLLAMA_TIMEOUT_MS` (DM proxy timeout in ms, default 90000). All client-side hosts are derived from `window.location.hostname` via `getLanHost()`.
 
 ---
 
@@ -277,8 +303,10 @@ Non-obvious behaviors that don't appear on the happy path:
 | `src/components/ApiKeySetup.jsx` | Imported as `CampaignSetup` — first-run screen: genre, campaign name/details, Ollama model, optional notes `.md` |
 | `src/components/Chat.jsx` | Streaming fetch to Ollama; message rendering; structured-block parser; `parseMarkdown()`; session hydration/persistence; Markdown save button |
 | `src/lib/session.js` | One serialize layer, three surfaces: `serializeSession`/`deserializeSession`, `toMarkdown`/`fromMarkdown`, and the sync API (`loadSyncSession`/`saveSyncSession`/`pollSyncSession`) |
-| `src/hooks/useSessionPersistence.js` | LAN sync client: server-authoritative on mount, per-turn push, 30 s poll; degrades silently when the sync server is unreachable |
-| `server/sync-server.mjs` | Express LAN sync server — `GET`/`PUT`/`DELETE /session/:id`, `GET /sessions`; atomic writes, per-session lock, server-stamped `savedAt` |
+| `src/hooks/useSessionPersistence.js` | LAN sync client: server-authoritative on mount, per-turn push, 30 s poll (suspended while WebSocket is open); degrades silently when the sync server is unreachable |
+| `src/hooks/useWebSocket.js` | WebSocket client hook: `useWebSocket({ roomCode, sessionId, displayName, onMessage, onSessionState, enabled })`; exponential backoff reconnect (1 s → 30 s ±20% jitter); `enabled=false` in single-player mode (no socket ever opened) |
+| `src/lib/turnStateMachine.js` | Pure phase reducer: `phaseReducer(currentPhase, event, context)` and `isActiveTurn(displayName, party)`; shared by client UI gating and server-side combat enforcement |
+| `server/sync-server.mjs` | Sync + multiplayer server — Express REST (`GET`/`PUT`/`DELETE /session/:id`, `GET /sessions`) **and** WebSocket at `ws://<host>:3001/ws` (same port, `noServer:true`). In multiplayer: holds canonical in-memory room state, proxies Ollama server-side (one DM trigger per room), enforces turn order via `isActiveTurn`, broadcasts `dm:delta`/`dm:done`/`session:update`/`presence:update`, and persists `.md` snapshots atomically after each turn |
 | `src/components/DiceRoller.jsx` | d4–d100 roller; emits `{ die, result }` |
 | `src/components/DiceChip.jsx` | Renders a dice message — bare (`die → result`) or resolved (skill-check + PASS/FAIL verdict) |
 | `src/components/PartyStrip.jsx` | Mobile 3-cell party strip (display-only; LLM-managed) |
@@ -296,17 +324,20 @@ Non-obvious behaviors that don't appear on the happy path:
 
 ## Session Persistence Details
 
-Three surfaces share **one payload shape** defined in `src/lib/session.js`:
+Three surfaces share **one payload shape** defined in `src/lib/session.js` (schema version 2; v1 payloads still load with safe defaults for the new fields):
 
 ```
 { sessionId, schemaVersion, savedAt,
   campaign { name, genre, details, context, model, sessionId },
-  messages, sessionLog, party }
+  messages, sessionLog, party,
+  roomCode, phase, turnSequence }
 ```
+
+`roomCode` is the human-readable join alias (`dnd-<8hex>`, derived from the first 8 hex chars of `sessionId` via `makeRoomCode`). `phase` is one of `free-roam` or `combat` (the transient phases `awaiting-dm` and `resolving` are coerced to `free-roam` on every serialize/write). `turnSequence` is a monotonically incrementing integer owned by the server; it gates stale reconnects.
 
 - **localStorage** (`dnd_session`) — hydrated on boot; written once per settled turn (never per stream delta).
 - **Markdown save/continue** — the header download button writes a self-contained `.md` handoff (`toMarkdown`). The setup screen's "Load .md file" detects the embedded ` ```session ` block (`fromMarkdown`) and boots straight into the restored session.
-- **LAN sync** — `useSessionPersistence` keeps localStorage as an offline mirror; a strictly-newer gate (`savedAt` ISO comparison) prevents a stale in-flight poll from overwriting a freshly cleared session.
+- **LAN sync / multiplayer** — in single-player mode, `useSessionPersistence` keeps localStorage as an offline mirror via a 30-second HTTP poll; a strictly-newer gate (`savedAt` ISO comparison) prevents a stale in-flight poll from overwriting a freshly cleared session. In multiplayer mode, the WebSocket connection takes over as the authoritative channel; the poll is suspended while the socket is open and resumes automatically on disconnect.
 
 ---
 
