@@ -178,3 +178,153 @@ describe('getActionSuggestions (keyword routing)', () => {
     }
   })
 })
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Verdict-target selection (H4) — mirror of the reducer in Chat.jsx:302-313.
+// The next verdict block resolves the MOST-RECENT unresolved dice chip, but must
+// SKIP chips flagged `orphaned` on restore (else a saved session ending on a roll
+// would have an old chip stamped PASS/FAIL by an unrelated later verdict).
+// ─────────────────────────────────────────────────────────────────────────────
+
+function findVerdictTarget(messages) {
+  return [...messages]
+    .map((m, i) => ({ m, i }))
+    .reverse()
+    .find(({ m }) => m.role === 'dice' && m.verdict == null && !m.orphaned)?.i
+}
+
+describe('verdict-target selection (H4)', () => {
+  it('targets the most-recent unresolved dice chip', () => {
+    const msgs = [
+      { role: 'dice', die: 'd20', result: 5, verdict: 'FAIL' },
+      { role: 'user', content: 'hi' },
+      { role: 'dice', die: 'd20', result: 17 }, // unresolved, fresh
+    ]
+    expect(findVerdictTarget(msgs)).toBe(2)
+  })
+
+  it('SKIPS an orphaned (restored) bare chip — H4 fix', () => {
+    const msgs = [
+      { role: 'dice', die: 'd20', result: 17, orphaned: true }, // restored bare
+      { role: 'assistant', content: 'You enter a new room.' },
+    ]
+    expect(findVerdictTarget(msgs)).toBeUndefined() // no valid target → parser keeps state
+  })
+
+  it('targets a fresh roll while leaving an earlier orphaned chip untouched', () => {
+    const msgs = [
+      { role: 'dice', die: 'd20', result: 17, orphaned: true }, // restored, must stay bare
+      { role: 'user', content: 'I roll perception' },
+      { role: 'dice', die: 'd20', result: 12 }, // fresh in-session roll
+    ]
+    expect(findVerdictTarget(msgs)).toBe(2)
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// QuotaExceeded trim-retry — mirror of the persist effect in Chat.jsx:126-144.
+// On a QuotaExceededError the oldest third of messages is dropped and the write
+// retried once; any other error gives up silently (in-memory state intact).
+// ─────────────────────────────────────────────────────────────────────────────
+
+function persistWithRetry(messages, storage) {
+  const persist = msgs => storage.setItem('dnd_session', JSON.stringify({ messages: msgs }))
+  try {
+    persist(messages)
+  } catch (err) {
+    if (err?.name === 'QuotaExceededError') {
+      try {
+        persist(messages.slice(Math.floor(messages.length / 3)))
+      } catch {
+        /* give up silently */
+      }
+    }
+  }
+}
+
+describe('QuotaExceeded trim-retry (persist effect)', () => {
+  it('drops the oldest third and retries once on QuotaExceededError', () => {
+    const msgs = Array.from({ length: 9 }, (_, i) => ({ role: 'user', content: `m${i}` }))
+    let calls = 0
+    const stored = {}
+    const storage = {
+      setItem(k, v) {
+        calls += 1
+        if (calls === 1) {
+          const e = new Error('quota')
+          e.name = 'QuotaExceededError'
+          throw e
+        }
+        stored[k] = v
+      },
+    }
+    persistWithRetry(msgs, storage)
+    expect(calls).toBe(2) // first throws, retry succeeds
+    // retry persisted the trimmed tail (dropped floor(9/3)=3 oldest → 6 remain)
+    expect(JSON.parse(stored['dnd_session']).messages).toHaveLength(6)
+  })
+
+  it('writes once when there is no quota error', () => {
+    let calls = 0
+    const storage = { setItem: () => { calls += 1 } }
+    persistWithRetry([{ role: 'user', content: 'x' }], storage)
+    expect(calls).toBe(1)
+  })
+
+  // When both the initial write AND the retry throw QuotaExceededError, the
+  // function must give up silently (no unhandled rejection, no throw).
+  it('gives up silently when the retry also throws QuotaExceededError', () => {
+    const quota = () => {
+      const e = new Error('quota')
+      e.name = 'QuotaExceededError'
+      throw e
+    }
+    const storage = { setItem: quota }
+    expect(() =>
+      persistWithRetry(Array.from({ length: 9 }, (_, i) => ({ role: 'user', content: `m${i}` })), storage)
+    ).not.toThrow()
+  })
+
+  // A non-QuotaExceededError must NOT trigger a retry — give up immediately.
+  it('does not retry on non-quota errors', () => {
+    let calls = 0
+    const storage = {
+      setItem() {
+        calls += 1
+        throw new Error('SecurityError')
+      },
+    }
+    persistWithRetry([{ role: 'user', content: 'x' }], storage)
+    expect(calls).toBe(1) // only the first attempt, no retry
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Additional verdict-target edge cases (H4 completeness)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('verdict-target selection — additional edge cases (H4)', () => {
+  it('returns undefined when ALL dice chips are orphaned (no new roll in session)', () => {
+    const msgs = [
+      { role: 'dice', die: 'd20', result: 5, orphaned: true },
+      { role: 'dice', die: 'd6', result: 3, orphaned: true },
+    ]
+    expect(findVerdictTarget(msgs)).toBeUndefined()
+  })
+
+  it('returns undefined when there are no dice chips at all', () => {
+    const msgs = [
+      { role: 'user', content: 'I sneak forward.' },
+      { role: 'assistant', content: 'The guard does not notice you.' },
+    ]
+    expect(findVerdictTarget(msgs)).toBeUndefined()
+  })
+
+  it('skips resolved dice chips (verdict already set) and targets only unresolved', () => {
+    const msgs = [
+      { role: 'dice', die: 'd20', result: 5, verdict: 'FAIL' },  // resolved
+      { role: 'dice', die: 'd20', result: 18 },                   // unresolved → target
+    ]
+    expect(findVerdictTarget(msgs)).toBe(1)
+  })
+})

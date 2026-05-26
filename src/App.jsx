@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import CampaignSetup from './components/ApiKeySetup'
 import Chat from './components/Chat'
+import { serializeSession } from './lib/session'
 
 // Genre drives the visual theme — there is no independent theme toggle.
 const THEME_FOR_GENRE = { dnd: 'dnd', starwars: 'void' }
@@ -79,6 +80,19 @@ function loadParty() {
   return DEFAULT_PARTY
 }
 
+// Stable per-campaign sync identity (M1). Minted once and persisted; reused on
+// every boot. Used as the cross-device sync key — must NOT be a name slug (slug
+// collisions) nor minted per-device (split-brain: each device writes a different
+// file and silently never finds the session).
+function loadSessionId() {
+  let id = localStorage.getItem('dnd_session_id')
+  if (!id) {
+    id = crypto.randomUUID()
+    localStorage.setItem('dnd_session_id', id)
+  }
+  return id
+}
+
 export default function App() {
   const [ready, setReady] = useState(() => !!localStorage.getItem('dnd_setup_done'))
   const [campaign, setCampaign] = useState(() => ({
@@ -87,6 +101,7 @@ export default function App() {
     details: localStorage.getItem('dnd_campaign_details') || '',
     model: localStorage.getItem('dnd_model') || 'qwen2.5:14b',
     context: localStorage.getItem('dnd_campaign_context') || '',
+    sessionId: loadSessionId(),
   }))
   const [character, setCharacter] = useState(loadCharacter)
   // party is LLM-driven (display cache). loadParty() migrates from dnd_character on first boot.
@@ -107,7 +122,45 @@ export default function App() {
     localStorage.setItem('dnd_campaign_details', details)
     localStorage.setItem('dnd_model', model)
     localStorage.setItem('dnd_campaign_context', context)
-    setCampaign({ genre, name, details, model, context })
+    const sessionId = loadSessionId() // mint-or-reuse; stable across settings edits
+    setCampaign({ genre, name, details, model, context, sessionId })
+    setReady(true)
+  }
+
+  // Phase A2: restore a full session from a loaded .md file (one that contains a
+  // ```session block). Persists through the same localStorage keys Chat hydrates
+  // from, adopts the file's campaign (incl. its sessionId — M2), and boots
+  // straight into play, skipping the setup form.
+  function handleRestoreSession(payload) {
+    const c = payload.campaign ?? {}
+    const sessionId = c.sessionId || loadSessionId()
+    const restored = {
+      genre: c.genre || 'dnd',
+      name: c.name || '',
+      details: c.details || '',
+      model: c.model || 'qwen2.5:14b',
+      context: c.context || '',
+      sessionId,
+    }
+    localStorage.setItem('dnd_setup_done', '1')
+    localStorage.setItem('dnd_genre', restored.genre)
+    localStorage.setItem('dnd_campaign_name', restored.name)
+    localStorage.setItem('dnd_campaign_details', restored.details)
+    localStorage.setItem('dnd_model', restored.model)
+    localStorage.setItem('dnd_campaign_context', restored.context)
+    localStorage.setItem('dnd_session_id', sessionId)
+    localStorage.setItem(
+      'dnd_session',
+      JSON.stringify(
+        serializeSession(
+          { campaign: restored, messages: payload.messages, sessionLog: payload.sessionLog, party: payload.party },
+          payload.savedAt
+        )
+      )
+    )
+    if (payload.party?.length) localStorage.setItem('dnd_party', JSON.stringify(payload.party))
+    setCampaign(restored)
+    if (payload.party?.length) setParty(payload.party)
     setReady(true)
   }
 
@@ -117,7 +170,13 @@ export default function App() {
   }
 
   if (!ready) {
-    return <CampaignSetup onSetup={handleSetup} onGenreChange={setDraftGenre} />
+    return (
+      <CampaignSetup
+        onSetup={handleSetup}
+        onGenreChange={setDraftGenre}
+        onRestoreSession={handleRestoreSession}
+      />
+    )
   }
 
   return (

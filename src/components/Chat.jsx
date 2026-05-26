@@ -5,6 +5,12 @@ import CharacterPanel from './CharacterPanel'
 import PartyStrip from './PartyStrip'
 import DiceChip from './DiceChip'
 import { getGenre } from '../lib/genres'
+import { serializeSession, deserializeSession, getLanHost, toMarkdown, sessionFileName, markOrphanedDice } from '../lib/session'
+import { useSessionPersistence } from '../hooks/useSessionPersistence'
+
+// Phase A: localStorage key for the persisted session payload (same shape that
+// Phase A2's .md and Phase B's sync server use — defined once in session.js).
+const SESSION_KEY = 'dnd_session'
 
 // ─── Structured-block parser (Phase A) ────────────────────────────────────────
 // These tags carry LLM-owned data; they are NEVER rendered in the chat bubble.
@@ -84,22 +90,66 @@ function parseMarkdown(text) {
 export default function Chat({ campaign, onReset, character, setCharacter, party, setParty }) {
   const genre = getGenre(campaign.genre)
   const { buildSystemPrompt, extractEntities, trimContext } = genre.engine
-  const [messages, setMessages] = useState([])
+  // Phase A: hydrate messages + sessionLog from the persisted payload so a
+  // refresh survives. One parse, shared by both lazy initializers.
+  const stored = deserializeSession(localStorage.getItem(SESSION_KEY))
+  // H4: a restored session often ends on an unresolved roll. Flag those bare dice
+  // chips `orphaned` so the verdict parser can't later stamp PASS/FAIL onto them.
+  const [messages, setMessages] = useState(() => markOrphanedDice(stored?.messages ?? []))
   const [input, setInput] = useState('')
   const [isLoading, setIsLoading] = useState(false)
   const [showDice, setShowDice] = useState(false)
   const [showHistory, setShowHistory] = useState(false)
   const [showCharacter, setShowCharacter] = useState(false)
-  const [entities, setEntities] = useState([])
-  const [sessionLog, setSessionLog] = useState([])
+  const [entities, setEntities] = useState(() =>
+    stored?.messages ? extractEntities(stored.messages) : []
+  )
+  const [sessionLog, setSessionLog] = useState(() => stored?.sessionLog ?? [])
   // pendingCheck is session-only (not persisted). Cleared when the roll is sent or on new session.
+  // SHOULD #1 (review): it is intentionally NOT reconstructed on load. The skill/DC
+  // signal does not survive serialization — the ```check block is stripped from the
+  // persisted assistant content (stripStructuredBlocks), and pendingCheck is already
+  // cleared at roll-send time, so a saved session never carries a live check to restore.
+  // Reviewers also ruled out persisting the raw value (cross-device "answered-twice"
+  // hazard). It self-heals: the DM re-emits a ```check block on the next turn.
   const [pendingCheck, setPendingCheck] = useState(null)
+
+  // Phase B: LAN sync layer (server-authoritative when reachable; silent no-op
+  // when the sync server is down — localStorage above remains the offline mirror).
+  const { onNewSession } = useSessionPersistence({
+    campaign, messages, setMessages, sessionLog, setSessionLog, party, setParty, isLoading,
+  })
   const messagesEndRef = useRef(null)
   const textareaRef = useRef(null)
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
+
+  // Phase A: persist once per settled turn — NOT per stream delta (perf MUST-FIX).
+  // Gated on !isLoading so the 30–80 setMessages/sec during streaming write nothing;
+  // when a turn ends, isLoading flips false in the SAME commit as the final
+  // messages/party update, so this runs exactly once with complete state.
+  // try/catch handles QuotaExceededError by trimming the oldest messages and retrying.
+  useEffect(() => {
+    if (isLoading) return
+    const persist = msgs => {
+      const payload = serializeSession({ campaign, messages: msgs, sessionLog, party })
+      localStorage.setItem(SESSION_KEY, JSON.stringify(payload))
+    }
+    try {
+      persist(messages)
+    } catch (err) {
+      if (err?.name === 'QuotaExceededError') {
+        try {
+          // Drop the oldest third and retry once; better a trimmed log than none.
+          persist(messages.slice(Math.floor(messages.length / 3)))
+        } catch {
+          // give up silently — the in-memory session is still intact
+        }
+      }
+    }
+  }, [isLoading, messages, sessionLog, party, campaign])
 
   useEffect(() => {
     const el = textareaRef.current
@@ -167,7 +217,7 @@ export default function Chat({ campaign, onReset, character, setCharacter, party
     let fullText = ''
 
     try {
-      const ollamaHost = `${window.location.hostname}:11434`
+      const ollamaHost = getLanHost(11434)
       const response = await fetch(`http://${ollamaHost}/api/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -261,7 +311,7 @@ export default function Chat({ campaign, onReset, character, setCharacter, party
           const idx = [...prev]
             .map((m, i) => ({ m, i }))
             .reverse()
-            .find(({ m }) => m.role === 'dice' && m.verdict == null)?.i
+            .find(({ m }) => m.role === 'dice' && m.verdict == null && !m.orphaned)?.i
           if (idx == null) return prev
           return prev.map((m, i) =>
             i === idx
@@ -290,12 +340,31 @@ export default function Chat({ campaign, onReset, character, setCharacter, party
     setMessages(prev => [...prev, { role: 'dice', die, result }])
   }
 
+  // Phase A2: download the current session as a self-contained Markdown handoff
+  // (prose DM brief + lossless ```session block). pendingCheck is session-only —
+  // passed so it shows as a prose line for an LLM reading the file, never machine-stored.
+  function handleSaveSession() {
+    const payload = serializeSession({ campaign, messages, sessionLog, party })
+    const md = toMarkdown(payload, pendingCheck)
+    const blob = new Blob([md], { type: 'text/markdown;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = sessionFileName(campaign, payload.savedAt)
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    URL.revokeObjectURL(url)
+  }
+
   function handleNewSession() {
     if (messages.length === 0 || window.confirm('Start a new session? The current conversation will be cleared.')) {
       setMessages([])
       setEntities([])
       setSessionLog([])
       setPendingCheck(null)
+      localStorage.removeItem(SESSION_KEY)
+      onNewSession() // DELETE the server copy + guard against an in-flight poll resurrecting it
     }
   }
 
@@ -365,6 +434,14 @@ export default function Chat({ campaign, onReset, character, setCharacter, party
               title="Character Sheet"
             >
               🧙
+            </button>
+            <button
+              className="icon-btn"
+              onClick={handleSaveSession}
+              disabled={messages.length === 0}
+              title="Save session (.md)"
+            >
+              💾
             </button>
             <button className="icon-btn" onClick={handleNewSession} title="New Session">
               🗑

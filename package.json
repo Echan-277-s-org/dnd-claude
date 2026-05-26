@@ -4,13 +4,17 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "concurrently -n vite,sync -c cyan,magenta \"vite\" \"node server/sync-server.mjs\"",
+    "dev:vite": "vite",
+    "sync": "node server/sync-server.mjs",
     "build": "vite build",
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest"
   },
   "dependencies": {
+    "cors": "^2.8.6",
+    "express": "^5.2.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },
@@ -19,6 +23,7 @@
     "@testing-library/react": "^16.3.2",
     "@testing-library/user-event": "^14.6.1",
     "@vitejs/plugin-react": "^4.3.1",
+    "concurrently": "^9.2.1",
     "jsdom": "^29.1.1",
     "puppeteer": "^25.0.4",
     "vite": "^5.4.2",

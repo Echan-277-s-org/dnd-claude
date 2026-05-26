@@ -2,3 +2,13 @@ node_modules/
 dist/
 .env
 *.local
+
+# Phase B sync server's internal store (LLM-loadable .md saves, but device-local).
+server/sessions/
+
+# Screenshot capture tooling (dev-only; regenerates docs/screenshots/*.png via puppeteer).
+docs/screenshots/*.cjs
+
+# Personal campaign notes — keep only the documented example tracked (see CLAUDE.md).
+campaigns/*
+!campaigns/jaycen-hawke-day2.md

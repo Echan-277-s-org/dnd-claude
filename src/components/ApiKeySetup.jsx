@@ -1,12 +1,13 @@
 import { useState, useRef } from 'react'
 import { GENRES, getGenre } from '../lib/genres'
+import { fromMarkdown } from '../lib/session'
 
 const OLLAMA_MODELS = [
   { value: 'qwen2.5:14b', label: 'Qwen 2.5 14B — Fast & capable (recommended)' },
   { value: 'qwen2.5:32b', label: 'Qwen 2.5 32B — Richer narration, slower' },
 ]
 
-export default function CampaignSetup({ onSetup, onGenreChange }) {
+export default function CampaignSetup({ onSetup, onGenreChange, onRestoreSession }) {
   const [genreId, setGenreId] = useState(() => localStorage.getItem('dnd_genre') || 'dnd')
   const [name, setName] = useState(() => localStorage.getItem('dnd_campaign_name') || '')
   const [details, setDetails] = useState(() => localStorage.getItem('dnd_campaign_details') || '')
@@ -22,7 +23,15 @@ export default function CampaignSetup({ onSetup, onGenreChange }) {
     if (!file) return
     const reader = new FileReader()
     reader.onload = ev => {
-      setContext(ev.target.result)
+      const text = ev.target.result
+      // A session file (contains a ```session block) → full restore, boot into play.
+      // Anything else → today's behavior: load the prose as campaign context.
+      const payload = fromMarkdown(text)
+      if (payload && onRestoreSession) {
+        onRestoreSession(payload)
+        return
+      }
+      setContext(text)
       setContextFileName(file.name)
     }
     reader.readAsText(file)
@@ -132,7 +141,8 @@ export default function CampaignSetup({ onSetup, onGenreChange }) {
               </label>
             )}
             <span className="form-hint">
-              Load a Markdown file with session notes, NPC lists, or previous events to continue an existing campaign.
+              Load a Markdown file — world notes / NPC lists to seed context, or a saved session
+              file (with a session block) to resume exactly where you left off.
             </span>
           </div>
 

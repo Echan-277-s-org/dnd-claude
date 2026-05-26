@@ -4,10 +4,18 @@
 
 ```powershell
 npm install
-npm run dev      # http://localhost:5173
+npm run dev      # vite (http://localhost:5173) + LAN sync server (:3001), concurrently
+npm run dev:vite # vite only (no sync server)
+npm run sync     # sync server only — node server/sync-server.mjs
 npm run build
-npm test -- --run   # Vitest (jsdom) — 203 tests
+npm test -- --run   # Vitest (jsdom + one node-env server suite) — 274 tests
 ```
+
+**Cross-device / LAN play.** To reach the app and Ollama from a phone on the same LAN,
+serve Ollama on all interfaces (`$env:OLLAMA_HOST="0.0.0.0"` before `ollama serve`) and allow
+ports **5173** (Vite), **3001** (sync), **11434** (Ollama) through the firewall. The app derives
+all hosts from `window.location.hostname` via `getLanHost()` (`src/lib/session.js`), so opening
+`http://<desktop-IP>:5173` on the phone targets the desktop's Ollama + sync server automatically.
 
 ## Architecture
 
@@ -20,7 +28,10 @@ the visual theme**: `App.jsx` writes `<html data-theme>` from `THEME_FOR_GENRE`
 |------|------|
 | `src/App.jsx` | Top-level state: `campaign`, `character`, `party`; routes between setup and chat; sets `<html data-theme>` from genre |
 | `src/components/ApiKeySetup.jsx` | Imported as `CampaignSetup` — first-run screen: genre, campaign name/details, Ollama model, optional notes `.md`. **No API key** despite the filename |
-| `src/components/Chat.jsx` | Streaming fetch to local Ollama; message rendering; structured-block parser; `parseMarkdown()` (with drop-cap hook) |
+| `src/components/Chat.jsx` | Streaming fetch to local Ollama; message rendering; structured-block parser; `parseMarkdown()` (with drop-cap hook); hydrates/persists the session (Phase A) + **Save session (.md)** button (Phase A2); mounts `useSessionPersistence` (Phase B) |
+| `src/lib/session.js` | **One serialize layer, three surfaces** — `serializeSession`/`deserializeSession` (the canonical payload), `toMarkdown`/`fromMarkdown` (the LLM-loadable `.md`), `getLanHost`, and the sync API (`loadSyncSession`/`saveSyncSession`/`pollSyncSession`). Pure, no React |
+| `src/hooks/useSessionPersistence.js` | Phase B client: server-authoritative-when-reachable load on mount, per-turn push, 30s poll; degrades silently when the sync server is down |
+| `server/sync-server.mjs` | Phase B Express LAN sync server — stores each session as an `.md` file (reusing `session.js`); `GET/PUT/DELETE /session/:id`, `GET /sessions`; CORS, path-safe ids, atomic temp+rename writes, per-session lock, server-stamped `savedAt` |
 | `src/components/DiceRoller.jsx` | d4–d100 roller; emits `{ die, result }` |
 | `src/components/DiceChip.jsx` | Renders a dice message — bare (`die → result`) upgrades to resolved (skill-check + `PASS`/`FAIL` verdict) |
 | `src/components/PartyStrip.jsx` | Mobile 3-cell party strip (display-only; LLM-managed) |
@@ -54,6 +65,32 @@ at the end of each response; `Chat.jsx` strips them from the displayed text and 
 
 Parser is defensive: malformed/missing/partial-stream blocks → keep last-known state, no throw.
 Full spec + rationale: `PARTY-HUD-PLAN.md` (and `PARTY-HUD-QWEN-VALIDATION.md` for model compliance).
+
+## Session persistence & cross-device sync
+
+Three surfaces, **one payload shape** defined once in `src/lib/session.js`
+(`{ sessionId, schemaVersion, savedAt, campaign{name,genre,details,context,model,sessionId},
+messages, sessionLog, party }`). `entities` are excluded (re-derived via `extractEntities`);
+`pendingCheck` is session-only (surfaced as a prose line in `.md`, never machine-restored).
+
+- **Phase A — localStorage** (`dnd_session`): `Chat.jsx` hydrates on boot and persists **once per
+  settled turn** via an `!isLoading` effect (never per stream delta), with a `QuotaExceededError`
+  trim-and-retry. `campaign.sessionId` is a stable uuid minted once in `App.jsx` (`loadSessionId`).
+- **Phase A2 — Markdown save/continue** (no server). The 💾 header button downloads a
+  self-contained, LLM-loadable handoff (`toMarkdown`): prose DM brief + a trailing ` ```session `
+  block. The setup screen's **Load .md file** detects that block (`fromMarkdown`) and restores the
+  full session (boots straight into play, adopting the file's `campaign`); a file *without* a block
+  falls back to today's prose→`campaign.context` behavior.
+- **Phase B — LAN sync** (`server/sync-server.mjs` + `useSessionPersistence`): server-authoritative
+  when reachable, localStorage is the offline mirror; handoff-first LWW (one device at a time).
+  Conflict (409) is non-destructive — the 30s poll reconciles. **M7 strictly-newer gate:** `adopt()`
+  only overwrites local when `payload.savedAt > max(localStorage savedAt, lastSavedAt.current)`;
+  ISO timestamps compare as strings, so a `'9999-12-31T23:59:59.999Z'` sentinel (set by `onNewSession`)
+  sorts after all real-era dates and blocks resurrection of a cleared session on in-flight poll adoption.
+
+Folders: `campaigns/` = authored world notes → `campaign.context`; `sessions/` = app-authored saves
+(see `sessions/README.md`); the sync server's `server/sessions/` store is gitignored.
+Full design + rationale: `CROSS-DEVICE-SYNC-EVALUATION.md` (canonical) and `-HANDOFF.md`.
 
 ## Campaign notes
 
