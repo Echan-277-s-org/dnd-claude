@@ -6,6 +6,12 @@
 // Reconnect: exponential backoff 1s → 2s → 4s → 8s → 15s → 30s (cap), ±20% jitter.
 // On each reconnect, sends a fresh join message with the last known turnSequence.
 //
+// Phase 4 addition: `enabled` flag (default true). When false (i.e. when
+// roomCode/displayName are absent — single-player default), the hook is a noop:
+// no WebSocket object is ever created, readyState stays CLOSED, shouldPoll = true.
+// This preserves the ABSOLUTE CONSTRAINT that the default single-player path
+// opens zero WebSocket connections.
+//
 // References:
 //   MULTIPLAYER-ARCHITECTURE.md §2.3, §5.2, §7 Phase 1
 
@@ -25,7 +31,7 @@ function backoffDelay(attempt) {
 const WS_PORT = 3001
 
 /**
- * useWebSocket({ roomCode, sessionId, displayName, onMessage, onSessionState })
+ * useWebSocket({ roomCode, sessionId, displayName, onMessage, onSessionState, enabled })
  *
  * Returns:
  *   { readyState, send, shouldPoll }
@@ -33,6 +39,10 @@ const WS_PORT = 3001
  * - readyState: WebSocket.CONNECTING (0) | OPEN (1) | CLOSING (2) | CLOSED (3)
  * - send(obj): JSON-serializes obj and sends over the WebSocket (noop if not OPEN)
  * - shouldPoll: false when OPEN (poll suspended), true otherwise (poll runs)
+ *
+ * When `enabled` is false (the single-player default), no WebSocket is created.
+ * readyState = CLOSED, shouldPoll = true — byte-for-byte matching the pre-Phase-4
+ * single-player behavior.
  */
 export function useWebSocket({
   roomCode,
@@ -40,8 +50,9 @@ export function useWebSocket({
   displayName,
   onMessage,
   onSessionState,
+  enabled = true,
 } = {}) {
-  const [readyState, setReadyState] = useState(WebSocket.CONNECTING)
+  const [readyState, setReadyState] = useState(WebSocket.CLOSED)
 
   // Track the latest turnSequence received from server so rejoins are informed.
   const lastTurnSequenceRef = useRef(0)
@@ -59,6 +70,8 @@ export function useWebSocket({
   useEffect(() => { onSessionStateRef.current = onSessionState }, [onSessionState])
 
   const connect = useCallback(() => {
+    // Phase 4: never connect when disabled (single-player default).
+    if (!enabled) return
     if (unmountedRef.current) return
     if (reconnectTimerRef.current) {
       clearTimeout(reconnectTimerRef.current)
@@ -146,10 +159,11 @@ export function useWebSocket({
         setReadyState(WebSocket.CLOSED)
       }
     })
-  }, [roomCode, sessionId, displayName]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [roomCode, sessionId, displayName, enabled]) // eslint-disable-line react-hooks/exhaustive-deps
 
   function scheduleReconnect() {
     if (unmountedRef.current) return
+    if (!enabled) return // Phase 4: never reconnect when disabled
     const delay = backoffDelay(attemptRef.current)
     attemptRef.current += 1
     reconnectTimerRef.current = setTimeout(() => {
@@ -161,7 +175,9 @@ export function useWebSocket({
   // Connect on mount, cleanup on unmount.
   useEffect(() => {
     unmountedRef.current = false
-    connect()
+    if (enabled) {
+      connect()
+    }
     return () => {
       unmountedRef.current = true
       if (reconnectTimerRef.current) {
@@ -174,7 +190,7 @@ export function useWebSocket({
         ws.close()
       }
     }
-  }, [connect])
+  }, [connect, enabled])
 
   // send() helper — JSON-serializes and sends. Noop if socket is not open.
   const send = useCallback(obj => {

