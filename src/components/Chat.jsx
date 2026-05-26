@@ -567,6 +567,35 @@ export default function Chat({
   }
 
   function handleDiceRoll(die, result) {
+    if (isMultiplayerMode() && myTurn) {
+      // Multiplayer, player's turn: forward the roll to the server as a dice action.
+      // The server stores it as role:'dice', broadcasts via session:update, and triggers the DM.
+      // We do NOT push locally — the server broadcast delivers the message to all clients uniformly.
+      const rc = roomCode || campaign.roomCode
+      wsSend({
+        type: 'action',
+        roomCode: rc,
+        payload: {
+          content: `[Dice roll: ${die} → ${result}]`,
+          type: 'dice',
+          die,
+          result,
+          pendingCheck: pendingCheck ?? null,
+        },
+      })
+      // Consume the pending check so it isn't re-applied on the next send (mirrors sendMessage).
+      if (pendingCheck) setPendingCheck(null)
+      return
+    }
+
+    if (isMultiplayerMode() && !myTurn) {
+      // Multiplayer, non-active player in combat: purely local per design §779.
+      // ("Non-active dice rolls are purely local until free-roam resumes")
+      setMessages(prev => [...prev, { role: 'dice', die, result }])
+      return
+    }
+
+    // Single-player (or multiplayer not yet joined): keep the existing local push.
     setMessages(prev => [...prev, { role: 'dice', die, result }])
   }
 
