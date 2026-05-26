@@ -56,15 +56,40 @@ Ports used:
 
 ## Quick Start
 
+**1. Clone and install.**
+
 ```powershell
-# 1. Install dependencies
+git clone https://github.com/EricChan277/dnd-claude.git
+cd dnd-claude
 npm install
-
-# 2. Start Vite dev server + LAN sync server together
-npm run dev
-
-# Open http://localhost:5173 in your browser
 ```
+
+**2. Start Ollama and confirm the model is ready.**
+
+```powershell
+ollama pull qwen2.5:14b   # skip if already pulled
+ollama serve              # runs at http://localhost:11434
+```
+
+Ollama must be running before you start a session — `Chat.jsx` POSTs to `http://<host>:11434/api/chat` with `stream: true`.
+
+**3. Start the dev server (Vite on 5173 + sync server on 3001).**
+
+```powershell
+npm run dev
+```
+
+**4. Open `http://localhost:5173`** and fill in the setup screen:
+
+| Field | Required | Notes |
+|---|---|---|
+| **Genre** | Yes | `Dungeons & Dragons (5e)` or `Star Wars (d20 / Saga Edition)`. Drives the visual theme **and** the system-prompt engine — there is no separate theme toggle. |
+| **AI Model** | Yes | Default `qwen2.5:14b`; `qwen2.5:32b` also available (slower, longer narration). |
+| **Campaign Name** | Optional | Used in save-file names and the session header. |
+| **Setting & Context** | Optional | Free-text setting, party, tone, house rules — injected into the system prompt. |
+| **Campaign Notes / Load .md file** | Optional | Accepts `.md` or `.txt`. A file with a ` ```session ` block boots straight into a saved session (`fromMarkdown`); otherwise its prose loads as `campaign.context`. |
+
+**5. Click "Begin the Campaign"** and type your first action. The AI DM streams its response token-by-token.
 
 ---
 
@@ -100,6 +125,39 @@ To reach the app and Ollama from a phone (or any device) on the same LAN:
 3. Run `npm run dev` on the desktop.
 
 4. Open `http://<desktop-IP>:5173` on the phone. The app derives the Ollama and sync server host from `window.location.hostname` automatically — no config needed on the phone.
+
+---
+
+## Troubleshooting
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| Message sent, spinner runs forever, no response | Ollama is not running | Run `ollama serve` before starting the app |
+| `model not found` in the console | Model not pulled | `ollama pull qwen2.5:14b` (or `qwen2.5:32b` if selected) |
+| Streaming starts then stalls mid-response | Ollama memory pressure / model paged out | Check `ollama ps`; restart `ollama serve`. This is Ollama-side, not the app |
+| AI fails from a phone with a network/CORS error | Ollama bound to `localhost` only | Set `$env:OLLAMA_HOST = "0.0.0.0"` **before** `ollama serve` |
+| Phone reaches `:5173` but AI never responds | Firewall blocking port **11434** | Allow inbound TCP on 5173, 3001, **and** 11434 on the desktop |
+| Phone can't reach the app at all | Firewall blocking port **5173** | Allow inbound TCP on 5173 (and 3001 for sync) |
+| Session not syncing across devices | Ran `npm run dev:vite` (no sync server) | Use `npm run dev`, or start sync separately with `npm run sync` |
+| Another device's saves don't appear immediately | Poll interval is 30 s, not real-time | Wait up to 30 s — the hook polls via `pollSyncSession` |
+| `409` logged after saving a turn | Stale-write conflict (another device saved first) | Non-destructive: local state is kept and the 30 s poll reconciles via `adopt()` |
+| Old session briefly reappears after "New Campaign" | In-flight poll adopted the stale server copy | The strictly-newer sentinel (`'9999-12-31T23:59:59.999Z'`) blocks adoption; resolves on the next poll tick |
+| `QuotaExceededError` in the console | localStorage full (very long session) | The app trims oldest messages and retries; if it persists, save a `.md` and start fresh |
+| "Load .md file" loads as plain context, not a restored session | The `.md` has no ` ```session ` block | Only files from the 💾 save button (`toMarkdown`) are machine-restorable |
+| Port 5173/3001 already in use | Another process holds the port | Free it, or override: `$env:SYNC_PORT = "3002"; npm run sync` |
+
+---
+
+## Good to Know
+
+Non-obvious behaviors that don't appear on the happy path:
+
+- **Genre drives the theme *and* the prompt engine — no independent theme toggle.** D&D → `data-theme="dnd"` + `context.js`; Star Wars → `data-theme="void"` + `context.starwars.js`. Changing genre after a campaign starts is not supported.
+- **The DM owns the party HUD.** `Chat.jsx` reads a fenced ` ```party ` block off each response and treats it as authoritative; you can't edit party members in the UI — the LLM manages HP, roles, and active status.
+- **Entities are re-derived, not stored.** `extractEntities` re-runs over the message history on every load. Bold NPC/location names (`**Name**`) so the continuity tracker picks them up.
+- **`pendingCheck` is session-only.** A ` ```check ` block lives in React state for the current session and is *not* restored by `fromMarkdown`; after a reload the next roll won't carry a verdict until the DM emits a new check.
+- **The sync layer degrades silently by design.** Every `fetch` in `src/lib/session.js` catches and returns `null` / `{ ok: false }`; sync errors never surface to the user — localStorage and `.md` saves keep working.
+- **`SYNC_PORT` is the only runtime knob.** No API keys, no `.env`; all hosts are derived from `window.location.hostname` via `getLanHost()`.
 
 ---
 
