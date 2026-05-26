@@ -31,7 +31,7 @@ function backoffDelay(attempt) {
 const WS_PORT = 3001
 
 /**
- * useWebSocket({ roomCode, sessionId, displayName, onMessage, onSessionState, enabled })
+ * useWebSocket({ roomCode, sessionId, displayName, joinCharacter, onMessage, onSessionState, enabled })
  *
  * Returns:
  *   { readyState, send, shouldPoll }
@@ -43,11 +43,17 @@ const WS_PORT = 3001
  * When `enabled` is false (the single-player default), no WebSocket is created.
  * readyState = CLOSED, shouldPoll = true — byte-for-byte matching the pre-Phase-4
  * single-player behavior.
+ *
+ * joinCharacter (SyncedCharacter | null): the player's static character subset sent
+ * to the server at join time so it can be stored in room.characters. The server
+ * sanitizes this field (server-authoritative); the client passes it as-is.
+ * Defaults to null (server will use DEFAULT_CHARACTER).
  */
 export function useWebSocket({
   roomCode,
   sessionId,
   displayName,
+  joinCharacter = null,
   onMessage,
   onSessionState,
   enabled = true,
@@ -68,6 +74,13 @@ export function useWebSocket({
   const onSessionStateRef = useRef(onSessionState)
   useEffect(() => { onMessageRef.current = onMessage }, [onMessage])
   useEffect(() => { onSessionStateRef.current = onSessionState }, [onSessionState])
+
+  // Stable reference to joinCharacter so a new object identity from the caller
+  // (e.g. an inline object literal rebuilt on every render in Chat.jsx) does NOT
+  // cause `connect` to be recreated and tear down the live socket.
+  // The ref is always current at send time — join messages always carry the latest value.
+  const joinCharacterRef = useRef(joinCharacter)
+  useEffect(() => { joinCharacterRef.current = joinCharacter }, [joinCharacter])
 
   const connect = useCallback(() => {
     // Phase 4: never connect when disabled (single-player default).
@@ -103,6 +116,10 @@ export function useWebSocket({
           sessionId,
           displayName,
           lastTurnSequence: lastTurnSequenceRef.current,
+          // joinCharacter: SyncedCharacter | null — server sanitizes before storing.
+          // Read from ref so the latest value is used even if the caller passes
+          // a new object reference on every render (the ref keeps the hook stable).
+          joinCharacter: joinCharacterRef.current ?? null,
         }))
       } catch {
         // best-effort
@@ -160,6 +177,8 @@ export function useWebSocket({
       }
     })
   }, [roomCode, sessionId, displayName, enabled]) // eslint-disable-line react-hooks/exhaustive-deps
+  // joinCharacter is intentionally excluded: it is accessed via joinCharacterRef so
+  // a new object identity from the caller never recreates the socket (reconnect storm fix).
 
   function scheduleReconnect() {
     if (unmountedRef.current) return

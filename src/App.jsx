@@ -193,7 +193,12 @@ export default function App() {
   // The join screen resolves sessionId by querying GET /sessions and filtering by
   // roomCode. If resolution fails the join form can fall back to passing null
   // (the WS server will reject with invalid_room, surfaced to the user).
-  async function handleJoin({ roomCode: rc, displayName: dn, sessionId: sid }) {
+  //
+  // mp-character-sync: the locked contract adds an optional `character` field
+  // (SyncedCharacter | null). When provided, it is applied to the character state so
+  // Chat can forward it to useWebSocket as joinCharacter. When null, the existing
+  // loadCharacter() / DEFAULT_CHARACTER fallback keeps its value (no overwrite).
+  async function handleJoin({ roomCode: rc, displayName: dn, sessionId: sid, character: joinedCharacter }) {
     // Use the resolved sessionId as the campaign's session identity.
     const sessionId = sid || loadSessionId()
     const restored = {
@@ -209,6 +214,13 @@ export default function App() {
     setCampaign(restored)
     setRoomCode(rc)
     setDisplayName(dn.trim())
+    // Apply the joiner's character if provided. Merge with DEFAULT_CHARACTER so
+    // all required fields (hpCurrent, initiative, speed) remain intact.
+    if (joinedCharacter) {
+      setCharacter(prev => ({ ...DEFAULT_CHARACTER, ...prev, ...joinedCharacter }))
+    }
+    // When joinedCharacter is null, the existing character state (from loadCharacter()
+    // or a prior session) remains unchanged — no overwrite.
     setReady(true)
   }
 

@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { extractEntities, trimContext, buildSystemPrompt } from './context'
 import { buildSystemPrompt as buildSystemPromptSW } from './context.starwars'
+import { buildPlayerSection, fmtMod } from './session'
 
 // ─── trimContext ─────────────────────────────────────────────────────────────
 
@@ -282,4 +283,208 @@ describe('buildSystemPrompt — party/check/verdict instructions (PP-01..07)', (
     expect(() => buildSystemPrompt(undefined)).not.toThrow()
     expect(() => buildSystemPromptSW(undefined)).not.toThrow()
   })
+})
+
+// ─── Phase 4 — buildSystemPrompt players param ────────────────────────────────
+
+// Shared fixture for player-section tests. Enough to produce a non-trivial prompt.
+const PLAYER_A = {
+  name: 'Jaycen',
+  race: 'Human',
+  charClass: 'Paladin',
+  abilities: { STR: 16, DEX: 10, CON: 14, INT: 10, WIS: 12, CHA: 14 },
+  ac: 18,
+  hpMax: 45,
+  hpCurrent: 36,
+  conditions: [],
+}
+
+const PLAYER_B = {
+  name: 'Wren',
+  race: 'Elf',
+  charClass: 'Rogue',
+  abilities: { STR: 8, DEX: 17, CON: 12, INT: 13, WIS: 11, CHA: 10 },
+  ac: 14,
+  hpMax: 28,
+  hpCurrent: 28,
+  conditions: ['Poisoned'],
+}
+
+describe('buildSystemPrompt — Phase 4: byte-identical-when-empty invariant', () => {
+  it('no players arg: output byte-identical to pre-change baseline', () => {
+    const campaign = { name: 'TestCamp', details: 'Dark tone', context: 'Gareth waits.' }
+    const baseline = buildSystemPrompt(campaign)          // old call site shape
+    const withUndefined = buildSystemPrompt({ ...campaign })  // players not set
+    const withEmpty = buildSystemPrompt({ ...campaign, players: [] })
+    expect(withUndefined).toBe(baseline)
+    expect(withEmpty).toBe(baseline)
+  })
+
+  it('players: undefined → DM prompt does NOT contain "Player Characters:"', () => {
+    const p = buildSystemPrompt({ name: 'X' })
+    expect(p).not.toContain('Player Characters:')
+  })
+
+  it('players: [] → DM prompt does NOT contain "Player Characters:"', () => {
+    const p = buildSystemPrompt({ name: 'X', players: [] })
+    expect(p).not.toContain('Player Characters:')
+  })
+
+  it('same result from both engines for no-players call (byte-identical body structure)', () => {
+    // Engine-specific text differs by design, but we confirm neither adds player section.
+    const dnd = buildSystemPrompt({})
+    const sw = buildSystemPromptSW({})
+    expect(dnd).not.toContain('Player Characters:')
+    expect(sw).not.toContain('Player Characters:')
+  })
+})
+
+describe('buildSystemPrompt — Phase 4: player section injection', () => {
+  it('players present: prompt contains "Player Characters:" section', () => {
+    const p = buildSystemPrompt({ name: 'X', players: [PLAYER_A] })
+    expect(p).toContain('Player Characters:')
+    expect(p).toContain('Jaycen')
+  })
+
+  it('player section appears BEFORE the closing persona sentence', () => {
+    const p = buildSystemPrompt({ players: [PLAYER_A] })
+    const sectionIdx = p.indexOf('Player Characters:')
+    const personaIdx = p.indexOf('Stay in the DM role.')
+    expect(sectionIdx).toBeGreaterThan(-1)
+    expect(personaIdx).toBeGreaterThan(-1)
+    expect(sectionIdx).toBeLessThan(personaIdx)
+  })
+
+  it('starwars engine: player section appears BEFORE the closing persona sentence', () => {
+    const p = buildSystemPromptSW({ players: [PLAYER_A] })
+    const sectionIdx = p.indexOf('Player Characters:')
+    const personaIdx = p.indexOf('Stay in the Game Master role.')
+    expect(sectionIdx).toBeGreaterThan(-1)
+    expect(personaIdx).toBeGreaterThan(-1)
+    expect(sectionIdx).toBeLessThan(personaIdx)
+  })
+
+  it('player line includes name, class, race, all 6 abilities with modifiers, AC, and HP', () => {
+    const p = buildSystemPrompt({ players: [PLAYER_A] })
+    expect(p).toContain('Jaycen (Paladin Human)')
+    expect(p).toContain('STR 16(+3)')
+    expect(p).toContain('DEX 10(+0)')
+    expect(p).toContain('CON 14(+2)')
+    expect(p).toContain('INT 10(+0)')
+    expect(p).toContain('WIS 12(+1)')
+    expect(p).toContain('CHA 14(+2)')
+    expect(p).toContain('AC 18')
+    expect(p).toContain('HP 36/45')
+  })
+
+  it('conditions are included in the player line when present', () => {
+    const p = buildSystemPrompt({ players: [PLAYER_B] })
+    expect(p).toContain('[Poisoned]')
+  })
+
+  it('no conditions appended when conditions array is empty', () => {
+    const line = buildPlayerSection([PLAYER_A])
+    expect(line).not.toContain('[')
+  })
+})
+
+describe('buildSystemPrompt — Phase 4: section-level genre parity (PP-05/PP-06 style)', () => {
+  it('both engines produce byte-identical "Player Characters:" section for same input', () => {
+    const players = [PLAYER_A, PLAYER_B]
+    const dnd = buildSystemPrompt({ players })
+    const sw = buildSystemPromptSW({ players })
+
+    // Extract the player section from each prompt (from "Player Characters:" to end, before the persona line).
+    const extractSection = prompt => {
+      const start = prompt.indexOf('\nPlayer Characters:\n')
+      if (start === -1) return null
+      // Section ends at the double-newline that precedes the closing persona line.
+      const afterSection = prompt.indexOf('\n\nStay in the', start)
+      return afterSection !== -1 ? prompt.slice(start, afterSection) : prompt.slice(start)
+    }
+
+    const dndSection = extractSection(dnd)
+    const swSection = extractSection(sw)
+    expect(dndSection).not.toBeNull()
+    expect(swSection).not.toBeNull()
+    expect(dndSection).toBe(swSection)
+  })
+})
+
+describe('buildSystemPrompt — Phase 4: budget enforcement', () => {
+  it('all 5 players are present and section stays within 1000 chars (worst-case)', () => {
+    // Worst-case: long names, long race/class strings, high ability scores
+    const makeLongPlayer = (i) => ({
+      name: `Adventurer${i}`,
+      race: 'Dragonborn',
+      charClass: 'Artificer',
+      abilities: { STR: 20, DEX: 20, CON: 20, INT: 20, WIS: 20, CHA: 20 },
+      ac: 20,
+      hpMax: 100,
+      hpCurrent: 100,
+      conditions: [],
+    })
+    const fivePlayers = Array.from({ length: 5 }, (_, i) => makeLongPlayer(i + 1))
+    const section = buildPlayerSection(fivePlayers)
+    // All 5 players must appear — none silently dropped
+    for (let i = 1; i <= 5; i++) {
+      expect(section).toContain(`Adventurer${i}`)
+    }
+    // Section stays within the new budget (1000 chars)
+    expect(section.length).toBeLessThanOrEqual(1000)
+  })
+
+  it('all 4 players present with worst-case long names/conditions', () => {
+    const makeLongPlayer = (i) => ({
+      name: `VeryLongAdventurerName${i}`,
+      race: 'Dragonborn',
+      charClass: 'Artificer',
+      abilities: { STR: 20, DEX: 20, CON: 20, INT: 20, WIS: 20, CHA: 20 },
+      ac: 20,
+      hpMax: 999,
+      hpCurrent: 999,
+      conditions: ['Poisoned', 'Frightened'],
+    })
+    const fourPlayers = Array.from({ length: 4 }, (_, i) => makeLongPlayer(i + 1))
+    const section = buildPlayerSection(fourPlayers)
+    // All 4 players must appear
+    for (let i = 1; i <= 4; i++) {
+      expect(section).toContain(`VeryLongAdventurerName${i}`)
+    }
+    expect(section.length).toBeLessThanOrEqual(1000)
+  })
+
+  it('players beyond 5 are silently dropped by the 5-player cap', () => {
+    const players = Array.from({ length: 8 }, (_, i) => ({
+      name: `P${i + 1}`,
+      race: 'Human',
+      charClass: 'Fighter',
+      abilities: { STR: 10, DEX: 10, CON: 10, INT: 10, WIS: 10, CHA: 10 },
+      ac: 10,
+      hpMax: 20,
+      hpCurrent: 20,
+      conditions: [],
+    }))
+    const section = buildPlayerSection(players)
+    // Players 6–8 are always dropped (hard 5-player cap applied first)
+    expect(section).not.toContain('P6')
+    expect(section).not.toContain('P8')
+    // All players 1–5 must be present
+    for (let i = 1; i <= 5; i++) {
+      expect(section).toContain(`P${i}`)
+    }
+    // Section stays within budget
+    expect(section.length).toBeLessThanOrEqual(1000)
+  })
+})
+
+describe('fmtMod — modifier formula', () => {
+  it('score 10 → +0', () => expect(fmtMod(10)).toBe('+0'))
+  it('score 11 → +0', () => expect(fmtMod(11)).toBe('+0'))
+  it('score 12 → +1', () => expect(fmtMod(12)).toBe('+1'))
+  it('score 16 → +3', () => expect(fmtMod(16)).toBe('+3'))
+  it('score 20 → +5', () => expect(fmtMod(20)).toBe('+5'))
+  it('score 8 → -1', () => expect(fmtMod(8)).toBe('-1'))
+  it('score 3 → -4', () => expect(fmtMod(3)).toBe('-4'))
+  it('score 9 → -1', () => expect(fmtMod(9)).toBe('-1'))
 })

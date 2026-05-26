@@ -29,7 +29,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { randomUUID } from 'node:crypto'
 import { WebSocketServer } from 'ws'
-import { toMarkdown, fromMarkdown, serializeSession, applyPartyUpdate } from '../src/lib/session.js'
+import { toMarkdown, fromMarkdown, serializeSession, applyPartyUpdate, buildPlayersForPrompt } from '../src/lib/session.js'
 import { getGenre } from '../src/lib/genres.js'
 import { isActiveTurn } from '../src/lib/turnStateMachine.js'
 
@@ -101,6 +101,91 @@ function sanitizeDisplayName(s) {
     // Strip Unicode control characters (category Cc)
     .replace(/\p{Cc}/gu, '')
     .slice(0, 64)
+}
+
+// ─── Character sanitization (Phase 1 — security item for join handler) ────────
+// Mirrors sanitizeDisplayName / sanitizeActionContent: strip dangerous chars,
+// enforce field-level bounds, allowlist only the named fields.
+// null/undefined → DEFAULT_CHARACTER (server-side safe default).
+// This function is defined at module scope (not inside createSyncServer) so it
+// can be unit-tested by importing directly from the module.
+
+// Server-side default for a SyncedCharacter (synced-subset fields only; mirrors
+// the client DEFAULT_CHARACTER in src/App.jsx but excludes hpCurrent/initiative/
+// speed/conditions — those are mutable and ride the party rows).
+export const DEFAULT_CHARACTER = {
+  name: 'Adventurer',
+  race: 'Human',
+  charClass: 'Fighter',
+  abilities: { STR: 10, DEX: 10, CON: 10, INT: 10, WIS: 10, CHA: 10 },
+  ac: 15,
+  hpMax: 20,
+}
+
+// Strip [<>&"'] and Unicode control chars from a string; cap to maxLen.
+function sanitizeStr(s, maxLen) {
+  return String(s ?? '')
+    .trim()
+    .replace(/[<>&"']/g, '')
+    .replace(/\p{Cc}/gu, '')
+    .slice(0, maxLen)
+}
+
+// Clamp an integer to [lo, hi]. NaN / non-finite → fallback.
+// Numeric values outside [lo, hi] are clamped to the nearest bound, so e.g.
+// STR:999 → 20 and STR:1 → 3. Only NaN/non-numeric → fallback.
+function clampInt(v, lo, hi, fallback) {
+  const n = Math.trunc(Number(v))
+  if (!Number.isFinite(n)) return fallback
+  return Math.max(lo, Math.min(hi, n))
+}
+
+// Range-check an integer; NaN / non-finite / out-of-range → fallback.
+// Unlike clampInt, values outside [lo, hi] return the fallback rather than
+// being clamped to the nearest bound. Used for AC and hpMax per the spec.
+function rangeInt(v, lo, hi, fallback) {
+  const n = Math.trunc(Number(v))
+  if (!Number.isFinite(n) || n < lo || n > hi) return fallback
+  return n
+}
+
+export function sanitizeCharacter(raw) {
+  if (raw == null) return { ...DEFAULT_CHARACTER }
+  if (typeof raw !== 'object' || Array.isArray(raw)) return { ...DEFAULT_CHARACTER }
+
+  const rawAb = raw.abilities && typeof raw.abilities === 'object' ? raw.abilities : {}
+
+  return {
+    // String fields: strip injection chars, cap lengths.
+    name:      sanitizeStr(raw.name,      64) || DEFAULT_CHARACTER.name,
+    race:      sanitizeStr(raw.race,      32) || DEFAULT_CHARACTER.race,
+    charClass: sanitizeStr(raw.charClass, 32) || DEFAULT_CHARACTER.charClass,
+    // Ability scores: integers in [3, 20]; NaN/out-of-range → 10.
+    abilities: {
+      STR: clampInt(rawAb.STR, 3, 20, 10),
+      DEX: clampInt(rawAb.DEX, 3, 20, 10),
+      CON: clampInt(rawAb.CON, 3, 20, 10),
+      INT: clampInt(rawAb.INT, 3, 20, 10),
+      WIS: clampInt(rawAb.WIS, 3, 20, 10),
+      CHA: clampInt(rawAb.CHA, 3, 20, 10),
+    },
+    // AC: integer in [5, 30]; else 10 (out-of-range → fallback, not clamp).
+    ac:    rangeInt(raw.ac,    5,   30,  10),
+    // hpMax: integer in [1, 999]; else 10 (out-of-range → fallback, not clamp).
+    hpMax: rangeInt(raw.hpMax, 1,  999,  10),
+    // hpCurrent: when supplied (optional field for mutable state), clamp to [0, hpMax].
+    // Phase 1 defines it here for completeness per spec; Phase 2 (websocket-engineer)
+    // wires it into the join handler.
+    ...(raw.hpCurrent !== undefined ? {
+      hpCurrent: clampInt(
+        raw.hpCurrent,
+        0,
+        rangeInt(raw.hpMax, 1, 999, 10),
+        0
+      )
+    } : {}),
+    // ALLOWLIST: any keys not in the above list are silently dropped.
+  }
 }
 
 export function createSyncServer({ sessionsDir = DEFAULT_DIR, roomGcMs = 30 * 60 * 1000 } = {}) {
@@ -198,6 +283,9 @@ export function createSyncServer({ sessionsDir = DEFAULT_DIR, roomGcMs = 30 * 60
           roomCode: body.roomCode ?? null,
           phase: body.phase,
           turnSequence: body.turnSequence,
+          // D-02: forward v3 characters map — pickCharacters(undefined) was returning {}
+          // and silently stripping all player character data on every HTTP PUT.
+          characters: body.characters,
         },
         savedAt
       )
@@ -275,6 +363,7 @@ export function createSyncServer({ sessionsDir = DEFAULT_DIR, roomGcMs = 30 * 60
         roomCode: room.roomCode,
         phase: room.phase,
         turnSequence: room.turnSequence,
+        characters: room.characters ?? {},
       },
       savedAt
     )
@@ -423,7 +512,10 @@ export function createSyncServer({ sessionsDir = DEFAULT_DIR, roomGcMs = 30 * 60
 
           // (3c) Assemble the prompt EXACTLY like Chat.jsx#sendMessage.
           const engine = getGenre(room.campaign?.genre).engine
-          const systemPrompt = engine.buildSystemPrompt(room.campaign ?? {})
+          const systemPrompt = engine.buildSystemPrompt({
+            ...(room.campaign ?? {}),
+            players: buildPlayersForPrompt(room.characters ?? {}, room.party ?? []),
+          })
           const baseMessages = room.messages ?? []
           const entities = engine.extractEntities(baseMessages)
           const systemContent = entities.length
@@ -732,7 +824,7 @@ export function createSyncServer({ sessionsDir = DEFAULT_DIR, roomGcMs = 30 * 60
   // ─── join handler ──────────────────────────────────────────────────────────
   async function handleJoin(ws, msg) {
     try {
-      const { roomCode, sessionId, displayName: rawDisplayName, lastTurnSequence } = msg ?? {}
+      const { roomCode, sessionId, displayName: rawDisplayName, lastTurnSequence, joinCharacter } = msg ?? {}
 
       // Validate roomCode (must also be a valid ID_RE string — it's the primary key
       // users type, but the .md store uses sessionId; both must pass ID_RE).
@@ -782,6 +874,12 @@ export function createSyncServer({ sessionsDir = DEFAULT_DIR, roomGcMs = 30 * 60
           // Default campaign to {} so getGenre(undefined) → dnd (Phase 3 step 6).
           campaign: stored?.campaign ?? {},
           sessionLog: stored?.sessionLog ?? [],
+          // Phase 2 (mp-character-sync): per-player static character map.
+          // Keyed by displayName; populated on join from joinCharacter. Restored
+          // from .md on first join when stored?.characters is present.
+          characters: stored?.characters && typeof stored.characters === 'object'
+            ? { ...stored.characters }
+            : {},
           actionQueue: Promise.resolve(), // Phase 2: per-room serialization queue
           dmBusy: false,                   // Phase 3: synchronous single-trigger gate
           lastDiceEvent: null,             // Phase 3: forged-verdict.roll guard
@@ -841,6 +939,22 @@ export function createSyncServer({ sessionsDir = DEFAULT_DIR, roomGcMs = 30 * 60
 
       // (stored was loaded above, before room creation.)
 
+      // ─── mp-character-sync: store joinCharacter for this player ───────────────
+      // Rejoin path: if this displayName already has a stored character (from the
+      // initial join or a prior session loaded from .md), preserve it — do NOT
+      // overwrite with the reconnecting client's joinCharacter. The static character
+      // is stable for the session.
+      // New join path: sanitize joinCharacter (server-authoritative) and store it.
+      const hasExistingCharacter = Object.prototype.hasOwnProperty.call(
+        room.characters ?? {}, displayName
+      )
+      if (!hasExistingCharacter) {
+        // sanitizeCharacter returns DEFAULT_CHARACTER for null/invalid input.
+        room.characters[displayName] = sanitizeCharacter(joinCharacter ?? null)
+      }
+      // room.characters is now guaranteed to be initialized (set on room creation).
+      if (!room.characters) room.characters = {}
+
       // Build the snapshot payload. Use stored data when available; fall back to
       // safe defaults so the first join creates an empty room without writing a .md.
       const snapshot = {
@@ -851,6 +965,8 @@ export function createSyncServer({ sessionsDir = DEFAULT_DIR, roomGcMs = 30 * 60
         roomCode,
         savedAt: stored?.savedAt ?? null,
         campaign: stored?.campaign ?? null,
+        // Include the full characters map so late joiners learn everyone's sheet (G-C7).
+        characters: { ...room.characters },
       }
 
       // Resolve partyId by name-match against the stored party array.
@@ -899,6 +1015,8 @@ export function createSyncServer({ sessionsDir = DEFAULT_DIR, roomGcMs = 30 * 60
         roomCode,
         savedAt: snapshot.savedAt,
         campaign: snapshot.campaign,
+        // Always use the current in-memory characters map (most up-to-date).
+        characters: { ...room.characters },
       }
       const sendSnapshot = typeof lastTurnSequence === 'number' && lastTurnSequence < room.turnSequence
         ? inMemorySnapshot
@@ -906,6 +1024,23 @@ export function createSyncServer({ sessionsDir = DEFAULT_DIR, roomGcMs = 30 * 60
 
       // Send session:state to the joining client.
       ws.send(JSON.stringify({ type: 'session:state', roomCode, payload: sendSnapshot }))
+
+      // G-C7: when a NEW player joins (not a rejoin), existing clients must learn
+      // the joiner's character. Broadcast session:state with the updated characters
+      // map to all OTHER connected clients so they are consistent.
+      // The joiner already received their session:state above.
+      if (!hasExistingCharacter) {
+        const fullSnapshot = {
+          ...inMemorySnapshot,
+          characters: { ...room.characters },
+        }
+        const data = JSON.stringify({ type: 'session:state', roomCode, payload: fullSnapshot })
+        for (const [clientWs] of room.clients) {
+          if (clientWs !== ws && clientWs.readyState === clientWs.OPEN) {
+            try { clientWs.send(data) } catch { /* best-effort */ }
+          }
+        }
+      }
 
       // Broadcast presence:update to all clients in the room (including the new joiner).
       broadcast(room, {

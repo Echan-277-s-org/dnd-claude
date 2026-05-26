@@ -3,7 +3,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest'
 import { mkdtemp, rm, readdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { createSyncServer } from './sync-server.mjs'
+import { createSyncServer, sanitizeCharacter, DEFAULT_CHARACTER } from './sync-server.mjs'
 
 let server, base, dir
 
@@ -126,5 +126,243 @@ describe('sync server', () => {
     await put(ID, { ...payload(ID), savedAt: null })
     const files = await readdir(dir)
     expect(files.some(f => f.endsWith('.tmp'))).toBe(false)
+  })
+})
+
+// ─── Phase 1 — sanitizeCharacter ──────────────────────────────────────────────
+
+describe('sanitizeCharacter', () => {
+  // ── null / undefined → DEFAULT_CHARACTER ──────────────────────────────────
+
+  it('null → DEFAULT_CHARACTER (safe server-side default)', () => {
+    const result = sanitizeCharacter(null)
+    expect(result).toEqual(DEFAULT_CHARACTER)
+  })
+
+  it('undefined → DEFAULT_CHARACTER', () => {
+    expect(sanitizeCharacter(undefined)).toEqual(DEFAULT_CHARACTER)
+  })
+
+  it('non-object scalar → DEFAULT_CHARACTER', () => {
+    expect(sanitizeCharacter('evil')).toEqual(DEFAULT_CHARACTER)
+    expect(sanitizeCharacter(42)).toEqual(DEFAULT_CHARACTER)
+    expect(sanitizeCharacter([])).toEqual(DEFAULT_CHARACTER)
+  })
+
+  // ── string sanitization ────────────────────────────────────────────────────
+
+  it('strips injection chars [<>&\'"] from string fields', () => {
+    const result = sanitizeCharacter({
+      ...DEFAULT_CHARACTER,
+      name: '<script>alert(1)</script>',
+      race: 'Huma"n & Evil',
+      charClass: "Rogu'e>",
+    })
+    expect(result.name).not.toContain('<')
+    expect(result.name).not.toContain('>')
+    expect(result.race).not.toContain('"')
+    expect(result.race).not.toContain('&')
+    expect(result.charClass).not.toContain("'")
+    expect(result.charClass).not.toContain('>')
+  })
+
+  it('strips Unicode control characters from string fields', () => {
+    const result = sanitizeCharacter({
+      ...DEFAULT_CHARACTER,
+      name: 'Alex\x00\x01Dangerous',
+    })
+    expect(result.name).not.toContain('\x00')
+    expect(result.name).not.toContain('\x01')
+    expect(result.name).toContain('Alex')
+  })
+
+  it('caps name at 64 chars', () => {
+    const long = 'A'.repeat(100)
+    const result = sanitizeCharacter({ ...DEFAULT_CHARACTER, name: long })
+    expect(result.name.length).toBeLessThanOrEqual(64)
+  })
+
+  it('caps race at 32 chars', () => {
+    const long = 'B'.repeat(100)
+    const result = sanitizeCharacter({ ...DEFAULT_CHARACTER, race: long })
+    expect(result.race.length).toBeLessThanOrEqual(32)
+  })
+
+  it('caps charClass at 32 chars', () => {
+    const long = 'C'.repeat(100)
+    const result = sanitizeCharacter({ ...DEFAULT_CHARACTER, charClass: long })
+    expect(result.charClass.length).toBeLessThanOrEqual(32)
+  })
+
+  // ── ability score clamping ─────────────────────────────────────────────────
+
+  it('clamps STR:999 → 20 (ability score ceiling)', () => {
+    const result = sanitizeCharacter({ ...DEFAULT_CHARACTER, abilities: { STR: 999, DEX: 10, CON: 10, INT: 10, WIS: 10, CHA: 10 } })
+    expect(result.abilities.STR).toBe(20)
+  })
+
+  it('clamps STR:1 → 3 (ability score floor)', () => {
+    const result = sanitizeCharacter({ ...DEFAULT_CHARACTER, abilities: { STR: 1, DEX: 10, CON: 10, INT: 10, WIS: 10, CHA: 10 } })
+    expect(result.abilities.STR).toBe(3)
+  })
+
+  it('clamps NaN ability score → 10', () => {
+    const result = sanitizeCharacter({ ...DEFAULT_CHARACTER, abilities: { STR: NaN, DEX: 10, CON: 10, INT: 10, WIS: 10, CHA: 10 } })
+    expect(result.abilities.STR).toBe(10)
+  })
+
+  it('clamps negative ability score → 3 (floor)', () => {
+    const result = sanitizeCharacter({ ...DEFAULT_CHARACTER, abilities: { STR: -5, DEX: 10, CON: 10, INT: 10, WIS: 10, CHA: 10 } })
+    expect(result.abilities.STR).toBe(3)
+  })
+
+  it('clamps out-of-range ability strings → 10 (NaN path)', () => {
+    const result = sanitizeCharacter({ ...DEFAULT_CHARACTER, abilities: { STR: 'lots', DEX: 10, CON: 10, INT: 10, WIS: 10, CHA: 10 } })
+    expect(result.abilities.STR).toBe(10)
+  })
+
+  it('all six abilities are clamped independently', () => {
+    const result = sanitizeCharacter({
+      ...DEFAULT_CHARACTER,
+      abilities: { STR: 999, DEX: 0, CON: NaN, INT: -1, WIS: 21, CHA: 2 },
+    })
+    expect(result.abilities.STR).toBe(20)
+    expect(result.abilities.DEX).toBe(3)
+    expect(result.abilities.CON).toBe(10)
+    expect(result.abilities.INT).toBe(3)
+    expect(result.abilities.WIS).toBe(20)
+    expect(result.abilities.CHA).toBe(3)
+  })
+
+  it('valid ability score 10 passes through unchanged', () => {
+    const result = sanitizeCharacter({ ...DEFAULT_CHARACTER, abilities: { STR: 10, DEX: 15, CON: 8, INT: 12, WIS: 13, CHA: 9 } })
+    expect(result.abilities).toEqual({ STR: 10, DEX: 15, CON: 8, INT: 12, WIS: 13, CHA: 9 })
+  })
+
+  // ── AC clamping ────────────────────────────────────────────────────────────
+
+  it('clamps ac:NaN → 10', () => {
+    const result = sanitizeCharacter({ ...DEFAULT_CHARACTER, ac: NaN })
+    expect(result.ac).toBe(10)
+  })
+
+  it('clamps ac:4 → 10 (below floor 5)', () => {
+    const result = sanitizeCharacter({ ...DEFAULT_CHARACTER, ac: 4 })
+    expect(result.ac).toBe(10)
+  })
+
+  it('clamps ac:31 → 10 (above ceiling 30)', () => {
+    const result = sanitizeCharacter({ ...DEFAULT_CHARACTER, ac: 31 })
+    expect(result.ac).toBe(10)
+  })
+
+  it('valid ac:18 passes through', () => {
+    const result = sanitizeCharacter({ ...DEFAULT_CHARACTER, ac: 18 })
+    expect(result.ac).toBe(18)
+  })
+
+  // ── hpMax clamping ────────────────────────────────────────────────────────
+
+  it('clamps hpMax:9999 → 10 (above ceiling 999)', () => {
+    const result = sanitizeCharacter({ ...DEFAULT_CHARACTER, hpMax: 9999 })
+    expect(result.hpMax).toBe(10)
+  })
+
+  it('clamps hpMax:0 → 10 (below floor 1)', () => {
+    const result = sanitizeCharacter({ ...DEFAULT_CHARACTER, hpMax: 0 })
+    expect(result.hpMax).toBe(10)
+  })
+
+  it('clamps hpMax:-5 → 10 (negative)', () => {
+    const result = sanitizeCharacter({ ...DEFAULT_CHARACTER, hpMax: -5 })
+    expect(result.hpMax).toBe(10)
+  })
+
+  it('clamps hpMax:NaN → 10', () => {
+    const result = sanitizeCharacter({ ...DEFAULT_CHARACTER, hpMax: NaN })
+    expect(result.hpMax).toBe(10)
+  })
+
+  it('valid hpMax:45 passes through', () => {
+    const result = sanitizeCharacter({ ...DEFAULT_CHARACTER, hpMax: 45 })
+    expect(result.hpMax).toBe(45)
+  })
+
+  // ── hpCurrent clamping (optional mutable field) ────────────────────────────
+
+  it('hpCurrent is clamped to [0, hpMax] when provided', () => {
+    const result = sanitizeCharacter({ ...DEFAULT_CHARACTER, hpMax: 45, hpCurrent: 99 })
+    expect(result.hpCurrent).toBe(45)
+  })
+
+  it('negative hpCurrent is clamped to 0', () => {
+    const result = sanitizeCharacter({ ...DEFAULT_CHARACTER, hpMax: 45, hpCurrent: -10 })
+    expect(result.hpCurrent).toBe(0)
+  })
+
+  it('hpCurrent is absent when not provided (not present in output)', () => {
+    const result = sanitizeCharacter({ ...DEFAULT_CHARACTER })
+    expect(result).not.toHaveProperty('hpCurrent')
+  })
+
+  // ── unknown field stripping (allowlist) ────────────────────────────────────
+
+  it('strips unknown / extra fields (allowlist only)', () => {
+    const result = sanitizeCharacter({
+      ...DEFAULT_CHARACTER,
+      secretKey: 'evil',
+      xp: 9999,
+      serverUrl: 'http://evil.com',
+      conditions: ['poisoned'],
+      initiative: 5,
+      speed: 999,
+    })
+    expect(result).not.toHaveProperty('secretKey')
+    expect(result).not.toHaveProperty('xp')
+    expect(result).not.toHaveProperty('serverUrl')
+    expect(result).not.toHaveProperty('conditions')
+    expect(result).not.toHaveProperty('initiative')
+    expect(result).not.toHaveProperty('speed')
+    // Only the allowed fields remain
+    expect(Object.keys(result).sort()).toEqual(
+      ['abilities', 'ac', 'charClass', 'hpMax', 'name', 'race'].sort()
+    )
+  })
+
+  // ── DEFAULT_CHARACTER shape verification ──────────────────────────────────
+
+  it('DEFAULT_CHARACTER has only the synced-subset fields (no mutable fields)', () => {
+    expect(DEFAULT_CHARACTER).toHaveProperty('name')
+    expect(DEFAULT_CHARACTER).toHaveProperty('race')
+    expect(DEFAULT_CHARACTER).toHaveProperty('charClass')
+    expect(DEFAULT_CHARACTER).toHaveProperty('abilities')
+    expect(DEFAULT_CHARACTER).toHaveProperty('ac')
+    expect(DEFAULT_CHARACTER).toHaveProperty('hpMax')
+    // Mutable fields excluded from the static synced subset
+    expect(DEFAULT_CHARACTER).not.toHaveProperty('hpCurrent')
+    expect(DEFAULT_CHARACTER).not.toHaveProperty('isActive')
+    expect(DEFAULT_CHARACTER).not.toHaveProperty('conditions')
+    expect(DEFAULT_CHARACTER).not.toHaveProperty('initiative')
+    expect(DEFAULT_CHARACTER).not.toHaveProperty('speed')
+  })
+
+  // ── well-formed input passes through unchanged ────────────────────────────
+
+  it('a clean well-formed character passes through all fields unchanged', () => {
+    const clean = {
+      name: 'Aelis Nightwhisper',
+      race: 'Elf',
+      charClass: 'Ranger',
+      abilities: { STR: 12, DEX: 17, CON: 13, INT: 11, WIS: 15, CHA: 10 },
+      ac: 15,
+      hpMax: 38,
+    }
+    const result = sanitizeCharacter(clean)
+    expect(result.name).toBe('Aelis Nightwhisper')
+    expect(result.race).toBe('Elf')
+    expect(result.charClass).toBe('Ranger')
+    expect(result.abilities).toEqual({ STR: 12, DEX: 17, CON: 13, INT: 11, WIS: 15, CHA: 10 })
+    expect(result.ac).toBe(15)
+    expect(result.hpMax).toBe(38)
   })
 })

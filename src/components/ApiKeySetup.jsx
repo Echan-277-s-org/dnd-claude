@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { GENRES, getGenre } from '../lib/genres'
-import { fromMarkdown, getLanHost } from '../lib/session'
+import { fromMarkdown, getLanHost, loadSyncSession, extractCharacterFromPayload } from '../lib/session'
+import { buildCharacter } from '../lib/characterBuilder'
 import CharacterWizard from './CharacterWizard'
 
 const OLLAMA_MODELS = [
@@ -35,6 +36,74 @@ async function resolveSessionId(roomCode) {
   }
 }
 
+// Derive a SyncedCharacter from a full character object (as stored in localStorage).
+// Returns the { name, race, charClass, abilities, ac, hpMax } subset.
+function toSyncedSubset(char) {
+  if (!char) return null
+  return {
+    name: char.name || 'Adventurer',
+    race: char.race || 'Human',
+    charClass: char.charClass || 'Fighter',
+    abilities: {
+      STR: Number(char.abilities?.STR) || 10,
+      DEX: Number(char.abilities?.DEX) || 10,
+      CON: Number(char.abilities?.CON) || 10,
+      INT: Number(char.abilities?.INT) || 10,
+      WIS: Number(char.abilities?.WIS) || 10,
+      CHA: Number(char.abilities?.CHA) || 10,
+    },
+    ac: Number(char.ac) || 10,
+    hpMax: Number(char.hpMax) || 10,
+  }
+}
+
+// Load a character from localStorage (dnd_character). Returns null if absent.
+function loadLocalCharacter() {
+  try {
+    const stored = localStorage.getItem('dnd_character')
+    if (stored) return JSON.parse(stored)
+  } catch {
+    // ignore
+  }
+  return null
+}
+
+const ABILITY_LABELS = { STR: 'STR', DEX: 'DEX', CON: 'CON', INT: 'INT', WIS: 'WIS', CHA: 'CHA' }
+
+// Compact read-only preview of a SyncedCharacter subset.
+function CharacterPreview({ character, label }) {
+  if (!character) return null
+  const abilities = character.abilities || {}
+  return (
+    <div className="join-char-preview" aria-label={label || 'Character preview'}>
+      <div className="join-char-preview-identity">
+        <span className="join-char-preview-name">{character.name}</span>
+        <span className="join-char-preview-meta">
+          {character.race} / {character.charClass}
+        </span>
+      </div>
+      <div className="join-char-preview-stats">
+        {['STR','DEX','CON','INT','WIS','CHA'].map(k => (
+          <div key={k} className="join-char-preview-ability">
+            <span className="join-char-preview-ability-key">{k}</span>
+            <span className="join-char-preview-ability-val">{abilities[k] ?? 10}</span>
+          </div>
+        ))}
+      </div>
+      <div className="join-char-preview-combat">
+        <span className="join-char-preview-combat-item">
+          <span className="join-char-preview-combat-label">AC</span>
+          <span className="join-char-preview-combat-val">{character.ac ?? 10}</span>
+        </span>
+        <span className="join-char-preview-combat-item">
+          <span className="join-char-preview-combat-label">HP</span>
+          <span className="join-char-preview-combat-val">{character.hpMax ?? 10}</span>
+        </span>
+      </div>
+    </div>
+  )
+}
+
 export default function CampaignSetup({ onSetup, onJoin, onGenreChange, onRestoreSession, urlRoomCode }) {
   const [genreId, setGenreId] = useState(() => localStorage.getItem('dnd_genre') || 'dnd')
   const [name, setName] = useState(() => localStorage.getItem('dnd_campaign_name') || '')
@@ -56,18 +125,55 @@ export default function CampaignSetup({ onSetup, onJoin, onGenreChange, onRestor
   const [joinError, setJoinError] = useState('')
   const [joinLoading, setJoinLoading] = useState(false)
 
-  // Character wizard state
+  // ── Join-tab character paths ───────────────────────────────────────────────
+  // 'none' | 'existing' | 'wizard' | 'import'
+  const [joinCharPath, setJoinCharPath] = useState('none')
+  // The local character loaded from localStorage (shown in Path A preview).
+  const [joinLocalChar] = useState(() => loadLocalCharacter())
+  // Whether the joiner has confirmed using the local character.
+  const [joinUseExisting, setJoinUseExisting] = useState(false)
+  // Wizard output for Path B.
+  const [joinCreatedChar, setJoinCreatedChar] = useState(null)
+  // Genre of the room being joined (resolved from server, used for wizard).
+  const [joinRoomGenre, setJoinRoomGenre] = useState(null)
+  // Pre-fill state for the wizard (Path C — .md import seeds this).
+  const [wizardInitialCharacter, setWizardInitialCharacter] = useState(null)
+  // Import error message for Path C.
+  const [importError, setImportError] = useState('')
+
+  // Create-tab character wizard state
   const [showWizard, setShowWizard] = useState(false)
   const [createdCharacter, setCreatedCharacter] = useState(null)
 
   const fileInputRef = useRef(null)
+  const joinImportRef = useRef(null)
 
   // Prefill room code from URL param whenever it changes (first render only).
   useEffect(() => {
     if (urlRoomCode) setJoinRoomCode(urlRoomCode)
   }, [urlRoomCode])
 
+  // When the room code changes and is non-empty, resolve the room's genre from
+  // the sync server so the wizard uses the correct race/class list.
+  useEffect(() => {
+    let cancelled = false
+    async function fetchRoomGenre() {
+      const rc = joinRoomCode.trim()
+      if (!rc) { setJoinRoomGenre(null); return }
+      const sessionId = await resolveSessionId(rc)
+      if (cancelled || !sessionId) return
+      const payload = await loadSyncSession(sessionId)
+      if (!cancelled && payload?.campaign?.genre) {
+        setJoinRoomGenre(payload.campaign.genre)
+      }
+    }
+    fetchRoomGenre()
+    return () => { cancelled = true }
+  }, [joinRoomCode])
+
   const genre = getGenre(genreId)
+  // The genre to pass to the wizard when in the Join tab.
+  const effectiveJoinGenre = joinRoomGenre || genreId || 'dnd'
 
   function handleFile(e) {
     const file = e.target.files[0]
@@ -103,6 +209,55 @@ export default function CampaignSetup({ onSetup, onJoin, onGenreChange, onRestor
     setShowWizard(false)
   }
 
+  // ── Join-tab wizard handlers ──────────────────────────────────────────────
+  function handleJoinWizardCreate(wizardOutput) {
+    setJoinCreatedChar(wizardOutput)
+    setJoinCharPath('none') // close wizard, show result
+  }
+
+  function handleJoinWizardCancel() {
+    // Return to the path selector
+    setJoinCharPath('none')
+    setWizardInitialCharacter(null)
+  }
+
+  // Path C: handle .md file import for the join tab
+  function handleJoinImport(e) {
+    const file = e.target.files?.[0]
+    if (!file) return
+    setImportError('')
+    const reader = new FileReader()
+    reader.onload = ev => {
+      const text = ev.target.result
+      const dn = joinDisplayName.trim() || null
+      try {
+        const extracted = extractCharacterFromPayload(text, dn)
+        if (!extracted) {
+          setImportError('No character found in this file. The wizard will start empty.')
+          // Open wizard with no pre-fill — graceful fallback per spec.
+          setWizardInitialCharacter(null)
+          setJoinCharPath('wizard')
+          return
+        }
+        // Pre-fill the wizard and open it for review.
+        setWizardInitialCharacter(extracted)
+        setJoinCharPath('wizard')
+      } catch {
+        setImportError('Could not read the file. The wizard will start empty.')
+        setWizardInitialCharacter(null)
+        setJoinCharPath('wizard')
+      }
+    }
+    reader.onerror = () => {
+      setImportError('Could not read the file. The wizard will start empty.')
+      setWizardInitialCharacter(null)
+      setJoinCharPath('wizard')
+    }
+    reader.readAsText(file)
+    // Reset the input so the same file can be re-imported.
+    if (joinImportRef.current) joinImportRef.current.value = ''
+  }
+
   function handleSubmit(e) {
     e.preventDefault()
     // SP mode: displayName is null → single-player (no WS opened).
@@ -121,6 +276,22 @@ export default function CampaignSetup({ onSetup, onJoin, onGenreChange, onRestor
     })
   }
 
+  // Derive the SyncedCharacter to pass on join.
+  // Returns the SyncedCharacter | null (null = use default adventurer).
+  function resolveJoinCharacter() {
+    // Path A: confirmed use of existing local character.
+    if (joinUseExisting && joinLocalChar) {
+      return toSyncedSubset(joinLocalChar)
+    }
+    // Path B / C: wizard was completed.
+    if (joinCreatedChar) {
+      const built = buildCharacter(joinCreatedChar, effectiveJoinGenre)
+      return toSyncedSubset(built)
+    }
+    // No character chosen — use default adventurer on server.
+    return null
+  }
+
   async function handleJoinSubmit(e) {
     e.preventDefault()
     const rc = joinRoomCode.trim()
@@ -133,12 +304,184 @@ export default function CampaignSetup({ onSetup, onJoin, onGenreChange, onRestor
       // Resolve roomCode → sessionId via the sync server. Graceful fallback:
       // if the server is unreachable, pass null and let the WS server reject/handle it.
       const sessionId = await resolveSessionId(rc)
-      await onJoin({ roomCode: rc, displayName: dn, sessionId })
+      const character = resolveJoinCharacter()
+      await onJoin({ roomCode: rc, displayName: dn, sessionId, character })
     } catch {
       setJoinError('Failed to join. Check the room code and try again.')
     } finally {
       setJoinLoading(false)
     }
+  }
+
+  // Render the join-tab character section (before a path is chosen or confirmed).
+  function renderJoinCharSection() {
+    // If wizard is open (Path B or C), show the wizard inline.
+    if (joinCharPath === 'wizard') {
+      return (
+        <CharacterWizard
+          genreId={effectiveJoinGenre}
+          onCreateCharacter={handleJoinWizardCreate}
+          onCancel={handleJoinWizardCancel}
+          initialCharacter={wizardInitialCharacter}
+        />
+      )
+    }
+
+    // If a character was already created via wizard, show a summary with option to change.
+    if (joinCreatedChar) {
+      const built = buildCharacter(joinCreatedChar, effectiveJoinGenre)
+      const subset = toSyncedSubset(built)
+      return (
+        <div className="form-group">
+          <CharacterPreview character={subset} label="Created character preview" />
+          <div className="join-char-actions">
+            <button
+              type="button"
+              className="join-char-btn join-char-btn--secondary"
+              onClick={() => {
+                setJoinCreatedChar(null)
+                setWizardInitialCharacter(null)
+                setJoinUseExisting(false)
+                setJoinCharPath('none')
+              }}
+            >
+              Change character
+            </button>
+            <button
+              type="button"
+              className="join-char-btn join-char-btn--ghost"
+              onClick={() => {
+                setJoinCreatedChar(null)
+                setJoinUseExisting(false)
+              }}
+            >
+              Use default instead
+            </button>
+          </div>
+        </div>
+      )
+    }
+
+    // If the player confirmed using their existing local character, show preview + options.
+    if (joinUseExisting && joinLocalChar) {
+      const subset = toSyncedSubset(joinLocalChar)
+      return (
+        <div className="form-group">
+          <CharacterPreview character={subset} label="Existing character preview" />
+          <div className="join-char-actions">
+            <button
+              type="button"
+              className="join-char-btn join-char-btn--secondary"
+              onClick={() => {
+                setJoinUseExisting(false)
+                setJoinCharPath('none')
+              }}
+            >
+              Change character
+            </button>
+            <button
+              type="button"
+              className="join-char-btn join-char-btn--ghost"
+              onClick={() => setJoinUseExisting(false)}
+            >
+              Use default instead
+            </button>
+          </div>
+        </div>
+      )
+    }
+
+    // Path selector — show all three options.
+    return (
+      <div className="form-group">
+        <div className="join-char-paths">
+          {/* Path A: sync existing local character */}
+          {joinLocalChar ? (
+            <div className="join-char-path-card">
+              <div className="join-char-path-label">Sync existing character</div>
+              <CharacterPreview
+                character={toSyncedSubset(joinLocalChar)}
+                label="Local character preview"
+              />
+              <div className="join-char-path-actions">
+                <button
+                  type="button"
+                  className="join-char-btn join-char-btn--primary"
+                  onClick={() => {
+                    setJoinUseExisting(true)
+                    setJoinCreatedChar(null)
+                  }}
+                  data-testid="join-use-existing"
+                >
+                  Use this character
+                </button>
+              </div>
+            </div>
+          ) : null}
+
+          {/* Path B: create a new character via wizard */}
+          <div className="join-char-path-card">
+            <div className="join-char-path-label">Create a character</div>
+            <p className="form-hint">Build your character step-by-step with the character wizard.</p>
+            <div className="join-char-path-actions">
+              <button
+                type="button"
+                className="join-char-btn join-char-btn--primary"
+                onClick={() => {
+                  setJoinUseExisting(false)
+                  setWizardInitialCharacter(null)
+                  setJoinCharPath('wizard')
+                }}
+                data-testid="join-create-wizard"
+              >
+                Create a Character
+              </button>
+            </div>
+          </div>
+
+          {/* Path C: import from .md */}
+          <div className="join-char-path-card">
+            <div className="join-char-path-label">Import from .md file</div>
+            <p className="form-hint">
+              Upload a saved session file — the character will pre-fill the wizard for review.
+            </p>
+            {importError && (
+              <p className="form-hint join-char-import-error" role="alert">{importError}</p>
+            )}
+            <div className="join-char-path-actions">
+              <input
+                ref={joinImportRef}
+                type="file"
+                accept=".md,.txt"
+                onChange={handleJoinImport}
+                style={{ display: 'none' }}
+                id="join-import-file"
+                data-testid="join-import-input"
+              />
+              <label htmlFor="join-import-file" className="join-char-btn join-char-btn--secondary join-char-import-label">
+                Choose .md file
+              </label>
+            </div>
+          </div>
+
+          {/* Use default adventurer option */}
+          <div className="join-char-path-default">
+            <span className="form-hint">or </span>
+            <button
+              type="button"
+              className="join-char-default-link"
+              onClick={() => {
+                setJoinUseExisting(false)
+                setJoinCreatedChar(null)
+              }}
+              data-testid="join-use-default"
+            >
+              use the default adventurer
+            </button>
+          </div>
+        </div>
+      </div>
+    )
   }
 
   return (
@@ -207,6 +550,13 @@ export default function CampaignSetup({ onSetup, onJoin, onGenreChange, onRestor
                 How your messages appear to other players. Max 64 characters.
               </span>
             </div>
+
+            {/* ── Character section (Join tab) ── */}
+            <div className="form-divider">
+              <span>Character</span>
+            </div>
+
+            {renderJoinCharSection()}
 
             {joinError && (
               <p className="form-error" role="alert">{joinError}</p>

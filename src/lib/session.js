@@ -13,10 +13,10 @@
 // function of messages) and `pendingCheck` (session-only; surfaced as a prose
 // line by toMarkdown so an LLM still sees it, but never machine-restored in v1).
 
-// Bumped to 2 for multiplayer (Phase 0): adds optional v2 fields
-// (roomCode / phase / turnSequence). v1 payloads still load — deserializeSession
-// upgrades them with safe defaults — so the .md save/continue contract is preserved.
-export const SCHEMA_VERSION = 2
+// Bumped to 3 for per-player character sync (Phase 1): adds `characters` map.
+// v1/v2 payloads still load — deserializeSession backfills characters:{} — so the
+// .md save/continue contract is preserved.
+export const SCHEMA_VERSION = 3
 
 // Phase enum. RESTING phases are the only values ever PERSISTED. The transient
 // operational phases ('awaiting-dm' / 'resolving') live only in the sync server's
@@ -58,12 +58,31 @@ export function applyPartyUpdate(rawArray, existing) {
     const found = prev.find(
       e => String(e?.name ?? '').trim().toLowerCase() === normalizedName
     )
+
+    // Normalize conditions: coerce to array, trim each entry, drop empties,
+    // cap at 10 entries, cap each entry at 64 chars, default [].
+    // Source: raw (DM-emitted) takes precedence over found (existing row).
+    // When raw.conditions is absent/null/non-array, preserve found.conditions
+    // (so a DM response that omits the field does not wipe active conditions).
+    const rawConditions = raw?.conditions
+    let conditions
+    if (Array.isArray(rawConditions)) {
+      conditions = rawConditions
+        .map(c => String(c ?? '').trim().slice(0, 64))
+        .filter(c => c.length > 0)
+        .slice(0, 10)
+    } else {
+      // DM omitted conditions field — preserve whatever was there before
+      conditions = Array.isArray(found?.conditions) ? found.conditions : []
+    }
+
     return {
       id: found?.id ?? crypto.randomUUID(),
       name: String(raw?.name ?? '').trim() || 'Unknown',
       role: String(raw?.role ?? '').trim() || '',
       hpPct: Math.max(0, Math.min(100, Math.round(Number(raw?.hpPct) || 0))),
       isActive: Boolean(raw?.isActive),
+      conditions,
     }
   })
 }
@@ -92,6 +111,205 @@ function pickCampaign(campaign) {
   return out
 }
 
+// ─── SyncedCharacter helpers ──────────────────────────────────────────────────
+// The STATIC subset of a character that rides the `characters` map.
+// Mutable state (hpCurrent / isActive / conditions) lives in the party rows.
+
+// Normalize a raw SyncedCharacter object. Accepts any object; strips unknown
+// keys; returns a well-typed SyncedCharacter or null if input is unusable.
+// Never throws.
+function normalizeSyncedCharacter(raw) {
+  if (!raw || typeof raw !== 'object') return null
+  const abilities = raw.abilities && typeof raw.abilities === 'object'
+    ? {
+        STR: Number(raw.abilities.STR) || 10,
+        DEX: Number(raw.abilities.DEX) || 10,
+        CON: Number(raw.abilities.CON) || 10,
+        INT: Number(raw.abilities.INT) || 10,
+        WIS: Number(raw.abilities.WIS) || 10,
+        CHA: Number(raw.abilities.CHA) || 10,
+      }
+    : { STR: 10, DEX: 10, CON: 10, INT: 10, WIS: 10, CHA: 10 }
+  return {
+    name: String(raw.name ?? 'Adventurer'),
+    race: String(raw.race ?? 'Human'),
+    charClass: String(raw.charClass ?? 'Fighter'),
+    abilities,
+    ac: Number(raw.ac) || 10,
+    hpMax: Number(raw.hpMax) || 10,
+  }
+}
+
+// Normalize the characters map from a raw payload.
+// Returns {} when absent/invalid; otherwise maps each entry through
+// normalizeSyncedCharacter (dropping any entries that come back null).
+function pickCharacters(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {}
+  const out = {}
+  for (const [key, val] of Object.entries(raw)) {
+    const norm = normalizeSyncedCharacter(val)
+    if (norm) out[key] = norm
+  }
+  return out
+}
+
+// ─── Character extractor (for the .md-import UI path) ────────────────────────
+// Given a parsed payload (or raw markdown text) and an entered displayName,
+// returns a SyncedCharacter with this precedence:
+//   (1) characters[displayName] if present
+//   (2) else the first characters entry
+//   (3) else derive from the first party row (name/role→charClass, defaults)
+// Returns null gracefully on malformed/blockless input — never throws.
+export function extractCharacterFromPayload(input, displayName) {
+  try {
+    // Accept a markdown string or an already-parsed payload.
+    const payload = typeof input === 'string' ? fromMarkdown(input) : (input ?? null)
+    if (!payload || typeof payload !== 'object') return null
+
+    const chars = payload.characters
+    const hasChars = chars && typeof chars === 'object' && !Array.isArray(chars)
+
+    // Precedence (1): exact displayName match.
+    if (hasChars && displayName != null && chars[displayName]) {
+      const c = normalizeSyncedCharacter(chars[displayName])
+      if (c) return c
+    }
+
+    // Precedence (2): first characters entry.
+    if (hasChars) {
+      const entries = Object.values(chars)
+      if (entries.length > 0) {
+        const c = normalizeSyncedCharacter(entries[0])
+        if (c) return c
+      }
+    }
+
+    // Precedence (3): derive from first party row.
+    const party = Array.isArray(payload.party) ? payload.party : []
+    if (party.length > 0) {
+      const row = party[0]
+      return {
+        name: String(row.name ?? 'Adventurer'),
+        race: 'Human',
+        charClass: String(row.role ?? 'Fighter'),
+        abilities: { STR: 10, DEX: 10, CON: 10, INT: 10, WIS: 10, CHA: 10 },
+        ac: 10,
+        hpMax: 10,
+      }
+    }
+
+    return null
+  } catch {
+    return null
+  }
+}
+
+// ─── DM prompt player-summary helpers (Phase 4) ──────────────────────────────
+// These are pure helpers shared by the client (Chat.jsx → context.js call site)
+// and the server (sync-server.mjs → context.js call site, Phase 5). Exporting
+// from session.js keeps them co-located with the characters-map data they consume.
+
+// Format an ability-score modifier with explicit sign, matching the formula in
+// CharacterPanel.jsx line 14–16.
+export function fmtMod(score) {
+  const mod = Math.floor((score - 10) / 2)
+  return mod >= 0 ? `+${mod}` : `${mod}`
+}
+
+// Render the bounded "Player Characters:" section that gets injected into the
+// system prompt. Enforces the hard contract from the refactor plan:
+//   - Max 5 players (extra entries silently dropped via slice — by design)
+//   - ALL players within the 1–5 range are ALWAYS included (never silently dropped)
+//   - Total section (header + all player lines) <= 1000 characters
+//   - A single pathologically long line is truncated at LINE_MAX chars, but the
+//     player is never omitted entirely
+// Budget rationale: worst-case 5 players × ~160 chars/line + 20-char header ≈ 820;
+// 1000 gives ~180 chars of headroom for long names/conditions while remaining
+// negligible in a system-prompt context (a few hundred extra tokens at most).
+// Format per line: "name (Class Race): STR s(±m), DEX s(±m), … ; AC a, HP cur/max"
+// Conditions appended when present, e.g. "  [Poisoned, Frightened]".
+// Returns '' for empty/null players (so the byte-identical invariant holds).
+export function buildPlayerSection(players) {
+  if (!players?.length) return ''
+  const capped = players.slice(0, 5)
+  const HEADER = '\nPlayer Characters:\n'
+  const BUDGET = 1000
+  const LINE_MAX = 200 // guard against a single pathological line (e.g. 64-char name)
+
+  const lines = capped.map(p => {
+    const ab = p.abilities ?? {}
+    const stats = ['STR', 'DEX', 'CON', 'INT', 'WIS', 'CHA']
+      .map(k => `${k} ${ab[k] ?? 10}(${fmtMod(ab[k] ?? 10)})`)
+      .join(', ')
+    const conds = Array.isArray(p.conditions) && p.conditions.length > 0
+      ? `  [${p.conditions.join(', ')}]`
+      : ''
+    const line = `${p.name} (${p.charClass} ${p.race}): ${stats}; AC ${p.ac ?? 10}, HP ${p.hpCurrent ?? p.hpMax ?? 10}/${p.hpMax ?? 10}${conds}`
+    // Truncate an individual line that is absurdly long, but never drop the player.
+    return line.length > LINE_MAX ? line.slice(0, LINE_MAX) : line
+  })
+
+  // All players within the 1–5 cap are always included. The section is naturally
+  // bounded because each line is capped at LINE_MAX and there are at most 5 lines.
+  return HEADER + lines.join('\n')
+}
+
+// Build a PlayerEntry[] from the characters map and current party array.
+// Pure, defensive, never throws. Returns [] when characters is empty/absent.
+// Match characters to party rows by normalized name (lowercased/trimmed) —
+// the same normalization used by applyPartyUpdate.
+// Sorting preserves DM-defined party-row order; unmapped characters append last.
+export function buildPlayersForPrompt(characters, party) {
+  if (!characters || typeof characters !== 'object' || Array.isArray(characters)) return []
+  const entries = Object.entries(characters)
+  if (entries.length === 0) return []
+
+  const partyArr = Array.isArray(party) ? party : []
+
+  // Build a lookup: normalized name → party row
+  const rowByName = new Map()
+  for (const row of partyArr) {
+    const key = String(row?.name ?? '').trim().toLowerCase()
+    if (key) rowByName.set(key, row)
+  }
+
+  // Build a PlayerEntry for each character, matched to their party row.
+  // Defensively handles null/undefined char values.
+  function makeEntry([, char]) {
+    const safeChar = char && typeof char === 'object' ? char : {}
+    const normalizedCharName = String(safeChar?.name ?? '').trim().toLowerCase()
+    const row = rowByName.get(normalizedCharName) ?? null
+    const hpMax = Number(safeChar?.hpMax) || 10
+    const hpPct = row != null ? Math.max(0, Math.min(100, Number(row?.hpPct) || 0)) : 100
+    return {
+      name: safeChar.name ?? 'Adventurer',
+      race: safeChar.race ?? 'Human',
+      charClass: safeChar.charClass ?? 'Fighter',
+      abilities: safeChar.abilities ?? { STR: 10, DEX: 10, CON: 10, INT: 10, WIS: 10, CHA: 10 },
+      ac: safeChar.ac ?? 10,
+      hpMax,
+      hpCurrent: Math.round(hpPct / 100 * hpMax),
+      conditions: Array.isArray(row?.conditions) ? row.conditions : [],
+    }
+  }
+
+  // Sort by party-row order first (characters with a matching row come in DM order),
+  // then unmapped characters appended in their iteration order.
+  const mapped = []
+  const unmapped = []
+  for (const entry of entries) {
+    const [, char] = entry
+    const key = String(char?.name ?? '').trim().toLowerCase()
+    if (rowByName.has(key)) {
+      mapped.push({ entry, rowIdx: partyArr.findIndex(r => String(r?.name ?? '').trim().toLowerCase() === key) })
+    } else {
+      unmapped.push(makeEntry(entry))
+    }
+  }
+  mapped.sort((a, b) => a.rowIdx - b.rowIdx)
+  return [...mapped.map(({ entry }) => makeEntry(entry)), ...unmapped]
+}
+
 // ─── serialize / deserialize — the canonical payload ──────────────────────────
 
 // Build a payload from live app state. `savedAt` may be supplied (server-stamped)
@@ -100,6 +318,7 @@ function pickCampaign(campaign) {
 // `state` or via the third `opts` arg (opts wins). They are always carried in the
 // output so the HTTP PUT path can't silently strip them (MC-3). `phase` is
 // coerced to a resting phase on write (MC-4); transient phases never persist.
+// v3 adds `characters: { [displayName]: SyncedCharacter }` (default {}).
 export function serializeSession(state, savedAt, opts = {}) {
   const s = state ?? {}
   const o = opts ?? {}
@@ -115,12 +334,15 @@ export function serializeSession(state, savedAt, opts = {}) {
     roomCode: o.roomCode ?? s.roomCode ?? null,
     phase: restingPhase(o.phase ?? s.phase),
     turnSequence: readTurnSequence(o.turnSequence ?? s.turnSequence),
+    characters: pickCharacters(o.characters ?? s.characters),
   }
 }
 
 // Parse a stored payload (string or object) back into a normalized payload.
 // Returns null on any failure or an incompatible schemaVersion — callers keep
 // their last-known state (same contract as the structured-block parser).
+// Accepts v1, v2, AND v3 payloads. v1/v2 backfill `characters: {}`. Any other
+// version → null (unchanged contract). v1/v2 .md files therefore still load.
 export function deserializeSession(raw) {
   if (raw == null) return null
   let obj
@@ -130,9 +352,8 @@ export function deserializeSession(raw) {
     return null
   }
   if (!obj || typeof obj !== 'object') return null
-  // Accept v1 (upgraded to v2 with safe defaults) and native v2. Any other
-  // version → null (unchanged contract). v1 .md files therefore still load.
-  if (obj.schemaVersion !== 1 && obj.schemaVersion !== 2) return null
+  // Accept v1 / v2 / v3; v1 and v2 are auto-upgraded (backfill characters:{}).
+  if (obj.schemaVersion !== 1 && obj.schemaVersion !== 2 && obj.schemaVersion !== 3) return null
   return {
     sessionId: obj.sessionId ?? obj.campaign?.sessionId ?? null,
     schemaVersion: SCHEMA_VERSION,
@@ -144,6 +365,8 @@ export function deserializeSession(raw) {
     roomCode: typeof obj.roomCode === 'string' ? obj.roomCode : null,
     phase: readPhase(obj.phase),
     turnSequence: readTurnSequence(obj.turnSequence),
+    // v1/v2 payloads backfill to {}; v3 carries the map if present.
+    characters: pickCharacters(obj.characters),
   }
 }
 
@@ -223,12 +446,35 @@ function transcript(messages) {
   return lines.length ? lines.join('\n\n') : '_(No messages yet.)_'
 }
 
+// Render a human-readable ```characters block for the prose section of the .md.
+// One line per player. Returns an empty string when there are no characters.
+function charactersSection(characters) {
+  if (!characters || typeof characters !== 'object') return ''
+  const entries = Object.entries(characters)
+  if (entries.length === 0) return ''
+  const lines = entries.map(([displayName, c]) => {
+    const ab = c.abilities
+      ? `STR ${c.abilities.STR} DEX ${c.abilities.DEX} CON ${c.abilities.CON} INT ${c.abilities.INT} WIS ${c.abilities.WIS} CHA ${c.abilities.CHA}`
+      : 'no abilities'
+    return `| ${displayName} | ${c.name || '—'} | ${c.race || '—'} | ${c.charClass || '—'} | ${ab} | AC ${c.ac ?? '—'} | HP max ${c.hpMax ?? '—'} |`
+  })
+  return [
+    '\n## Player Characters',
+    '| Player | Name | Race | Class | Abilities | AC | HP Max |',
+    '|--------|------|------|-------|-----------|-------|--------|',
+    ...lines,
+  ].join('\n')
+}
+
 // Render a payload as a self-contained Markdown handoff. The prose is a complete
 // DM brief; the trailing ```session fence is the lossless machine payload.
 // `pendingCheck` (session-only) is accepted purely to surface it as a prose line.
+// v3: carries `characters` in the authoritative session block AND emits an
+// informational ```characters section in the prose for human readability.
 export function toMarkdown(payload, pendingCheck) {
   const p = payload ?? {}
   const c = p.campaign ?? {}
+  const chars = pickCharacters(p.characters)
   const meta = [
     `saved ${p.savedAt ?? new Date().toISOString()}`,
     `genre: ${c.genre ?? '—'}`,
@@ -259,10 +505,13 @@ export function toMarkdown(payload, pendingCheck) {
       roomCode: p.roomCode ?? null,
       phase: restingPhase(p.phase),
       turnSequence: readTurnSequence(p.turnSequence),
+      characters: chars,
     },
     null,
     2
   )
+
+  const charSection = charactersSection(chars)
 
   return `# Session — ${c.name || 'Untitled Campaign'}
 <!-- ${meta} -->
@@ -278,7 +527,7 @@ ${partyTable(p.party ?? [])}
 ${pendingLine}
 ## Transcript
 ${transcript(p.messages ?? [])}
-
+${charSection ? charSection + '\n' : ''}
 \`\`\`session
 ${block}
 \`\`\`

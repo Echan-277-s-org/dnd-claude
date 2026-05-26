@@ -47,7 +47,9 @@ export function useSessionPersistence({
   party,
   setParty,
   isLoading,
-  socketConnected, // Phase 2: optional boolean — when truthy, skip the 30s poll
+  socketConnected, // Phase 2: optional boolean — when truthy, skip the 30s poll AND the per-turn push
+  characters,      // D-01: optional characters map — forwarded in the push payload; defaults {} in SP
+  roomCode,        // D-01: optional room code — forwarded in the push payload; defaults null in SP
 }) {
   const id = campaign?.sessionId
   const lastSavedAt = useRef(null) // last server stamp we hold — the staleness base
@@ -163,22 +165,35 @@ export function useSessionPersistence({
   }, [id])
 
   // Push once per settled turn (loading falling edge) — never per stream delta.
+  // D-03: when the WS is OPEN (socketConnected), the server is the sole authoritative
+  // writer (via persistRoom after each action). The client must NOT issue HTTP PUTs in
+  // MP mode — they race with persistRoom and clobber characters/roomCode. Mirror the
+  // poll's socketConnected guard. IMPORTANT: wasLoading.current and adopting.current
+  // bookkeeping ALWAYS runs; only the network PUT is suppressed when connected.
   useEffect(() => {
     if (wasLoading.current && !isLoading) {
       if (adopting.current) {
         adopting.current = false // this turn's state came FROM the server; don't echo it back
-      } else {
-        const payload = serializeSession({ campaign, messages, sessionLog, party })
+      } else if (!socketConnected) {
+        // D-01: include characters and roomCode in the push payload so the SP-with-sync
+        // path does not strip them. In SP, characters defaults to {} and roomCode to null,
+        // which are safe no-ops on the server (pickCharacters({}) = {}).
+        const payload = serializeSession({
+          campaign, messages, sessionLog, party,
+          characters: characters ?? {},
+          roomCode: roomCode ?? null,
+        })
         payload.savedAt = lastSavedAt.current // base the write on what we last saw
         saveSyncSession(payload).then(res => {
           if (res.ok) lastSavedAt.current = res.savedAt
           // 409 / network error → keep local untouched; the poll reconciles.
         })
       }
+      // socketConnected=true: server's persistRoom is the sole writer; no PUT issued.
     }
     wasLoading.current = isLoading
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isLoading, campaign, messages, sessionLog, party])
+  }, [isLoading, campaign, messages, sessionLog, party, socketConnected])
 
   // Poll every 30s for a newer save from another device.
   // Phase 2: when socketConnected is truthy, skip starting the interval.
