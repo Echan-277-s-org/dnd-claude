@@ -1549,15 +1549,174 @@ describe('Phase 6 — disconnect detection and rejoin', () => {
 
 // ─── Phase 7 — Migration cutover / backward-compat ────────────────────────────
 
-describe.skip('Phase 7 — HTTP endpoints still pass against updated schema (R2 regression)', () => {
+describe('Phase 7 — HTTP endpoints still pass against updated schema (R2 regression)', () => {
   let ctx
 
-  beforeAll(async () => {})
-  afterAll(async () => {})
+  // Re-use the startTestServer + put helpers from the top of the file.
+  const put = (base, id, body) =>
+    fetch(`${base}/session/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
 
-  it('PUT a v2 payload → 200; GET returns it with v2 fields intact', () => {})
-  it('PUT a v1-shaped payload (no phase/roomCode/turnSequence) → 200; GET returns v2 defaults', () => {})
-  it('409 LWW guard still applies to concurrent PUTs in v2 schema', () => {})
-  it('single-player session (one connected client) is indistinguishable from today', () => {})
-  it('M7 strictly-newer gate still blocks stale adoption on the WebSocket session:update path', () => {})
+  beforeAll(async () => {
+    ctx = await startTestServer()
+  })
+  afterAll(async () => {
+    await new Promise(r => ctx.server.close(r))
+    await cleanupDir(ctx.dir)
+  })
+
+  // Between tests clear the sessions dir so each test starts fresh.
+  beforeEach(async () => {
+    const { readdir, rm: fsrm } = await import('node:fs/promises')
+    for (const f of await readdir(ctx.dir)) {
+      await fsrm(`${ctx.dir}/${f}`, { force: true })
+    }
+  })
+
+  // ── (1) PUT v2 payload → 200; GET returns phase / roomCode / turnSequence intact ──
+  it('PUT a v2 payload → 200; GET returns it with v2 fields intact', async () => {
+    const ID = 'phase7-v2-test-0000-0000-000000000001'
+    const body = {
+      campaign: { name: 'V2 Campaign', genre: 'dnd', model: 'qwen2.5:14b', sessionId: ID },
+      messages: [{ role: 'user', content: 'hello' }],
+      sessionLog: [],
+      party: [],
+      savedAt: null,
+      // v2 fields
+      roomCode: 'dnd-a1b2c3d4',
+      phase: 'combat',
+      turnSequence: 7,
+    }
+    const putRes = await put(ctx.base, ID, body)
+    expect(putRes.status).toBe(200)
+    const { savedAt } = await putRes.json()
+    expect(typeof savedAt).toBe('string')
+
+    const got = await (await fetch(`${ctx.base}/session/${ID}`)).json()
+    expect(got.savedAt).toBe(savedAt)
+    expect(got.sessionId).toBe(ID)
+    expect(got.roomCode).toBe('dnd-a1b2c3d4')
+    expect(got.phase).toBe('combat')        // resting phase preserved
+    expect(got.turnSequence).toBe(7)
+    expect(got.messages).toHaveLength(1)
+  })
+
+  // ── (2) PUT v1-shaped payload (no v2 fields) → 200; GET returns v2 defaults ─────
+  it('PUT a v1-shaped payload (no phase/roomCode/turnSequence) → 200; GET returns v2 defaults', async () => {
+    const ID = 'phase7-v1-test-0000-0000-000000000002'
+    const body = {
+      campaign: { name: 'V1 Campaign', genre: 'dnd', model: 'qwen2.5:14b', sessionId: ID },
+      messages: [],
+      sessionLog: [],
+      party: [],
+      savedAt: null,
+      // No phase / roomCode / turnSequence — mimics a v1-era client
+    }
+    const putRes = await put(ctx.base, ID, body)
+    expect(putRes.status).toBe(200)
+
+    const got = await (await fetch(`${ctx.base}/session/${ID}`)).json()
+    expect(got.sessionId).toBe(ID)
+    // serializeSession fills safe v2 defaults for absent fields
+    expect(got.phase).toBe('free-roam')
+    expect(got.roomCode).toBeNull()
+    expect(got.turnSequence).toBe(0)
+    expect(got.schemaVersion).toBe(2)
+  })
+
+  // ── (3) 409 LWW guard still applies to stale PUTs in v2 schema ───────────────
+  it('409 LWW guard still applies to concurrent PUTs in v2 schema', async () => {
+    const ID = 'phase7-409-test-0000-0000-000000000003'
+    const v2Body = (savedAt) => ({
+      campaign: { name: 'V2 Conc', genre: 'dnd', model: 'qwen2.5:14b', sessionId: ID },
+      messages: [],
+      sessionLog: [],
+      party: [],
+      savedAt,
+      roomCode: 'dnd-conctest',
+      phase: 'free-roam',
+      turnSequence: 1,
+    })
+
+    // First PUT: creates the record
+    const first = await (await put(ctx.base, ID, v2Body(null))).json()
+    expect(typeof first.savedAt).toBe('string')
+
+    // Second PUT with the correct base savedAt → 200 (advances the record)
+    const second = await put(ctx.base, ID, v2Body(first.savedAt))
+    expect(second.status).toBe(200)
+    const secondData = await second.json()
+
+    // Third PUT with the STALE base (first.savedAt) → 409
+    const stale = await put(ctx.base, ID, v2Body(first.savedAt))
+    expect(stale.status).toBe(409)
+    // 409 body must carry the current savedAt so the client can reconcile
+    const staleData = await stale.json()
+    expect(staleData.savedAt).toBe(secondData.savedAt)
+
+    // The stored record must still reflect the second (good) write, not the stale one
+    const got = await (await fetch(`${ctx.base}/session/${ID}`)).json()
+    expect(got.savedAt).toBe(secondData.savedAt)
+    expect(got.roomCode).toBe('dnd-conctest')
+  })
+
+  // ── (4) Single-player HTTP path is indistinguishable from pre-v2 behaviour ────
+  // Assert the core HTTP GET/PUT contract is byte-compatible with a lone client:
+  // PUT → 200 {savedAt}; GET returns the session; campaign travels; .md written.
+  it('single-player session (one connected client) is indistinguishable from today', async () => {
+    const ID = 'phase7-solo-test-0000-0000-000000000004'
+    const body = {
+      campaign: { name: 'Solo Run', genre: 'dnd', model: 'qwen2.5:14b', context: 'lone wolf', sessionId: ID },
+      messages: [
+        { role: 'user', content: 'I scout the road.' },
+        { role: 'assistant', content: 'The road stretches empty before you.' },
+      ],
+      sessionLog: [{ time: '09:00', text: 'I scout the road.' }],
+      party: [{ id: 'pp1', name: 'Jaycen', role: 'Ranger', hpPct: 95, isActive: false }],
+      savedAt: null,
+      // No v2 fields — same shape as a single-player client today
+    }
+    const putRes = await put(ctx.base, ID, body)
+    expect(putRes.status).toBe(200)
+    const { savedAt } = await putRes.json()
+
+    // GET must return all the single-player fields exactly as before
+    const got = await (await fetch(`${ctx.base}/session/${ID}`)).json()
+    expect(got.savedAt).toBe(savedAt)
+    expect(got.sessionId).toBe(ID)
+    expect(got.campaign.sessionId).toBe(ID)
+    expect(got.campaign.context).toBe('lone wolf')   // M2 — campaign travels
+    expect(got.messages).toHaveLength(2)
+    expect(got.party).toHaveLength(1)
+    expect(got.party[0].name).toBe('Jaycen')
+
+    // .md file must exist (single-player handoff contract)
+    const { readdir } = await import('node:fs/promises')
+    const files = await readdir(ctx.dir)
+    expect(files).toContain(`${ID}.md`)
+
+    // v2 schema returned even for a v1-shaped write (schema is always bumped)
+    expect(got.schemaVersion).toBe(2)
+    expect(got.phase).toBe('free-roam')   // default — no phase in body
+    expect(got.turnSequence).toBe(0)      // default — no turnSequence in body
+  })
+
+  // ── (5) M7 strictly-newer gate blocks stale WS session:update adoption ────────
+  // This case is a hook unit test in src/hooks/useSessionPersistence.test.jsx
+  // (see: "Phase 7 — M7 gate blocks stale WS session:update adoption").
+  // The WS/HTTP adoption path has no meaningful integration divergence beyond what
+  // the unit test covers, so the assertion lives there rather than duplicating a full
+  // WS harness here. The test is active (not skipped) in that file.
+  it('M7 strictly-newer gate still blocks stale adoption on the WebSocket session:update path', () => {
+    // See: src/hooks/useSessionPersistence.test.jsx
+    //      describe 'Phase 7 — M7 gate blocks stale WS session:update adoption'
+    //      Tests: 'ws adopt: REJECTS an update when neither turnSequence nor savedAt advance'
+    //             'ws adopt: ADMITS an update when only turnSequence advances (same savedAt)'
+    //             'ws adopt: REJECTS a stale savedAt with an equal turnSequence'
+    // All three are active (no .skip) and cover the dual-authority gate exhaustively.
+    expect(true).toBe(true) // pointer test — real assertions are in the hook unit test file
+  })
 })

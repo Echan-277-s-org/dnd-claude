@@ -380,3 +380,126 @@ describe('useSessionPersistence Phase 2 — WS adopt gate + sentinel reset', () 
     expect(setMessages).not.toHaveBeenCalled()
   })
 })
+
+// ─── Phase 7 — M7 gate blocks stale WS session:update adoption ───────────────
+//
+// Referenced by server/sync-server.multiplayer.test.mjs Phase 7 it() #5.
+// Exercises the dual-authority gate (ws source) exhaustively:
+//   - REJECTS when neither turnSequence NOR savedAt advance (true stale)
+//   - ADMITS when turnSequence advances even if savedAt stays the same
+//   - REJECTS when savedAt is stale AND turnSequence equals local (equal-seq boundary)
+describe('Phase 7 — M7 gate blocks stale WS session:update adoption', () => {
+  it('ws adopt: REJECTS an update when neither turnSequence nor savedAt advance', async () => {
+    const stamp = '2026-05-25T10:00:00.000Z'
+    seedLocal(stamp)
+    loadSyncSession.mockResolvedValue(null)
+
+    const setMessages = vi.fn()
+    const { result } = renderHook(() =>
+      useSessionPersistence(baseProps({ setMessages }))
+    )
+    await act(async () => {}) // mount settle
+
+    // First feed a legitimate update to set the internal refs
+    act(() =>
+      result.current.onSessionState({
+        savedAt: stamp,
+        turnSequence: 3,
+        messages: [{ role: 'assistant', content: 'Current state' }],
+        sessionLog: [],
+        party: [],
+      })
+    )
+    setMessages.mockClear()
+
+    // Now send a stale session:update — same savedAt, same turnSequence (neither advances)
+    act(() =>
+      result.current.onSessionUpdate({
+        savedAt: stamp,         // not newer
+        turnSequence: 3,        // not greater
+        messages: [{ role: 'assistant', content: 'STALE WS UPDATE' }],
+        sessionLog: [],
+        party: [],
+      })
+    )
+
+    // The dual-authority gate must block it — setMessages must NOT be called
+    expect(setMessages).not.toHaveBeenCalled()
+  })
+
+  it('ws adopt: ADMITS an update when only turnSequence advances (same savedAt)', async () => {
+    const stamp = '2026-05-25T10:00:00.000Z'
+    loadSyncSession.mockResolvedValue(null)
+
+    const setMessages = vi.fn()
+    const { result } = renderHook(() =>
+      useSessionPersistence(baseProps({ setMessages }))
+    )
+    await act(async () => {}) // mount settle
+
+    // Establish current state at turnSequence 2
+    act(() =>
+      result.current.onSessionState({
+        savedAt: stamp,
+        turnSequence: 2,
+        messages: [{ role: 'assistant', content: 'Turn 2' }],
+        sessionLog: [],
+        party: [],
+      })
+    )
+    setMessages.mockClear()
+
+    // An update with the SAME savedAt but a HIGHER turnSequence must be admitted
+    act(() =>
+      result.current.onSessionUpdate({
+        savedAt: stamp,         // same — would fail the savedAt branch alone
+        turnSequence: 3,        // seqNewer passes (3 > 2)
+        messages: [{ role: 'assistant', content: 'Turn 3 via seq' }],
+        sessionLog: [],
+        party: [],
+      })
+    )
+
+    expect(setMessages).toHaveBeenCalledWith(
+      expect.arrayContaining([expect.objectContaining({ content: 'Turn 3 via seq' })])
+    )
+  })
+
+  it('ws adopt: REJECTS a stale savedAt with an equal turnSequence', async () => {
+    const stamp = '2026-05-25T10:00:00.000Z'
+    const olderStamp = '2026-05-25T09:00:00.000Z'
+    loadSyncSession.mockResolvedValue(null)
+
+    const setMessages = vi.fn()
+    const { result } = renderHook(() =>
+      useSessionPersistence(baseProps({ setMessages }))
+    )
+    await act(async () => {}) // mount settle
+
+    // Establish current state: seq=5, saved at stamp
+    act(() =>
+      result.current.onSessionState({
+        savedAt: stamp,
+        turnSequence: 5,
+        messages: [{ role: 'assistant', content: 'Current' }],
+        sessionLog: [],
+        party: [],
+      })
+    )
+    setMessages.mockClear()
+
+    // An update with an OLDER savedAt and the SAME turnSequence — neither branch passes
+    act(() =>
+      result.current.onSessionUpdate({
+        savedAt: olderStamp,    // older — timeNewer fails
+        turnSequence: 5,        // equal — seqNewer fails (5 > 5 is false)
+        messages: [{ role: 'assistant', content: 'STALE OLDER' }],
+        sessionLog: [],
+        party: [],
+      })
+    )
+
+    // Both gates fail → update must be rejected
+    expect(setMessages).not.toHaveBeenCalled()
+  })
+})

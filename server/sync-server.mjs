@@ -192,6 +192,12 @@ export function createSyncServer({ sessionsDir = DEFAULT_DIR, roomGcMs = 30 * 60
           messages: body.messages,
           sessionLog: body.sessionLog,
           party: body.party,
+          // MC-3: carry v2 fields from the body so HTTP PUT does not silently strip them.
+          // serializeSession coerces transient phases to resting on write (MC-4) and
+          // defaults any absent field to safe values, so v1-shaped bodies work unchanged.
+          roomCode: body.roomCode ?? null,
+          phase: body.phase,
+          turnSequence: body.turnSequence,
         },
         savedAt
       )
