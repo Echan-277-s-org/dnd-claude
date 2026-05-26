@@ -106,6 +106,19 @@ export default function Chat({ campaign, onReset, character, setCharacter, party
   const messagesEndRef = useRef(null)
   const textareaRef = useRef(null)
 
+  // ─── Multiplayer mode predicate (§3.7, MC-5) ────────────────────────────────
+  // MULTIPLAYER iff the WebSocket is OPEN *and* the server has confirmed the room
+  // is joined (first session:state received). Live WS wiring lands in Phase 4;
+  // until then there is no WS and roomJoined stays false, so this is ALWAYS false
+  // and the single-player direct-Ollama path below is the only one that executes.
+  // Single-player behavior is therefore byte-for-byte unchanged.
+  const wsRef = useRef(null)
+  const roomJoinedRef = useRef(false)
+  function isMultiplayerMode() {
+    const ws = wsRef.current
+    return !!ws && ws.readyState === WebSocket.OPEN && roomJoinedRef.current === true
+  }
+
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
@@ -151,6 +164,26 @@ export default function Chat({ campaign, onReset, character, setCharacter, party
   async function sendMessage(text) {
     const trimmed = text.trim()
     if (!trimmed || isLoading) return
+
+    // ─── Multiplayer branch (§3.2 / §3.7) — DORMANT in this phase ──────────────
+    // In multiplayer mode the client NEVER calls Ollama directly. It sends the
+    // action over the WebSocket; the server runs the single DM trigger and drives
+    // isLoading + message accumulation via dm:delta / dm:done broadcasts. The WS
+    // is wired live in Phase 4; isMultiplayerMode() is false until then, so this
+    // branch is unreachable today and single-player below is byte-for-byte intact.
+    if (isMultiplayerMode()) {
+      const roomCode = campaign.roomCode
+      wsRef.current.send(JSON.stringify({
+        type: 'action',
+        roomCode,
+        payload: { content: trimmed, type: 'user', pendingCheck: pendingCheck ?? null },
+        // displayName intentionally omitted — server uses connection-bound identity.
+      }))
+      setInput('')
+      // No local isLoading toggle / Ollama fetch here — dm:delta/dm:done from the
+      // server drive loading + accumulation uniformly across all clients (Phase 4).
+      return
+    }
 
     const userMsg = { role: 'user', content: trimmed }
     // Find index of the most recent dice message so we can fold pendingCheck into it.

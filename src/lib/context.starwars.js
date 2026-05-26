@@ -9,7 +9,7 @@
 // edited on another branch, so forking here keeps the two from colliding.
 // trimContext is genre-neutral and is reused directly.
 
-export { trimContext } from './context'
+export { trimContext } from './context.js'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // buildSystemPrompt

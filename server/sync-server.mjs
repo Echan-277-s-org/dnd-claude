@@ -29,11 +29,57 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { randomUUID } from 'node:crypto'
 import { WebSocketServer } from 'ws'
-import { toMarkdown, fromMarkdown, serializeSession } from '../src/lib/session.js'
+import { toMarkdown, fromMarkdown, serializeSession, applyPartyUpdate } from '../src/lib/session.js'
+import { getGenre } from '../src/lib/genres.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const DEFAULT_DIR = path.resolve(__dirname, 'sessions')
 const ID_RE = /^[A-Za-z0-9_-]{1,128}$/
+
+// ─── Phase 3: server-side DM proxy constants (MULTIPLAYER-ARCHITECTURE.md §3) ──
+// MC-8: bounded timeout on every Ollama fetch/stream so a hung model can't wedge
+// a room in 'awaiting-dm' indefinitely (chaos EX-3C). 90s is generous for a slow
+// local model on a LAN.
+const OLLAMA_TIMEOUT_MS = 90_000
+// Default model when campaign.model is absent or fails the allowlist (sec H).
+const DEFAULT_MODEL = 'qwen2.5:14b'
+// Model-name allowlist (sec H) — an arbitrary string could be used to probe/abuse
+// the Ollama API. Mirrors the pattern called out in §3.2.
+const MODEL_RE = /^[a-zA-Z0-9._:-]{1,64}$/
+// Per-connection min interval between actions (sec G), to throttle spam queuing.
+const ACTION_MIN_INTERVAL_MS = 500
+
+// ─── Phase 3: structured-block parser (server copy of Chat.jsx L18-42) ─────────
+// The architecture sanctions a verbatim server copy of the small parser so the
+// DM proxy applies party/check/verdict blocks identically to the client.
+// NOTE: DM_BLOCK_TAGS is the three LLM-owned tags (party/check/verdict). The
+// inbound sanitizer below uses the wider BLOCK_TAGS set (includes 'session').
+const DM_BLOCK_TAGS = ['party', 'check', 'verdict']
+const DM_STRIP_RE = new RegExp('```(?:' + DM_BLOCK_TAGS.join('|') + ')[\\s\\S]*?```', 'g')
+
+function stripStructuredBlocks(text) {
+  return String(text ?? '').replace(DM_STRIP_RE, '').trimEnd()
+}
+
+// Parameterised extractor — returns parsed JSON or null (never throws).
+function extractBlock(tag, text) {
+  const re = new RegExp('```' + tag + '\\s*([\\s\\S]*?)```')
+  const match = String(text ?? '').match(re)
+  if (!match) return null
+  try {
+    return JSON.parse(match[1].trim())
+  } catch {
+    return null // malformed JSON → ignore, keep last-known state
+  }
+}
+
+// Resolve the Ollama base URL from the SERVER environment ONLY (sec H). Never
+// derived from any client field. Accepts a bare host[:port] or a full URL.
+function ollamaBaseUrl() {
+  const env = process.env.OLLAMA_HOST
+  if (!env) return 'http://localhost:11434'
+  return env.includes('://') ? env : `http://${env}`
+}
 
 // ─── Origin allowlist for WS upgrades (security item D) ───────────────────────
 // Configured via WS_ALLOWED_ORIGINS (comma-split). An empty/absent Origin header
@@ -207,8 +253,44 @@ export function createSyncServer({ sessionsDir = DEFAULT_DIR } = {}) {
     return String(content ?? '').replace(STRIP_RE, '').trim().slice(0, 4096)
   }
 
-  // ─── Phase 2: handle an inbound action message ───────────────────────────────
+  // ─── Phase 3: persist the room to its .md handoff (atomic temp+rename) ───────
+  // serializeSession carries v2 fields and phase-sanitizes (transient → resting).
+  async function persistRoom(room) {
+    const p = sessionPath(room.sessionId)
+    if (!p) return
+    const savedAt = new Date().toISOString()
+    const payload = serializeSession(
+      {
+        campaign: { ...(room.campaign ?? {}), sessionId: room.sessionId },
+        messages: room.messages ?? [],
+        sessionLog: room.sessionLog ?? [],
+        party: room.party ?? [],
+        roomCode: room.roomCode,
+        phase: room.phase,
+        turnSequence: room.turnSequence,
+      },
+      savedAt
+    )
+    const tmp = `${p}.${randomUUID()}.tmp`
+    await writeFile(tmp, toMarkdown(payload), 'utf8')
+    await rename(tmp, p) // atomic swap — a crash never leaves a half-written file
+    return savedAt
+  }
+
+  // Parse a `die → result` pair out of a dice action's content if not given
+  // structurally. Matches the `[Dice roll: d20 → 17]` shape AND a bare `d20 → 17`.
+  function parseDiceContent(content) {
+    const m = String(content ?? '').match(/(d\d+)\s*(?:→|->)\s*(\d+)/i)
+    if (!m) return null
+    return { die: m[1].toLowerCase(), result: Number(m[2]) }
+  }
+
+  // ─── Phase 3: real server-side DM trigger (replaces the Phase 2 echo) ────────
   async function handleAction(ws, msg) {
+    // Track whether THIS invocation acquired the connection's in-flight flag so the
+    // finally only releases what it took (a rejected DM_BUSY action must NOT clear
+    // the flag of the in-progress action on the same connection).
+    let acquiredConn = null
     try {
       const { roomCode, payload } = msg ?? {}
       const content = sanitizeActionContent(payload?.content)
@@ -235,34 +317,282 @@ export function createSyncServer({ sessionsDir = DEFAULT_DIR } = {}) {
         return
       }
 
-      // Serialize within the room's action queue.
+      const conn = room.clients.get(ws)
+
+      // ── (1) Per-connection rate limit + DM-busy gate (sec G) ──────────────────
+      // Reject (do NOT enqueue) when: this connection already has an action in
+      // flight, the room is mid-DM (awaiting-dm/resolving), or the connection is
+      // firing faster than the min interval. The DM_BUSY signal goes to the SENDER
+      // only; clients re-enable input on the next phase change to a resting phase.
+      const now = Date.now()
+      // room.dmBusy is a SYNCHRONOUS gate: it is set true here (before the async
+      // withRoomLock enqueue) so two actions arriving in the same tick can't both
+      // pass. room.phase flips to 'awaiting-dm' inside the lock and is the gate for
+      // actions arriving after the phase broadcast; dmBusy covers the race window
+      // between enqueue and the in-lock phase flip. Either being set → DM_BUSY.
+      if (
+        conn?.inFlight ||
+        room.dmBusy === true ||
+        room.phase === 'awaiting-dm' ||
+        room.phase === 'resolving'
+      ) {
+        ws.send(JSON.stringify({ type: 'error', payload: { code: 'DM_BUSY' } }))
+        return
+      }
+      if (conn && now - conn.lastActionAt < ACTION_MIN_INTERVAL_MS) {
+        ws.send(JSON.stringify({ type: 'error', payload: { code: 'RATE_LIMITED' } }))
+        return
+      }
+      room.dmBusy = true
+      if (conn) {
+        conn.inFlight = true
+        conn.lastActionAt = now
+        acquiredConn = conn
+      }
+
+      // Capture the pendingCheck travelling with this action (session-only, §3.6).
+      const rawPending = payload?.pendingCheck
+      const pendingCheck =
+        rawPending?.skill && rawPending?.dc != null
+          ? { skill: String(rawPending.skill).toUpperCase(), dc: Number(rawPending.dc) }
+          : null
+      const actionType = payload?.type === 'dice' ? 'dice' : 'user'
+
+      // ── (3) Serialize within the room's action queue (structural single-trigger)
       await withRoomLock(room, async () => {
-        const savedAt = new Date().toISOString()
+        // The resting phase to restore on error (free-roam or combat). Captured
+        // BEFORE we flip to awaiting-dm (MC-8 / §3.5 step 3).
+        const restingPhase =
+          room.phase === 'combat' ? 'combat' : 'free-roam'
 
-        // Echo path (Phase 2 placeholder — Phase 3 replaces with Ollama call).
-        // Append the user message to the room's in-memory messages array.
-        const userMsg = { role: 'user', content, id: randomUUID() }
-        room.messages = [...(room.messages ?? []), userMsg]
+        let fullText = ''
+        const assistantId = randomUUID()
+        const abortController = new AbortController()
+        const timeoutHandle = setTimeout(() => abortController.abort(), OLLAMA_TIMEOUT_MS)
 
-        // Increment turn counter.
-        room.turnSequence = (room.turnSequence ?? 0) + 1
+        try {
+          // (3a) Lock all clients: enter awaiting-dm and broadcast the phase.
+          room.phase = 'awaiting-dm'
+          broadcast(room, {
+            type: 'session:update',
+            roomCode: room.roomCode,
+            payload: {
+              messages: room.messages ?? [],
+              party: room.party ?? [],
+              phase: room.phase,
+              turnSequence: room.turnSequence ?? 0,
+              savedAt: new Date().toISOString(),
+            },
+          })
 
-        // Broadcast session:update to ALL clients in the room (including sender).
-        broadcast(room, {
-          type: 'session:update',
-          roomCode: room.roomCode,
-          payload: {
-            messages: room.messages,
-            party: room.party ?? [],
-            phase: room.phase ?? 'free-roam',
-            turnSequence: room.turnSequence,
-            savedAt,
-          },
-        })
+          // (3b) Build the user message; record a server-side dice event so a forged
+          // verdict.roll (one not matching the real roll) can be discarded later.
+          const userMsg = { role: 'user', content, id: randomUUID() }
+          if (actionType === 'dice') {
+            const parsed = parseDiceContent(payload?.content) ?? {
+              die: payload?.die ?? null,
+              result: payload?.result != null ? Number(payload.result) : null,
+            }
+            room.lastDiceEvent = {
+              die: parsed.die,
+              result: parsed.result,
+              turnSequence: room.turnSequence ?? 0,
+            }
+          }
+
+          // (3c) Assemble the prompt EXACTLY like Chat.jsx#sendMessage.
+          const engine = getGenre(room.campaign?.genre).engine
+          const systemPrompt = engine.buildSystemPrompt(room.campaign ?? {})
+          const baseMessages = room.messages ?? []
+          const entities = engine.extractEntities(baseMessages)
+          const systemContent = entities.length
+            ? `${systemPrompt}\n\n---\nEstablished entities so far (stay consistent with these named NPCs, locations, and items): ${entities.join(', ')}.`
+            : systemPrompt
+
+          // Most-recent dice index so pendingCheck folds into the right dice line.
+          const lastDiceIdx = (() => {
+            for (let i = baseMessages.length - 1; i >= 0; i--) {
+              if (baseMessages[i].role === 'dice') return i
+            }
+            return -1
+          })()
+
+          const apiMessages = engine.trimContext([
+            ...baseMessages.map((m, i) => {
+              if (m.role !== 'dice') return m
+              const checkCtx =
+                i === lastDiceIdx && pendingCheck
+                  ? ` | pending check: ${pendingCheck.skill} DC ${pendingCheck.dc}`
+                  : ''
+              return { role: 'user', content: `[Dice roll: ${m.die} → ${m.result}${checkCtx}]` }
+            }),
+            userMsg,
+          ])
+
+          // (3d) Validate the model against the allowlist (sec H).
+          const model = MODEL_RE.test(String(room.campaign?.model ?? ''))
+            ? room.campaign.model
+            : DEFAULT_MODEL
+
+          // (3e) Ollama URL from the SERVER env ONLY — never any client field.
+          const base = ollamaBaseUrl()
+
+          const response = await fetch(`${base}/api/chat`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            signal: abortController.signal,
+            body: JSON.stringify({
+              model,
+              stream: true,
+              messages: [{ role: 'system', content: systemContent }, ...apiMessages],
+              options: {
+                num_ctx: 8192,
+                num_predict: 900,
+                temperature: 0.8,
+                top_p: 0.9,
+                top_k: 40,
+                repeat_penalty: 1.15,
+                repeat_last_n: 256,
+              },
+            }),
+          })
+
+          if (!response.ok) {
+            const body = await response.text().catch(() => '')
+            throw new Error(`Ollama ${response.status}: ${body}`)
+          }
+
+          // (3f) Read the NDJSON stream; fan out each delta as dm:delta.
+          const reader = response.body.getReader()
+          const decoder = new TextDecoder()
+          let buffer = ''
+          const nextSeq = (room.turnSequence ?? 0) + 1
+
+          while (true) {
+            const { done, value } = await reader.read()
+            if (done) break
+            buffer += decoder.decode(value, { stream: true })
+            const lines = buffer.split('\n')
+            buffer = lines.pop() ?? ''
+            for (const line of lines) {
+              if (!line.trim()) continue
+              try {
+                const event = JSON.parse(line)
+                const delta = event.message?.content
+                if (delta) {
+                  fullText += delta
+                  broadcast(room, {
+                    type: 'dm:delta',
+                    roomCode: room.roomCode,
+                    payload: { delta, assistantId, turnSequence: nextSeq },
+                  })
+                }
+              } catch {
+                // incomplete JSON chunk — skip (matches Chat.jsx)
+              }
+            }
+          }
+
+          // ── (4) Stream success: append the user message, parse blocks, persist
+          room.messages = [...baseMessages, userMsg]
+
+          // verdict — discard a forged roll that doesn't match the server's record.
+          const verdictRaw = extractBlock('verdict', fullText)
+          if (verdictRaw?.result === 'PASS' || verdictRaw?.result === 'FAIL') {
+            const forged =
+              verdictRaw.roll != null &&
+              room.lastDiceEvent &&
+              verdictRaw.roll !== room.lastDiceEvent.result
+            if (!forged) {
+              // Resolve the most-recent unresolved, non-orphaned dice message.
+              const idx = [...room.messages]
+                .map((m, i) => ({ m, i }))
+                .reverse()
+                .find(({ m }) => m.role === 'dice' && m.verdict == null && !m.orphaned)?.i
+              if (idx != null) {
+                room.messages = room.messages.map((m, i) =>
+                  i === idx
+                    ? { ...m, check: verdictRaw.skill, verdict: verdictRaw.result }
+                    : m
+                )
+              }
+            }
+          }
+
+          // party — apply when present and non-empty.
+          const partyRaw = extractBlock('party', fullText)
+          if (Array.isArray(partyRaw) && partyRaw.length > 0) {
+            room.party = applyPartyUpdate(partyRaw, room.party ?? [])
+          }
+
+          // Phase from the new party state (any isActive → combat, else free-roam).
+          room.phase = (room.party ?? []).some(m => m.isActive) ? 'combat' : 'free-roam'
+
+          // Append the assistant message (display text — structured blocks stripped).
+          room.messages = [
+            ...room.messages,
+            { role: 'assistant', content: stripStructuredBlocks(fullText), id: assistantId },
+          ]
+
+          // Advance the turn counter (server is the only writer).
+          room.turnSequence = (room.turnSequence ?? 0) + 1
+
+          // Persist the .md handoff (atomic) before broadcasting done.
+          const savedAt = await persistRoom(room)
+
+          broadcast(room, {
+            type: 'dm:done',
+            roomCode: room.roomCode,
+            payload: { fullText, turnSequence: room.turnSequence },
+          })
+          broadcast(room, {
+            type: 'session:update',
+            roomCode: room.roomCode,
+            payload: {
+              messages: room.messages,
+              party: room.party ?? [],
+              phase: room.phase,
+              turnSequence: room.turnSequence,
+              savedAt: savedAt ?? new Date().toISOString(),
+            },
+          })
+        } catch (err) {
+          // ── (5) Error/timeout: broadcast done{error}, reset phase, no turn bump,
+          // no .md write. The queue lock releases when this async fn returns.
+          // eslint-disable-next-line no-console
+          console.error('[ws] DM trigger error:', err?.message ?? err)
+          room.phase = restingPhase
+          broadcast(room, {
+            type: 'dm:done',
+            roomCode: room.roomCode,
+            payload: { error: true, partial: fullText },
+          })
+          broadcast(room, {
+            type: 'session:update',
+            roomCode: room.roomCode,
+            payload: {
+              messages: room.messages ?? [],
+              party: room.party ?? [],
+              phase: room.phase,
+              turnSequence: room.turnSequence ?? 0,
+              savedAt: new Date().toISOString(),
+            },
+          })
+        } finally {
+          clearTimeout(timeoutHandle)
+          // Release the synchronous busy gate so the next queued/incoming action
+          // can fire. (room.phase is already a resting phase at this point.)
+          room.dmBusy = false
+        }
       })
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error('[ws] handleAction error:', err?.message ?? err)
+    } finally {
+      // Clear the in-flight flag ONLY if this invocation acquired it (i.e. it
+      // actually ran the DM trigger). A rejected DM_BUSY/RATE_LIMITED action never
+      // set acquiredConn, so it cannot clear the flag of the running action.
+      if (acquiredConn) acquiredConn.inFlight = false
     }
   }
 
@@ -410,20 +740,41 @@ export function createSyncServer({ sessionsDir = DEFAULT_DIR } = {}) {
         return
       }
 
+      // Load any stored session up-front so a FIRST join hydrates the room from
+      // the .md store (campaign + messages + party + phase + turnSequence). Phase 3
+      // needs room.campaign for prompt assembly and room.sessionLog for the .md write.
+      const stored = await readStored(sessionId)
+
       // Ensure room exists in-memory (keyed by sessionId per sec item I).
       if (!rooms.has(sessionId)) {
         rooms.set(sessionId, {
           sessionId,
           roomCode,
           clients: new Map(),
-          phase: 'free-roam',
-          turnSequence: 0,
-          messages: [],   // Phase 2: in-memory message history
-          party: [],      // Phase 2: in-memory party state
+          phase: stored?.phase ?? 'free-roam',
+          turnSequence: stored?.turnSequence ?? 0,
+          messages: stored?.messages ?? [],   // Phase 2: in-memory message history
+          party: stored?.party ?? [],          // Phase 2: in-memory party state
+          // Phase 3: campaign + sessionLog needed for prompt assembly and .md write.
+          // Default campaign to {} so getGenre(undefined) → dnd (Phase 3 step 6).
+          campaign: stored?.campaign ?? {},
+          sessionLog: stored?.sessionLog ?? [],
           actionQueue: Promise.resolve(), // Phase 2: per-room serialization queue
+          dmBusy: false,                   // Phase 3: synchronous single-trigger gate
+          lastDiceEvent: null,             // Phase 3: forged-verdict.roll guard
         })
       }
       const room = rooms.get(sessionId)
+      // Backfill campaign/sessionLog on a pre-existing room when the .md store has
+      // them but the room (created by an earlier empty join) does not.
+      if ((!room.campaign || Object.keys(room.campaign).length === 0) && stored?.campaign) {
+        room.campaign = stored.campaign
+      }
+      if ((!room.sessionLog || room.sessionLog.length === 0) && stored?.sessionLog?.length) {
+        room.sessionLog = stored.sessionLog
+      }
+      if (!room.campaign) room.campaign = {}
+      if (!room.sessionLog) room.sessionLog = []
 
       // NAME_TAKEN: check if displayName (trimmed, lowercased) is already bound
       // to an OPEN connection in this room (security item J).
@@ -442,8 +793,7 @@ export function createSyncServer({ sessionsDir = DEFAULT_DIR } = {}) {
         }
       }
 
-      // Load any stored session (reads from .md, never keyed by roomCode).
-      const stored = await readStored(sessionId)
+      // (stored was loaded above, before room creation.)
 
       // Build the snapshot payload. Use stored data when available; fall back to
       // safe defaults so the first join creates an empty room without writing a .md.
@@ -467,7 +817,15 @@ export function createSyncServer({ sessionsDir = DEFAULT_DIR } = {}) {
       })()
 
       // Bind this ws → connection info in the room's clients map.
-      room.clients.set(ws, { displayName, partyId, connectedAt: new Date().toISOString() })
+      // Phase 3: inFlight (sec G — at most one in-flight action per connection) and
+      // lastActionAt (min-interval throttle) live on the per-connection record.
+      room.clients.set(ws, {
+        displayName,
+        partyId,
+        connectedAt: new Date().toISOString(),
+        inFlight: false,
+        lastActionAt: 0,
+      })
 
       // Update room's turnSequence/phase/messages/party from stored data if
       // this is the first join (or if stored is newer than in-memory).

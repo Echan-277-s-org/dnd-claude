@@ -22,7 +22,7 @@
 //   MULTIPLAYER-ARCHITECTURE.md §2, §3, §4, §5, §6, §7
 //   MULTIPLAYER-TEST-AUTOMATION.md §2 (multi-client harness)
 
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest'
 import { mkdtemp, rm, readdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
@@ -48,6 +48,108 @@ async function startTestServer() {
     server: httpServer,
     dir,
   }
+}
+
+/**
+ * Mock Ollama — a local HTTP server on a random port that answers POST /api/chat
+ * with deterministic NDJSON chunks (the `stream: true` wire format). Records the
+ * number of POSTs (getCallCount) and the last captured request body so prompt
+ * assembly can be asserted. The sync server is pointed at it via OLLAMA_HOST.
+ *
+ * @param {object} [opts]
+ * @param {string[]} [opts.chunks] — content deltas to stream back, one NDJSON line each
+ * @param {boolean} [opts.hang] — if true, never finish the response (timeout test)
+ */
+async function startMockOllama({ chunks, hang = false } = {}) {
+  let callCount = 0
+  let lastBody = null
+  const deltas = chunks ?? [
+    'The tavern falls quiet as you enter. ',
+    'A hooded figure watches from the corner.',
+    // Trailing structured blocks the server must parse + strip.
+    '\n```party\n[{"name":"Aelis","role":"Ranger","hpPct":90,"isActive":false}]\n```',
+  ]
+
+  const server = http.createServer((req, res) => {
+    if (req.method !== 'POST' || !req.url.startsWith('/api/chat')) {
+      res.statusCode = 404
+      res.end()
+      return
+    }
+    callCount += 1
+    let raw = ''
+    req.on('data', d => { raw += d })
+    req.on('end', () => {
+      try { lastBody = JSON.parse(raw) } catch { lastBody = raw }
+      if (hang) {
+        // Never write/end — the server's AbortController must time out.
+        return
+      }
+      res.writeHead(200, { 'Content-Type': 'application/x-ndjson' })
+      // Stream one NDJSON object per delta, then a final done:true line.
+      for (const delta of deltas) {
+        res.write(JSON.stringify({ message: { role: 'assistant', content: delta }, done: false }) + '\n')
+      }
+      res.write(JSON.stringify({ done: true }) + '\n')
+      res.end()
+    })
+  })
+
+  // Track open sockets so a hung request can't block server.close() in afterEach.
+  const sockets = new Set()
+  server.on('connection', s => {
+    sockets.add(s)
+    s.on('close', () => sockets.delete(s))
+  })
+
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+  const port = server.address().port
+  return {
+    server,
+    host: `127.0.0.1:${port}`,
+    getCallCount: () => callCount,
+    getLastBody: () => lastBody,
+    destroy: () => { for (const s of sockets) s.destroy() },
+  }
+}
+
+/**
+ * Remove a temp dir, retrying on Windows ENOTEMPTY/EBUSY (a just-renamed .md file
+ * can briefly hold a handle after the atomic write).
+ */
+async function cleanupDir(dir) {
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      await rm(dir, { recursive: true, force: true })
+      return
+    } catch (err) {
+      if (attempt === 4) return // give up silently — it's a temp dir
+      await new Promise(r => setTimeout(r, 50))
+    }
+  }
+}
+
+/**
+ * Collect WS messages until a predicate matches one, or time out.
+ * Resolves with the matching message.
+ */
+function waitForMessage(ws, predicate, timeoutMs = 95000) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      ws.off('message', onMsg)
+      reject(new Error('waitForMessage timed out'))
+    }, timeoutMs)
+    function onMsg(data) {
+      let parsed
+      try { parsed = JSON.parse(data) } catch { return }
+      if (predicate(parsed)) {
+        clearTimeout(timer)
+        ws.off('message', onMsg)
+        resolve(parsed)
+      }
+    }
+    ws.on('message', onMsg)
+  })
 }
 
 /**
@@ -343,6 +445,7 @@ describe('Phase 1 — WebSocket /ws endpoint', () => {
 
 describe('Phase 2 — session:update broadcast to all clients', () => {
   let ctx
+  let prevOllamaHost
 
   // Use distinct session/room IDs to avoid cross-test state collisions.
   const P2_SESSION = 'f6a7b8c9-0000-0000-0000-000000000010'
@@ -350,37 +453,45 @@ describe('Phase 2 — session:update broadcast to all clients', () => {
   const p2Join = { roomCode: P2_ROOM, sessionId: P2_SESSION, lastTurnSequence: 0 }
 
   beforeAll(async () => {
+    // Phase 3 replaced the echo handler with a real DM trigger, so a player action
+    // now drives a (mock) Ollama call. The session:update that carries the user
+    // message + advanced turnSequence is the FINAL one, after dm:done. Point the
+    // server at a deterministic mock so these broadcast assertions still hold.
+    prevOllamaHost = process.env.OLLAMA_HOST
     ctx = await startTestServer()
+    ctx.mockOllama = await startMockOllama({ chunks: ['The DM responds.'] })
+    process.env.OLLAMA_HOST = ctx.mockOllama.host
   })
   afterAll(async () => {
+    if (prevOllamaHost === undefined) delete process.env.OLLAMA_HOST
+    else process.env.OLLAMA_HOST = prevOllamaHost
     await new Promise(r => ctx.server.close(r))
-    await rm(ctx.dir, { recursive: true, force: true })
+    ctx.mockOllama.destroy()
+    await new Promise(r => ctx.mockOllama.server.close(r))
+    await cleanupDir(ctx.dir)
   })
 
-  it('client B receives session:update when client A sends an action (echo path)', async () => {
+  it('client B receives session:update with the user message when client A acts', async () => {
     const clientA = await connectClient(ctx.wsBase, { ...p2Join, displayName: 'Alex' })
     expect(clientA.firstMessage.type).toBe('session:state')
 
     const clientB = await connectClient(ctx.wsBase, { ...p2Join, displayName: 'Jordan' })
     expect(clientB.firstMessage.type).toBe('session:state')
 
-    // Drain the presence:update that clientA got when B joined.
-    const drainA = collectMessages(clientA.ws, 1)
-
-    // Send action from A — B should receive session:update.
-    const updatePromiseB = new Promise(resolve => {
-      clientB.ws.once('message', d => resolve(JSON.parse(d)))
-    })
+    // Send action from A — B should receive a session:update that (eventually,
+    // after dm:done) carries A's user message.
+    const updatePromiseB = waitForMessage(
+      clientB.ws,
+      m => m.type === 'session:update' &&
+        m.payload.messages.some(x => x.content === 'I look around the tavern.')
+    )
     clientA.ws.send(JSON.stringify({
       type: 'action',
       roomCode: P2_ROOM,
       payload: { content: 'I look around the tavern.', type: 'user' },
     }))
 
-    // Wait for A's presence drain and then the real update on B.
-    await drainA
     const updateB = await updatePromiseB
-
     expect(updateB.type).toBe('session:update')
     expect(updateB.payload.messages.length).toBeGreaterThan(0)
     expect(updateB.payload.messages.some(m => m.content === 'I look around the tavern.')).toBe(true)
@@ -397,15 +508,8 @@ describe('Phase 2 — session:update broadcast to all clients', () => {
     })
     expect(clientA.firstMessage.type).toBe('session:state')
 
-    // Collect the next message after sending action (may be presence:update first,
-    // then session:update — collect until we find session:update).
-    let update = null
-    const found = new Promise(resolve => {
-      clientA.ws.on('message', d => {
-        const parsed = JSON.parse(d)
-        if (parsed.type === 'session:update') resolve(parsed)
-      })
-    })
+    // The FIRST session:update is the awaiting-dm phase lock; assert it carries phase.
+    const found = waitForMessage(clientA.ws, m => m.type === 'session:update')
 
     clientA.ws.send(JSON.stringify({
       type: 'action',
@@ -413,10 +517,12 @@ describe('Phase 2 — session:update broadcast to all clients', () => {
       payload: { content: 'Test action', type: 'user' },
     }))
 
-    update = await found
+    const update = await found
     expect(update.payload).toHaveProperty('phase')
     expect(['free-roam', 'combat', 'awaiting-dm', 'resolving']).toContain(update.payload.phase)
 
+    // Drain to dm:done so the room returns to a resting phase before the next test.
+    await waitForMessage(clientA.ws, m => m.type === 'dm:done')
     clientA.ws.close()
   })
 
@@ -431,20 +537,16 @@ describe('Phase 2 — session:update broadcast to all clients', () => {
     expect(clientA.firstMessage.type).toBe('session:state')
     const initialSeq = clientA.firstMessage.payload.turnSequence
 
-    // Send an action to advance the server's turnSequence.
-    const updatePromise = new Promise(resolve => {
-      clientA.ws.on('message', d => {
-        const m = JSON.parse(d)
-        if (m.type === 'session:update') resolve(m)
-      })
-    })
+    // Send an action and wait for the FINAL session:update (after dm:done) that
+    // carries the advanced turnSequence.
+    const donePromise = waitForMessage(clientA.ws, m => m.type === 'dm:done')
     clientA.ws.send(JSON.stringify({
       type: 'action',
       roomCode: P2C_ROOM,
       payload: { content: 'I advance the turn.', type: 'user' },
     }))
-    const updateMsg = await updatePromise
-    const advancedSeq = updateMsg.payload.turnSequence
+    const doneMsg = await donePromise
+    const advancedSeq = doneMsg.payload.turnSequence
     expect(advancedSeq).toBeGreaterThan(initialSeq)
     clientA.ws.close()
 
@@ -462,24 +564,193 @@ describe('Phase 2 — session:update broadcast to all clients', () => {
 
 // ─── Phase 3 — Single DM trigger / mock-Ollama guarantee ──────────────────────
 
-describe.skip('Phase 3 — exactly one Ollama call per action', () => {
+describe('Phase 3 — exactly one Ollama call per action', () => {
   let ctx
+  let prevOllamaHost
+
+  // Distinct session/room per test to avoid cross-test in-memory room collisions.
+  let seq = 0
+  function freshIds() {
+    seq += 1
+    const hex = String(seq).padStart(8, '0')
+    return { sessionId: `${hex}-0000-0000-0000-000000000300`, roomCode: `dnd-${hex}` }
+  }
 
   beforeEach(async () => {
-    // ctx = await startTestServer()
+    prevOllamaHost = process.env.OLLAMA_HOST
+    ctx = await startTestServer()
   })
   afterEach(async () => {
-    // ctx.server.close()
-    // ctx.mockOllama.server.close()
-    // await rm(ctx.dir, { recursive: true, force: true })
+    if (prevOllamaHost === undefined) delete process.env.OLLAMA_HOST
+    else process.env.OLLAMA_HOST = prevOllamaHost
+    await new Promise(r => ctx.server.close(r))
+    if (ctx.mockOllama) {
+      ctx.mockOllama.destroy() // force-close any hung sockets before close()
+      await new Promise(r => ctx.mockOllama.server.close(r))
+    }
+    await cleanupDir(ctx.dir)
   })
 
-  it('exactly one Ollama POST fires for one player action', async () => {})
-  it('dm:delta events are broadcast with delta content and turnSequence', async () => {})
-  it('dm:done is broadcast with fullText and advances turnSequence by 1', async () => {})
-  it('.md file is written to disk after dm:done', async () => {})
-  it('second concurrent action is queued: only one Ollama call fires, other gets DM_BUSY', async () => {})
-  it('DM_BUSY error is returned to the sender when phase is awaiting-dm', async () => {})
+  it('exactly one Ollama POST fires for one player action', async () => {
+    ctx.mockOllama = await startMockOllama()
+    process.env.OLLAMA_HOST = ctx.mockOllama.host
+    const { sessionId, roomCode } = freshIds()
+
+    const { ws, firstMessage } = await connectClient(ctx.wsBase, {
+      roomCode, sessionId, displayName: 'Alex', lastTurnSequence: 0,
+    })
+    expect(firstMessage.type).toBe('session:state')
+
+    const done = waitForMessage(ws, m => m.type === 'dm:done')
+    ws.send(JSON.stringify({
+      type: 'action', roomCode, payload: { content: 'I enter the tavern.', type: 'user' },
+    }))
+    await done
+
+    expect(ctx.mockOllama.getCallCount()).toBe(1)
+    // The server-assembled request must carry the full prompt-assembly pipeline.
+    const body = ctx.mockOllama.getLastBody()
+    expect(body.stream).toBe(true)
+    expect(body.messages[0].role).toBe('system')
+    expect(body.messages[0].content).toMatch(/Dungeon Master/i) // buildSystemPrompt
+    expect(body.messages.some(m => m.content === 'I enter the tavern.')).toBe(true)
+    expect(body.options).toMatchObject({
+      num_ctx: 8192, num_predict: 900, temperature: 0.8,
+      top_p: 0.9, top_k: 40, repeat_penalty: 1.15, repeat_last_n: 256,
+    })
+    ws.close()
+  })
+
+  it('dm:delta events are broadcast with delta content and turnSequence', async () => {
+    ctx.mockOllama = await startMockOllama({ chunks: ['Hello ', 'world.'] })
+    process.env.OLLAMA_HOST = ctx.mockOllama.host
+    const { sessionId, roomCode } = freshIds()
+
+    const { ws, firstMessage } = await connectClient(ctx.wsBase, {
+      roomCode, sessionId, displayName: 'Alex', lastTurnSequence: 0,
+    })
+    const baseSeq = firstMessage.payload.turnSequence
+
+    const delta = waitForMessage(ws, m => m.type === 'dm:delta')
+    ws.send(JSON.stringify({
+      type: 'action', roomCode, payload: { content: 'Speak.', type: 'user' },
+    }))
+    const d = await delta
+    expect(typeof d.payload.delta).toBe('string')
+    expect(d.payload.delta.length).toBeGreaterThan(0)
+    expect(d.payload.turnSequence).toBe(baseSeq + 1)
+    expect(typeof d.payload.assistantId).toBe('string')
+    ws.close()
+  })
+
+  it('dm:done is broadcast with fullText and advances turnSequence by 1', async () => {
+    ctx.mockOllama = await startMockOllama({ chunks: ['A complete reply.'] })
+    process.env.OLLAMA_HOST = ctx.mockOllama.host
+    const { sessionId, roomCode } = freshIds()
+
+    const { ws, firstMessage } = await connectClient(ctx.wsBase, {
+      roomCode, sessionId, displayName: 'Alex', lastTurnSequence: 0,
+    })
+    const baseSeq = firstMessage.payload.turnSequence
+
+    const done = waitForMessage(ws, m => m.type === 'dm:done')
+    ws.send(JSON.stringify({
+      type: 'action', roomCode, payload: { content: 'Go.', type: 'user' },
+    }))
+    const d = await done
+    expect(d.payload.error).toBeUndefined()
+    expect(d.payload.fullText).toContain('A complete reply.')
+    expect(d.payload.turnSequence).toBe(baseSeq + 1)
+    ws.close()
+  })
+
+  it('.md file is written to disk after dm:done', async () => {
+    ctx.mockOllama = await startMockOllama({ chunks: ['Persisted narration.'] })
+    process.env.OLLAMA_HOST = ctx.mockOllama.host
+    const { sessionId, roomCode } = freshIds()
+
+    const { ws } = await connectClient(ctx.wsBase, {
+      roomCode, sessionId, displayName: 'Alex', lastTurnSequence: 0,
+    })
+
+    const done = waitForMessage(ws, m => m.type === 'dm:done')
+    ws.send(JSON.stringify({
+      type: 'action', roomCode, payload: { content: 'Write it down.', type: 'user' },
+    }))
+    await done
+    // Give the atomic rename a beat to settle on disk.
+    await new Promise(r => setTimeout(r, 50))
+
+    const files = await readdir(ctx.dir)
+    // The .md MUST be named by sessionId, never roomCode (sec I).
+    expect(files).toContain(`${sessionId}.md`)
+    expect(files.some(f => f.includes(roomCode))).toBe(false)
+    ws.close()
+  })
+
+  it('second concurrent action is queued: only one Ollama call fires, other gets DM_BUSY', async () => {
+    ctx.mockOllama = await startMockOllama({ chunks: ['One DM reply.'] })
+    process.env.OLLAMA_HOST = ctx.mockOllama.host
+    const { sessionId, roomCode } = freshIds()
+
+    const a = await connectClient(ctx.wsBase, {
+      roomCode, sessionId, displayName: 'Alex', lastTurnSequence: 0,
+    })
+    const b = await connectClient(ctx.wsBase, {
+      roomCode, sessionId, displayName: 'Jordan', lastTurnSequence: 0,
+    })
+
+    // B watches for an error (expects DM_BUSY); A watches for dm:done.
+    const bError = waitForMessage(b.ws, m => m.type === 'error', 5000)
+    const aDone = waitForMessage(a.ws, m => m.type === 'dm:done')
+
+    // Fire both in the same tick — A enters the queue, B should be rejected.
+    a.ws.send(JSON.stringify({
+      type: 'action', roomCode, payload: { content: 'A acts.', type: 'user' },
+    }))
+    b.ws.send(JSON.stringify({
+      type: 'action', roomCode, payload: { content: 'B acts.', type: 'user' },
+    }))
+
+    const err = await bError
+    expect(err.payload.code).toBe('DM_BUSY')
+    await aDone
+
+    // Exactly one Ollama POST despite two concurrent actions.
+    expect(ctx.mockOllama.getCallCount()).toBe(1)
+    a.ws.close()
+    b.ws.close()
+  })
+
+  it('DM_BUSY error is returned to the sender when phase is awaiting-dm', async () => {
+    // Hang the mock so the room stays in awaiting-dm; a second action from the
+    // SAME connection while busy must be rejected with DM_BUSY.
+    ctx.mockOllama = await startMockOllama({ hang: true })
+    process.env.OLLAMA_HOST = ctx.mockOllama.host
+    const { sessionId, roomCode } = freshIds()
+
+    const { ws, firstMessage } = await connectClient(ctx.wsBase, {
+      roomCode, sessionId, displayName: 'Alex', lastTurnSequence: 0,
+    })
+    expect(firstMessage.type).toBe('session:state')
+
+    // First action — kicks off the (hanging) DM call, room → awaiting-dm.
+    ws.send(JSON.stringify({
+      type: 'action', roomCode, payload: { content: 'First action.', type: 'user' },
+    }))
+    // Wait for the awaiting-dm phase broadcast so the room is provably busy.
+    await waitForMessage(ws, m => m.type === 'session:update' && m.payload.phase === 'awaiting-dm', 5000)
+
+    // Second action while busy — must come back DM_BUSY (not enqueued, no 2nd call).
+    const busy = waitForMessage(ws, m => m.type === 'error', 5000)
+    ws.send(JSON.stringify({
+      type: 'action', roomCode, payload: { content: 'Second action.', type: 'user' },
+    }))
+    const err = await busy
+    expect(err.payload.code).toBe('DM_BUSY')
+    expect(ctx.mockOllama.getCallCount()).toBe(1)
+    ws.close()
+  })
 })
 
 // ─── Phase 5 — Combat turn enforcement ────────────────────────────────────────
