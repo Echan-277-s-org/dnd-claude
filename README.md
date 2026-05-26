@@ -41,7 +41,7 @@ The project is named after my friend Dan, a longtime Dungeon Master. He's always
 | Requirement | Notes |
 |---|---|
 | **Node.js** | v18 or later recommended |
-| **Ollama** | Running locally at `http://localhost:11434` |
+| **Ollama** | Running locally at `http://localhost:11434`. Download: [Windows installer](https://ollama.com/download/OllamaSetup.exe) · [all platforms](https://ollama.com/download) |
 | **Model** | `qwen2.5:14b` pulled in Ollama (`ollama pull qwen2.5:14b`) |
 
 Ports used:
