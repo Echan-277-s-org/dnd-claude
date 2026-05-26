@@ -622,8 +622,16 @@ export default function Chat({
               <div className="mp-presence" aria-label="Connected players">
                 {presence.length > 0
                   ? presence.map(p => (
-                      <span key={p.displayName} className="mp-player-chip">
-                        {/* XSS safe: p.displayName is a React text node, never innerHTML */}
+                      <span
+                        key={p.displayName}
+                        className={`mp-player-chip mp-player-chip--${p.status === 'connected' ? 'connected' : 'disconnected'}`}
+                        title={p.status === 'connected' ? 'Connected' : 'Disconnected'}
+                      >
+                        {/* XSS safe: all strings are React text nodes, never innerHTML */}
+                        <span
+                          className="mp-status-dot"
+                          aria-hidden="true"
+                        />
                         {p.displayName}
                       </span>
                     ))

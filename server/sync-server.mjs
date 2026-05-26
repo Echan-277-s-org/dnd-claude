@@ -103,7 +103,7 @@ function sanitizeDisplayName(s) {
     .slice(0, 64)
 }
 
-export function createSyncServer({ sessionsDir = DEFAULT_DIR } = {}) {
+export function createSyncServer({ sessionsDir = DEFAULT_DIR, roomGcMs = 30 * 60 * 1000 } = {}) {
   // M4 — resolve a path-safe filename for an id, or null if it escapes the dir.
   function sessionPath(id) {
     if (!ID_RE.test(String(id ?? ''))) return null
@@ -620,10 +620,12 @@ export function createSyncServer({ sessionsDir = DEFAULT_DIR } = {}) {
   })
 
   // Build the presence array for a room from its current clients map.
+  // Phase 6: clients whose socket is not OPEN are shown as 'disconnected'
+  // (their entry remains in the map so presence history is preserved until GC).
   function presenceList(room) {
-    return Array.from(room.clients.values()).map(c => ({
+    return Array.from(room.clients.entries()).map(([ws, c]) => ({
       displayName: c.displayName,
-      status: 'connected',
+      status: ws.readyState === ws.OPEN ? 'connected' : 'disconnected',
     }))
   }
 
@@ -777,9 +779,17 @@ export function createSyncServer({ sessionsDir = DEFAULT_DIR } = {}) {
           actionQueue: Promise.resolve(), // Phase 2: per-room serialization queue
           dmBusy: false,                   // Phase 3: synchronous single-trigger gate
           lastDiceEvent: null,             // Phase 3: forged-verdict.roll guard
+          gcTimer: null,                   // Phase 6: orphaned-room GC timer
         })
       }
       const room = rooms.get(sessionId)
+
+      // Phase 6: any join (new or rejoin) cancels a pending orphaned-room GC.
+      if (room.gcTimer != null) {
+        clearTimeout(room.gcTimer)
+        room.gcTimer = null
+      }
+
       // Backfill campaign/sessionLog on a pre-existing room when the .md store has
       // them but the room (created by an earlier empty join) does not.
       if ((!room.campaign || Object.keys(room.campaign).length === 0) && stored?.campaign) {
@@ -793,6 +803,8 @@ export function createSyncServer({ sessionsDir = DEFAULT_DIR } = {}) {
 
       // NAME_TAKEN: check if displayName (trimmed, lowercased) is already bound
       // to an OPEN connection in this room (security item J).
+      // Phase 6 rejoin: a CLOSED socket with that name is NOT blocking — the slot
+      // is vacant. Only an OPEN connection with the same name blocks.
       const normalizedName = displayName.trim().toLowerCase()
       for (const [existingWs, info] of room.clients) {
         if (
@@ -805,6 +817,19 @@ export function createSyncServer({ sessionsDir = DEFAULT_DIR } = {}) {
             payload: { code: 'NAME_TAKEN', message: 'A player with that name is already connected' },
           }))
           return
+        }
+      }
+
+      // Phase 6 rejoin: if there is a CLOSED socket entry for this displayName,
+      // remove it so the rejoining client's new socket takes over the slot cleanly.
+      for (const [existingWs, info] of room.clients) {
+        if (
+          info.displayName.trim().toLowerCase() === normalizedName &&
+          existingWs.readyState !== existingWs.OPEN &&
+          existingWs !== ws
+        ) {
+          room.clients.delete(existingWs)
+          break
         }
       }
 
@@ -888,18 +913,41 @@ export function createSyncServer({ sessionsDir = DEFAULT_DIR } = {}) {
   }
 
   // ─── close handler ─────────────────────────────────────────────────────────
+  // Phase 6: keep the CLOSED socket entry in room.clients so presenceList() can
+  // show it as 'disconnected'. Broadcast the updated list to remaining OPEN clients.
+  // If ALL sockets are now closed, schedule orphaned-room GC after roomGcMs.
+  // The DM stream in progress (if any) is NOT affected — it runs inside withRoomLock
+  // and will broadcast dm:done + session:update to whoever is still OPEN when it ends.
   function handleClose(ws) {
-    for (const [sessionId, room] of rooms) {
+    for (const [, room] of rooms) {
       if (room.clients.has(ws)) {
-        room.clients.delete(ws)
-        // Broadcast updated presence to remaining clients.
-        if (room.clients.size > 0) {
-          broadcast(room, {
-            type: 'presence:update',
-            payload: presenceList(room),
-          })
+        // Do NOT delete the entry — keep it as 'disconnected' for presence display
+        // and for the NAME_TAKEN rejoin check (a CLOSED socket = vacant slot).
+
+        // Broadcast updated presence (shows the departed player as 'disconnected').
+        broadcast(room, {
+          type: 'presence:update',
+          payload: presenceList(room),
+        })
+
+        // If no OPEN connections remain, schedule orphaned-room GC.
+        const hasOpenClients = Array.from(room.clients.keys()).some(
+          cws => cws.readyState === cws.OPEN
+        )
+        if (!hasOpenClients && roomGcMs > 0) {
+          // Cancel any already-pending timer first (shouldn't happen, but safe).
+          if (room.gcTimer != null) clearTimeout(room.gcTimer)
+          room.gcTimer = setTimeout(() => {
+            // Only remove if no one rejoined in the meantime.
+            const stillNoOpen = Array.from(room.clients.keys()).every(
+              cws => cws.readyState !== cws.OPEN
+            )
+            if (stillNoOpen) {
+              rooms.delete(room.sessionId)
+            }
+          }, roomGcMs)
         }
-        // Optionally clean up empty rooms (keep them in-memory until Phase 6 GC).
+
         break
       }
     }
