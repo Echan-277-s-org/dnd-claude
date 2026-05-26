@@ -2,8 +2,9 @@ import { describe, it, expect } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import HistoryPanel from './HistoryPanel'
 
-// party param is optional (default undefined) to preserve backward-compat for all 14 existing tests.
-function renderPanel({ entities = [], sessionLog = [], isOpen = true, onToggle = () => {}, party = undefined } = {}) {
+// party and phase params are optional to preserve backward-compat for all existing tests.
+// phase defaults to undefined so the component's own default ('free-roam') applies.
+function renderPanel({ entities = [], sessionLog = [], isOpen = true, onToggle = () => {}, party = undefined, phase = undefined } = {}) {
   return render(
     <HistoryPanel
       entities={entities}
@@ -11,6 +12,7 @@ function renderPanel({ entities = [], sessionLog = [], isOpen = true, onToggle =
       isOpen={isOpen}
       onToggle={onToggle}
       party={party}
+      phase={phase}
     />
   )
 }
@@ -181,5 +183,43 @@ describe('HistoryPanel — party section (PH-01..06)', () => {
     const headers = Array.from(container.querySelectorAll('.panel-header'))
     const headerTexts = headers.map(h => h.textContent.trim())
     expect(headerTexts).not.toContain('Party')
+  })
+})
+
+// ─── Phase 5 — Combat turn indicator (appended, no existing tests modified) ──────
+
+const COMBAT_PARTY_5 = [
+  { id: 'id-aelis', name: 'Aelis', role: 'Ranger', hpPct: 80, isActive: true },
+  { id: 'id-borin', name: 'Borin', role: 'Cleric', hpPct: 50, isActive: false },
+]
+
+describe('HistoryPanel — Phase 5 combat turn indicator (HP5-01..05)', () => {
+  it('HP5-01 "Combat Turn" header is shown when phase is combat', () => {
+    renderPanel({ party: COMBAT_PARTY_5, phase: 'combat' })
+    expect(screen.getByText('Combat Turn')).toBeInTheDocument()
+  })
+
+  it('HP5-02 active player name appears in the combat turn section', () => {
+    renderPanel({ party: COMBAT_PARTY_5, phase: 'combat' })
+    // "Aelis is acting" text node
+    expect(screen.getByText(/Aelis is acting/)).toBeInTheDocument()
+  })
+
+  it('HP5-03 "Combat Turn" header is NOT shown in free-roam phase', () => {
+    renderPanel({ party: COMBAT_PARTY_5, phase: 'free-roam' })
+    expect(screen.queryByText('Combat Turn')).not.toBeInTheDocument()
+  })
+
+  it('HP5-04 "Combat Turn" header is NOT shown when phase prop is omitted (backward-compat)', () => {
+    renderPanel({ party: COMBAT_PARTY_5 })
+    expect(screen.queryByText('Combat Turn')).not.toBeInTheDocument()
+  })
+
+  it('HP5-05 shows "Resolving turn" fallback when no party member is active during combat', () => {
+    const noActive = [
+      { id: 'a', name: 'Aelis', role: 'Ranger', hpPct: 80, isActive: false },
+    ]
+    renderPanel({ party: noActive, phase: 'combat' })
+    expect(screen.getByText(/Resolving turn/)).toBeInTheDocument()
   })
 })

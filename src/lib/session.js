@@ -13,7 +13,60 @@
 // function of messages) and `pendingCheck` (session-only; surfaced as a prose
 // line by toMarkdown so an LLM still sees it, but never machine-restored in v1).
 
-export const SCHEMA_VERSION = 1
+// Bumped to 2 for multiplayer (Phase 0): adds optional v2 fields
+// (roomCode / phase / turnSequence). v1 payloads still load — deserializeSession
+// upgrades them with safe defaults — so the .md save/continue contract is preserved.
+export const SCHEMA_VERSION = 2
+
+// Phase enum. RESTING phases are the only values ever PERSISTED. The transient
+// operational phases ('awaiting-dm' / 'resolving') live only in the sync server's
+// in-memory room state; they are coerced to 'free-roam' on every serialize / .md
+// write (MC-4). The READ path is lenient (accepts all four) and clamps anything
+// else to 'free-roam'.
+export const RESTING_PHASES = ['free-roam', 'combat']
+const VALID_PHASES = ['free-roam', 'combat', 'awaiting-dm', 'resolving']
+
+// WRITE-path coercion — only resting phases are ever serialized / written to .md.
+function restingPhase(phase) {
+  return RESTING_PHASES.includes(phase) ? phase : 'free-roam'
+}
+// READ-path coercion — accept any valid phase; clamp a truly-invalid string.
+function readPhase(phase) {
+  return VALID_PHASES.includes(phase) ? phase : 'free-roam'
+}
+// Coerce to a finite integer turn counter, defaulting to 0.
+function readTurnSequence(n) {
+  return typeof n === 'number' && Number.isFinite(n) ? n : 0
+}
+
+// Derive a stable, human-readable room code from a sessionId (first 8 hex chars).
+// e.g. 'a1b2c3d4-e5f6-…' → 'dnd-a1b2c3d4'. 1:1 with sessionId; a display alias only
+// — the .md store and sessionPath() are ALWAYS keyed by the full sessionId (sec I).
+export function makeRoomCode(sessionId) {
+  return 'dnd-' + String(sessionId ?? '').replace(/-/g, '').slice(0, 8)
+}
+
+// Reconcile incoming LLM party data with existing IDs so React keys stay stable.
+// Matches by normalized (lowercased/trimmed) name. New members get a UUID.
+// Guards every field defensively; zero-member arrays must be rejected BEFORE calling.
+// Moved here from Chat.jsx (Phase 0) so the client AND the server-side DM proxy
+// share one implementation — no behavior change.
+export function applyPartyUpdate(rawArray, existing) {
+  const prev = Array.isArray(existing) ? existing : []
+  return (Array.isArray(rawArray) ? rawArray : []).map(raw => {
+    const normalizedName = String(raw?.name ?? '').trim().toLowerCase()
+    const found = prev.find(
+      e => String(e?.name ?? '').trim().toLowerCase() === normalizedName
+    )
+    return {
+      id: found?.id ?? crypto.randomUUID(),
+      name: String(raw?.name ?? '').trim() || 'Unknown',
+      role: String(raw?.role ?? '').trim() || '',
+      hpPct: Math.max(0, Math.min(100, Math.round(Number(raw?.hpPct) || 0))),
+      isActive: Boolean(raw?.isActive),
+    }
+  })
+}
 
 // Campaign fields that travel with a session. Anything outside this list
 // (e.g. transient UI flags) is intentionally dropped.
@@ -43,8 +96,14 @@ function pickCampaign(campaign) {
 
 // Build a payload from live app state. `savedAt` may be supplied (server-stamped)
 // or defaults to now. `sessionId` comes from the campaign (minted at setup).
-export function serializeSession(state, savedAt) {
-  const { campaign, messages, sessionLog, party } = state ?? {}
+// v2 fields (roomCode / phase / turnSequence) may be supplied either inside
+// `state` or via the third `opts` arg (opts wins). They are always carried in the
+// output so the HTTP PUT path can't silently strip them (MC-3). `phase` is
+// coerced to a resting phase on write (MC-4); transient phases never persist.
+export function serializeSession(state, savedAt, opts = {}) {
+  const s = state ?? {}
+  const o = opts ?? {}
+  const { campaign, messages, sessionLog, party } = s
   return {
     sessionId: campaign?.sessionId ?? null,
     schemaVersion: SCHEMA_VERSION,
@@ -53,6 +112,9 @@ export function serializeSession(state, savedAt) {
     messages: Array.isArray(messages) ? messages : [],
     sessionLog: Array.isArray(sessionLog) ? sessionLog : [],
     party: Array.isArray(party) ? party : [],
+    roomCode: o.roomCode ?? s.roomCode ?? null,
+    phase: restingPhase(o.phase ?? s.phase),
+    turnSequence: readTurnSequence(o.turnSequence ?? s.turnSequence),
   }
 }
 
@@ -68,7 +130,9 @@ export function deserializeSession(raw) {
     return null
   }
   if (!obj || typeof obj !== 'object') return null
-  if (obj.schemaVersion !== SCHEMA_VERSION) return null
+  // Accept v1 (upgraded to v2 with safe defaults) and native v2. Any other
+  // version → null (unchanged contract). v1 .md files therefore still load.
+  if (obj.schemaVersion !== 1 && obj.schemaVersion !== 2) return null
   return {
     sessionId: obj.sessionId ?? obj.campaign?.sessionId ?? null,
     schemaVersion: SCHEMA_VERSION,
@@ -77,6 +141,9 @@ export function deserializeSession(raw) {
     messages: Array.isArray(obj.messages) ? obj.messages : [],
     sessionLog: Array.isArray(obj.sessionLog) ? obj.sessionLog : [],
     party: Array.isArray(obj.party) ? obj.party : [],
+    roomCode: typeof obj.roomCode === 'string' ? obj.roomCode : null,
+    phase: readPhase(obj.phase),
+    turnSequence: readTurnSequence(obj.turnSequence),
   }
 }
 
@@ -167,6 +234,8 @@ export function toMarkdown(payload, pendingCheck) {
     `genre: ${c.genre ?? '—'}`,
     `model: ${c.model ?? '—'}`,
     `sessionId: ${p.sessionId ?? c.sessionId ?? '—'}`,
+    `phase: ${restingPhase(p.phase)}`,
+    `roomCode: ${p.roomCode ?? '—'}`,
   ].join(' · ')
 
   const notesRef = c.name
@@ -187,6 +256,9 @@ export function toMarkdown(payload, pendingCheck) {
       messages: p.messages ?? [],
       sessionLog: p.sessionLog ?? [],
       party: p.party ?? [],
+      roomCode: p.roomCode ?? null,
+      phase: restingPhase(p.phase),
+      turnSequence: readTurnSequence(p.turnSequence),
     },
     null,
     2

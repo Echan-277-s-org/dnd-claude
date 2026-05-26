@@ -2,8 +2,8 @@
 // extractEntities / trimContext) with the genre-specific UI strings so the app
 // can run as either a D&D or a Star Wars mode off a single `campaign.genre`.
 
-import * as dndEngine from './context'
-import * as starwarsEngine from './context.starwars'
+import * as dndEngine from './context.js'
+import * as starwarsEngine from './context.starwars.js'
 
 const dndCombat = ['attack', 'sword', 'enemy', 'creature', 'monster', 'fight', 'weapon', 'combat', 'battle', 'strike']
 const dndSocial = ['says', 'asks', 'merchant', 'guard', 'innkeeper', 'tavern', 'town', 'village', 'noble', 'coin', 'price']

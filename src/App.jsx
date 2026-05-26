@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import CampaignSetup from './components/ApiKeySetup'
 import Chat from './components/Chat'
 import { serializeSession } from './lib/session'
+import { makeRoomCode } from './lib/session'
 
 // Genre drives the visual theme — there is no independent theme toggle.
 const THEME_FOR_GENRE = { dnd: 'dnd', starwars: 'void' }
@@ -93,8 +94,34 @@ function loadSessionId() {
   return id
 }
 
+// Read ?room= from the current URL, if present. Safe across SSR/test environments.
+function readRoomParam() {
+  try {
+    const search =
+      typeof window !== 'undefined' ? window.location.search : ''
+    const params = new URLSearchParams(search)
+    const r = params.get('room')
+    return r && r.trim() ? r.trim() : null
+  } catch {
+    return null
+  }
+}
+
 export default function App() {
-  const [ready, setReady] = useState(() => !!localStorage.getItem('dnd_setup_done'))
+  // Phase 4: read ?room= once on mount — if present the user is joining an
+  // existing session. This does NOT auto-boot single-player (ready stays false
+  // until the join form is submitted or the user creates a new campaign).
+  // SINGLE-PLAYER DEFAULT: when there is NO ?room= the urlRoomCode is null and
+  // the entire multiplayer branch is dormant — byte-for-byte identical to before.
+  const [urlRoomCode] = useState(() => readRoomParam())
+
+  const [ready, setReady] = useState(() => {
+    // Do NOT auto-ready when a ?room= join is pending — the user must go through
+    // the join form (enter display name). Single-player auto-ready still applies
+    // when no ?room= is present.
+    if (readRoomParam()) return false
+    return !!localStorage.getItem('dnd_setup_done')
+  })
   const [campaign, setCampaign] = useState(() => ({
     genre: localStorage.getItem('dnd_genre') || 'dnd',
     name: localStorage.getItem('dnd_campaign_name') || '',
@@ -109,13 +136,18 @@ export default function App() {
   // Tracks the genre selected on the setup screen so the theme previews before "Begin".
   const [draftGenre, setDraftGenre] = useState(campaign.genre)
 
+  // Phase 4: multiplayer identity. Only set when the user actively joins or creates
+  // a room with a displayName. Null means single-player mode — no WS is opened.
+  const [roomCode, setRoomCode] = useState(null)
+  const [displayName, setDisplayName] = useState(null)
+
   // Reflect the active genre onto <html data-theme> so App.css theme blocks apply.
   useEffect(() => {
     const activeGenre = ready ? campaign.genre : draftGenre
     document.documentElement.dataset.theme = THEME_FOR_GENRE[activeGenre] || 'dnd'
   }, [ready, campaign.genre, draftGenre])
 
-  function handleSetup({ genre, name, details, model, context }) {
+  function handleSetup({ genre, name, details, model, context, displayName: dn }) {
     localStorage.setItem('dnd_setup_done', '1')
     localStorage.setItem('dnd_genre', genre)
     localStorage.setItem('dnd_campaign_name', name)
@@ -123,7 +155,40 @@ export default function App() {
     localStorage.setItem('dnd_model', model)
     localStorage.setItem('dnd_campaign_context', context)
     const sessionId = loadSessionId() // mint-or-reuse; stable across settings edits
+    const rc = makeRoomCode(sessionId)
     setCampaign({ genre, name, details, model, context, sessionId })
+    // Phase 4: if the host supplied a display name, enter multiplayer mode.
+    // Otherwise stay single-player (roomCode/displayName remain null → no WS opened).
+    if (dn && dn.trim()) {
+      setRoomCode(rc)
+      setDisplayName(dn.trim())
+    } else {
+      setRoomCode(null)
+      setDisplayName(null)
+    }
+    setReady(true)
+  }
+
+  // Phase 4: join an existing room by roomCode + displayName.
+  // The join screen resolves sessionId by querying GET /sessions and filtering by
+  // roomCode. If resolution fails the join form can fall back to passing null
+  // (the WS server will reject with invalid_room, surfaced to the user).
+  async function handleJoin({ roomCode: rc, displayName: dn, sessionId: sid }) {
+    // Use the resolved sessionId as the campaign's session identity.
+    const sessionId = sid || loadSessionId()
+    const restored = {
+      genre: localStorage.getItem('dnd_genre') || 'dnd',
+      name: localStorage.getItem('dnd_campaign_name') || '',
+      details: localStorage.getItem('dnd_campaign_details') || '',
+      model: localStorage.getItem('dnd_model') || 'qwen2.5:14b',
+      context: localStorage.getItem('dnd_campaign_context') || '',
+      sessionId,
+    }
+    localStorage.setItem('dnd_setup_done', '1')
+    localStorage.setItem('dnd_session_id', sessionId)
+    setCampaign(restored)
+    setRoomCode(rc)
+    setDisplayName(dn.trim())
     setReady(true)
   }
 
@@ -161,11 +226,16 @@ export default function App() {
     if (payload.party?.length) localStorage.setItem('dnd_party', JSON.stringify(payload.party))
     setCampaign(restored)
     if (payload.party?.length) setParty(payload.party)
+    // Restoring a .md always boots single-player (no displayName prompt here).
+    setRoomCode(null)
+    setDisplayName(null)
     setReady(true)
   }
 
   function handleReset() {
     localStorage.removeItem('dnd_setup_done')
+    setRoomCode(null)
+    setDisplayName(null)
     setReady(false)
   }
 
@@ -173,8 +243,10 @@ export default function App() {
     return (
       <CampaignSetup
         onSetup={handleSetup}
+        onJoin={handleJoin}
         onGenreChange={setDraftGenre}
         onRestoreSession={handleRestoreSession}
+        urlRoomCode={urlRoomCode}
       />
     )
   }
@@ -187,6 +259,8 @@ export default function App() {
       setCharacter={setCharacter}
       party={party}
       setParty={setParty}
+      roomCode={roomCode}
+      displayName={displayName}
     />
   )
 }

@@ -1,12 +1,14 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useCallback } from 'react'
 import DiceRoller from './DiceRoller'
 import HistoryPanel from './HistoryPanel'
 import CharacterPanel from './CharacterPanel'
 import PartyStrip from './PartyStrip'
 import DiceChip from './DiceChip'
 import { getGenre } from '../lib/genres'
-import { serializeSession, deserializeSession, getLanHost, toMarkdown, sessionFileName, markOrphanedDice } from '../lib/session'
+import { serializeSession, deserializeSession, getLanHost, toMarkdown, sessionFileName, markOrphanedDice, applyPartyUpdate, makeRoomCode } from '../lib/session'
 import { useSessionPersistence } from '../hooks/useSessionPersistence'
+import { useWebSocket } from '../hooks/useWebSocket'
+import { isActiveTurn } from '../lib/turnStateMachine.js'
 
 // Phase A: localStorage key for the persisted session payload (same shape that
 // Phase A2's .md and Phase B's sync server use — defined once in session.js).
@@ -41,24 +43,8 @@ function extractBlock(tag, text) {
   }
 }
 
-// Reconcile incoming LLM party data with existing IDs so React keys stay stable.
-// Matches by normalized (lowercased/trimmed) name. New members get a UUID.
-// Guards every field defensively; zero-member arrays must be rejected BEFORE calling.
-function applyPartyUpdate(rawArray, existing) {
-  return rawArray.map(raw => {
-    const normalizedName = String(raw.name ?? '').trim().toLowerCase()
-    const found = existing.find(
-      e => e.name.trim().toLowerCase() === normalizedName
-    )
-    return {
-      id: found?.id ?? crypto.randomUUID(),
-      name: String(raw.name ?? '').trim() || 'Unknown',
-      role: String(raw.role ?? '').trim() || '',
-      hpPct: Math.max(0, Math.min(100, Math.round(Number(raw.hpPct) || 0))),
-      isActive: Boolean(raw.isActive),
-    }
-  })
-}
+// `applyPartyUpdate` moved to src/lib/session.js (Phase 0) — imported above so the
+// client and the server-side DM proxy share one implementation.
 
 function parseMarkdown(text) {
   const escaped = text
@@ -87,7 +73,17 @@ function parseMarkdown(text) {
   return withDropcap || '<p></p>'
 }
 
-export default function Chat({ campaign, onReset, character, setCharacter, party, setParty }) {
+export default function Chat({
+  campaign,
+  onReset,
+  character,
+  setCharacter,
+  party,
+  setParty,
+  // Phase 4: multiplayer identity. Both null → single-player (no WS opened).
+  roomCode,
+  displayName,
+}) {
   const genre = getGenre(campaign.genre)
   const { buildSystemPrompt, extractEntities, trimContext } = genre.engine
   // Phase A: hydrate messages + sessionLog from the persisted payload so a
@@ -114,11 +110,174 @@ export default function Chat({ campaign, onReset, character, setCharacter, party
   // hazard). It self-heals: the DM re-emits a ```check block on the next turn.
   const [pendingCheck, setPendingCheck] = useState(null)
 
+  // Phase 4: multiplayer presence — list of { displayName, status } from server.
+  const [presence, setPresence] = useState([])
+
+  // Phase 5: server-authoritative phase ('free-roam' | 'combat' | 'awaiting-dm' | 'resolving').
+  // Driven by session:update and session:state events from the server.
+  // Single-player: stays 'free-roam' (never updated via WS).
+  const [serverPhase, setServerPhase] = useState('free-roam')
+
+  // ─── Multiplayer mode predicate (§3.7, MC-5) ────────────────────────────────
+  // MULTIPLAYER iff the WebSocket is OPEN *and* the server has confirmed the room
+  // is joined (first session:state received). `roomJoined` is set true only on
+  // the first session:state event; reset on WS close or onNewSession.
+  // SINGLE-PLAYER DEFAULT: when roomCode or displayName is null the WS is never
+  // mounted (useWebSocket is called conditionally only when both are set),
+  // wsState stays CLOSED, and roomJoinedRef stays false → isMultiplayerMode() === false.
+  const wsReadyStateRef = useRef(WebSocket.CLOSED)
+  const roomJoinedRef = useRef(false)
+  function isMultiplayerMode() {
+    return wsReadyStateRef.current === WebSocket.OPEN && roomJoinedRef.current === true
+  }
+
+  // ─── Multiplayer WS message handler ─────────────────────────────────────────
+  // Called by useWebSocket for every inbound message. Routes events to the correct
+  // state setters. All MP strings are applied as React state (text nodes in render)
+  // — never via dangerouslySetInnerHTML.
+  const handleWsMessage = useCallback(({ type, payload }) => {
+    try {
+      if (type === 'session:update') {
+        // Incremental server broadcast: route through the dual-authority adopt
+        // gate in useSessionPersistence (turnSequence OR savedAt check, MC-6).
+        // onSessionUpdateRef is wired after both hooks mount (below).
+        onSessionUpdateRef.current?.(payload)
+        // Phase 5: track server phase for combat HUD + input gating.
+        if (payload?.phase) {
+          setServerPhase(payload.phase)
+        }
+        // If the server phase returns to a resting phase, loading is done.
+        if (payload?.phase && payload.phase !== 'awaiting-dm' && payload.phase !== 'resolving') {
+          setIsLoading(false)
+        }
+      } else if (type === 'dm:delta') {
+        // Streaming DM chunk: accumulate into the assistant message by assistantId.
+        const { delta, assistantId } = payload ?? {}
+        if (typeof delta === 'string' && delta && assistantId) {
+          setIsLoading(true)
+          setMessages(prev => {
+            // Find the message by assistantId or the last assistant message being built.
+            const idx = prev.findIndex(m => m.id === assistantId)
+            if (idx !== -1) {
+              const updated = [...prev]
+              const current = updated[idx]
+              const newContent = (current.content || '') + delta
+              updated[idx] = { ...current, content: stripStructuredBlocks(newContent) }
+              return updated
+            }
+            // Message not yet added — append a new streaming assistant message.
+            return [...prev, { role: 'assistant', content: stripStructuredBlocks(delta), id: assistantId }]
+          })
+        }
+      } else if (type === 'dm:done') {
+        // DM stream complete. Apply structured blocks from fullText, finalize loading.
+        const { fullText, error, partial } = payload ?? {}
+        const text = fullText || partial || ''
+        if (error) {
+          // Show error on the last assistant message.
+          setMessages(prev => {
+            const last = [...prev].reverse().find(m => m.role === 'assistant')
+            if (!last) return prev
+            return prev.map(m =>
+              m.id === last.id
+                ? { ...m, content: `*The DM's voice fades into silence...*\n\n**Error:** The DM encountered an error.`, error: true }
+                : m
+            )
+          })
+        } else {
+          // Apply structured blocks from the full text.
+          applyStructuredBlocks(text)
+        }
+        setIsLoading(false)
+      } else if (type === 'presence:update') {
+        // Update presence list (array of { displayName, status }).
+        // All displayName strings are stored in state and rendered as React text nodes.
+        if (Array.isArray(payload)) {
+          setPresence(payload)
+        }
+      } else if (type === 'error') {
+        // Server-sent error (DM_BUSY, NOT_YOUR_TURN, etc.). Show feedback.
+        // Input is re-enabled by the subsequent session:update phase change.
+        const code = payload?.code
+        if (code === 'DM_BUSY') {
+          // DM is busy — user tried to send while a turn was in progress.
+          // isLoading stays true; the server will send session:update when done.
+        }
+        // Other errors (NAME_TAKEN, RATE_LIMITED) are surfaced in the server's join
+        // flow — they arrive before roomJoined is set so they don't reach here in practice.
+      }
+    } catch {
+      // Never let a WS message handler crash the component.
+    }
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ─── Multiplayer session:state handler ──────────────────────────────────────
+  // Wired to useWebSocket's onSessionState. Called on join/rejoin with the full
+  // server snapshot. Sets roomJoined=true (flips isMultiplayerMode to true).
+  const handleSessionState = useCallback((payload) => {
+    try {
+      roomJoinedRef.current = true
+      wsReadyStateRef.current = WebSocket.OPEN
+      // Apply the full snapshot (messages, party) via the session persistence hook.
+      onSessionStateRef.current?.(payload)
+      // Phase 5: restore server phase from session:state (MC-7 sentinel reset).
+      if (payload?.phase) {
+        setServerPhase(payload.phase)
+      }
+      // Also update local presence if the snapshot contains connections.
+      // (presence:update follows immediately from the server anyway)
+    } catch {
+      // defensive
+    }
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Refs so handleWsMessage can call session persistence callbacks without
+  // stale closures or circular dependency (the WS handler is created before
+  // the persistence hook runs, so we wire via refs updated after both mount).
+  const onSessionStateRef = useRef(null)
+  const onSessionUpdateRef = useRef(null)
+
+  // Phase 4: `isMultiplayer` is true only when both roomCode and displayName are
+  // set (the user actively joined or hosted a room). When false (single-player
+  // default), `enabled=false` is passed to useWebSocket so it is a complete noop:
+  // no WebSocket object is ever created, readyState stays CLOSED.
+  // ABSOLUTE CONSTRAINT: single-player default — no WS opened, isMultiplayerMode()
+  // always false — is enforced by enabled=false alone. The hook is ALWAYS called
+  // (hooks must not be conditional), but it does nothing when disabled.
+  const isMultiplayer = !!(roomCode && displayName)
+
+  const { readyState: wsReadyState, send: wsSend, shouldPoll } = useWebSocket({
+    roomCode: roomCode ?? '',
+    sessionId: campaign.sessionId,
+    displayName: displayName ?? '',
+    onMessage: handleWsMessage,
+    onSessionState: handleSessionState,
+    enabled: isMultiplayer,
+  })
+
+  // Keep wsReadyStateRef in sync with the hook's readyState so isMultiplayerMode()
+  // always reflects the actual socket state.
+  useEffect(() => {
+    wsReadyStateRef.current = wsReadyState
+    if (wsReadyState !== WebSocket.OPEN) {
+      // On close/disconnect, reset roomJoined so isMultiplayerMode() flips false
+      // synchronously — the mode boundary invariant (§3.7).
+      roomJoinedRef.current = false
+    }
+  }, [wsReadyState])
+
   // Phase B: LAN sync layer (server-authoritative when reachable; silent no-op
   // when the sync server is down — localStorage above remains the offline mirror).
-  const { onNewSession } = useSessionPersistence({
+  const { onNewSession, onSessionState, onSessionUpdate } = useSessionPersistence({
     campaign, messages, setMessages, sessionLog, setSessionLog, party, setParty, isLoading,
+    socketConnected: isMultiplayer && wsReadyState === WebSocket.OPEN,
   })
+
+  // Wire the session persistence callbacks to the WS handler via refs so the
+  // WS message handler can call them without circular dependency.
+  onSessionStateRef.current = onSessionState
+  onSessionUpdateRef.current = onSessionUpdate
+
   const messagesEndRef = useRef(null)
   const textareaRef = useRef(null)
 
@@ -164,9 +323,68 @@ export default function Chat({ campaign, onReset, character, setCharacter, party
 
   const systemPrompt = buildSystemPrompt(campaign)
 
+  // ─── Post-stream structured-block apply ─────────────────────────────────────
+  // Shared by both the single-player finally block and the multiplayer dm:done handler.
+  function applyStructuredBlocks(fullText) {
+    // 1. party — always applied when present and non-empty
+    const partyRaw = extractBlock('party', fullText)
+    if (partyRaw && Array.isArray(partyRaw) && partyRaw.length > 0) {
+      setParty(prev => {
+        const next = applyPartyUpdate(partyRaw, prev)
+        localStorage.setItem('dnd_party', JSON.stringify(next))
+        return next
+      })
+    }
+
+    // 2. check — store as pendingCheck; cleared when roll is sent to LLM
+    const checkRaw = extractBlock('check', fullText)
+    if (checkRaw?.skill && checkRaw?.dc != null) {
+      setPendingCheck({
+        skill: String(checkRaw.skill).toUpperCase(),
+        dc: Number(checkRaw.dc),
+      })
+    }
+
+    // 3. verdict — find the most-recent dice message with no verdict and upgrade it
+    const verdictRaw = extractBlock('verdict', fullText)
+    if (verdictRaw?.result === 'PASS' || verdictRaw?.result === 'FAIL') {
+      setMessages(prev => {
+        const idx = [...prev]
+          .map((m, i) => ({ m, i }))
+          .reverse()
+          .find(({ m }) => m.role === 'dice' && m.verdict == null && !m.orphaned)?.i
+        if (idx == null) return prev
+        return prev.map((m, i) =>
+          i === idx
+            ? { ...m, check: verdictRaw.skill, verdict: verdictRaw.result }
+            : m
+        )
+      })
+    }
+  }
+
   async function sendMessage(text) {
     const trimmed = text.trim()
     if (!trimmed || isLoading) return
+
+    // ─── Multiplayer branch (§3.2 / §3.7) — LIVE in Phase 4 ────────────────────
+    // In multiplayer mode the client NEVER calls Ollama directly. It sends the
+    // action over the WebSocket; the server runs the single DM trigger and drives
+    // isLoading + message accumulation via dm:delta / dm:done broadcasts.
+    // isMultiplayerMode() is true only after the first session:state — see §3.7.
+    if (isMultiplayerMode()) {
+      const rc = roomCode || campaign.roomCode
+      wsSend({
+        type: 'action',
+        roomCode: rc,
+        payload: { content: trimmed, type: 'user', pendingCheck: pendingCheck ?? null },
+        // displayName intentionally omitted — server uses connection-bound identity.
+      })
+      setInput('')
+      // No local isLoading toggle / Ollama fetch here — dm:delta/dm:done from the
+      // server drive loading + accumulation uniformly across all clients.
+      return
+    }
 
     const userMsg = { role: 'user', content: trimmed }
     // Find index of the most recent dice message so we can fold pendingCheck into it.
@@ -284,42 +502,7 @@ export default function Chat({ campaign, onReset, character, setCharacter, party
       // ── Post-stream structured-block apply (all three tags, in order) ──────
       // fullText holds the raw LLM output including any structured fences.
       // Each extractBlock call is defensive: returns null on missing/malformed.
-
-      // 1. party — always applied when present and non-empty
-      const partyRaw = extractBlock('party', fullText)
-      if (partyRaw && Array.isArray(partyRaw) && partyRaw.length > 0) {
-        setParty(prev => {
-          const next = applyPartyUpdate(partyRaw, prev)
-          localStorage.setItem('dnd_party', JSON.stringify(next))
-          return next
-        })
-      }
-
-      // 2. check — store as pendingCheck; cleared when roll is sent to LLM
-      const checkRaw = extractBlock('check', fullText)
-      if (checkRaw?.skill && checkRaw?.dc != null) {
-        setPendingCheck({
-          skill: String(checkRaw.skill).toUpperCase(),
-          dc: Number(checkRaw.dc),
-        })
-      }
-
-      // 3. verdict — find the most-recent dice message with no verdict and upgrade it
-      const verdictRaw = extractBlock('verdict', fullText)
-      if (verdictRaw?.result === 'PASS' || verdictRaw?.result === 'FAIL') {
-        setMessages(prev => {
-          const idx = [...prev]
-            .map((m, i) => ({ m, i }))
-            .reverse()
-            .find(({ m }) => m.role === 'dice' && m.verdict == null && !m.orphaned)?.i
-          if (idx == null) return prev
-          return prev.map((m, i) =>
-            i === idx
-              ? { ...m, check: verdictRaw.skill, verdict: verdictRaw.result }
-              : m
-          )
-        })
-      }
+      applyStructuredBlocks(fullText)
 
       // Update entities after streaming completes
       setMessages(prev => {
@@ -368,6 +551,10 @@ export default function Chat({ campaign, onReset, character, setCharacter, party
     }
   }
 
+  // Phase 4: derive the computed room code for sharing (host display).
+  // The room code shown is the one passed from App, or derived from sessionId.
+  const sharedRoomCode = roomCode || makeRoomCode(campaign.sessionId)
+
   // Find last assistant message index for action suggestions
   const lastAssistantIndex = (() => {
     for (let i = messages.length - 1; i >= 0; i--) {
@@ -378,6 +565,28 @@ export default function Chat({ campaign, onReset, character, setCharacter, party
 
   // Phase C: derive active member from LLM-owned party state (desktop turn-pill)
   const activeMember = party.find(m => m.isActive) ?? party[0]
+
+  // Phase 5: combat turn gating.
+  // myDisplayName is the connection-bound identity; it drives the turn check.
+  // Single-player: isMultiplayer is false → myTurn stays true (input always enabled).
+  // Multiplayer free-roam: phase !== 'combat' → myTurn is true.
+  // Multiplayer combat: myTurn is true only if this player's name matches isActive member.
+  const myDisplayName = isMultiplayer ? (displayName ?? '') : ''
+  const myTurn = !isMultiplayer || serverPhase !== 'combat' || isActiveTurn(myDisplayName, party)
+
+  // Input is disabled when:
+  //   (a) local isLoading (streaming in progress — both single-player and MP)
+  //   (b) multiplayer phase is awaiting-dm / resolving (whole-room lock)
+  //   (c) multiplayer combat and it's not this player's turn
+  const inputBusy = isLoading ||
+    (isMultiplayer && (serverPhase === 'awaiting-dm' || serverPhase === 'resolving'))
+  const inputDisabled = inputBusy || (isMultiplayer && !myTurn)
+
+  // Placeholder text: shows the active player's name when it's not our turn in combat.
+  const activeName = party.find(m => m.isActive)?.name ?? ''
+  const inputPlaceholder = isMultiplayer && serverPhase === 'combat' && !myTurn
+    ? `Waiting for ${activeName}'s action…`
+    : genre.inputPlaceholder
 
   return (
     <div
@@ -393,6 +602,7 @@ export default function Chat({ campaign, onReset, character, setCharacter, party
         isOpen={showHistory}
         onToggle={() => setShowHistory(s => !s)}
         party={party}
+        phase={serverPhase}
       />
 
       <div className="chat-container">
@@ -407,6 +617,34 @@ export default function Chat({ campaign, onReset, character, setCharacter, party
             </div>
           </div>
           <div className="header-actions">
+            {/* Phase 4: multiplayer presence pill — shown when in multiplayer mode */}
+            {isMultiplayer && (
+              <div className="mp-presence" aria-label="Connected players">
+                {presence.length > 0
+                  ? presence.map(p => (
+                      <span
+                        key={p.displayName}
+                        className={`mp-player-chip mp-player-chip--${p.status === 'connected' ? 'connected' : 'disconnected'}`}
+                        title={p.status === 'connected' ? 'Connected' : 'Disconnected'}
+                      >
+                        {/* XSS safe: all strings are React text nodes, never innerHTML */}
+                        <span
+                          className="mp-status-dot"
+                          aria-hidden="true"
+                        />
+                        {p.displayName}
+                      </span>
+                    ))
+                  : null}
+              </div>
+            )}
+            {/* Phase 4: room code sharing affordance (shown when multiplayer) */}
+            {isMultiplayer && (
+              <div className="room-code-display" title="Share this room code with other players">
+                <span className="room-code-label">Room: </span>
+                <span className="room-code-value">{sharedRoomCode}</span>
+              </div>
+            )}
             {/* Phase C: turn-pill — desktop-only (hidden on mobile via CSS) */}
             {activeMember && (
               <div className="turn-pill" aria-label={`${activeMember.name}'s turn`}>
@@ -453,7 +691,8 @@ export default function Chat({ campaign, onReset, character, setCharacter, party
         </header>
 
         {/* Phase B: mobile-only party strip — visibility controlled by CSS media query */}
-        <PartyStrip party={party} />
+        {/* Phase 5: pass phase so PartyStrip can dim inactive cells in combat */}
+        <PartyStrip party={party} phase={serverPhase} />
 
         {showDice && <DiceRoller onRoll={handleDiceRoll} />}
 
@@ -463,6 +702,12 @@ export default function Chat({ campaign, onReset, character, setCharacter, party
               <div className="empty-emblem">{genre.emptyEmblem}</div>
               <h2>{genre.emptyTitle}</h2>
               <p>{genre.emptySubtitle}</p>
+              {/* Phase 4: show room code in the empty state when multiplayer */}
+              {isMultiplayer && (
+                <p className="mp-share-hint">
+                  Share room code <strong>{sharedRoomCode}</strong> with your players.
+                </p>
+              )}
               <div className="starter-prompts">
                 {genre.starterPrompts.map(prompt => (
                   <button key={prompt} className="starter-btn" onClick={() => sendMessage(prompt)}>
@@ -490,10 +735,14 @@ export default function Chat({ campaign, onReset, character, setCharacter, party
             }
 
             if (msg.role === 'user') {
+              // Phase 4: player messages are labeled with the sender's displayName
+              // when available. The label is rendered as a React text node — never
+              // dangerouslySetInnerHTML (XSS guard, security item B).
+              const senderLabel = msg.senderName || (displayName && isMultiplayer ? displayName : 'Player')
               return (
                 <div key={i} className="message player-message">
                   <div className="message-header">
-                    <span className="message-label">Player</span>
+                    <span className="message-label">{senderLabel}</span>
                     <span className="message-avatar">⚔</span>
                   </div>
                   <div className="message-bubble">{msg.content}</div>
@@ -558,14 +807,14 @@ export default function Chat({ campaign, onReset, character, setCharacter, party
             value={input}
             onChange={e => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder={genre.inputPlaceholder}
+            placeholder={inputPlaceholder}
             rows={1}
-            disabled={isLoading}
+            disabled={inputDisabled}
           />
           <button
             className="send-btn"
             onClick={() => sendMessage(input)}
-            disabled={!input.trim() || isLoading}
+            disabled={!input.trim() || inputDisabled}
             title="Send (Enter)"
           >
             ➤
