@@ -8,6 +8,7 @@ import { getGenre } from '../lib/genres'
 import { serializeSession, deserializeSession, getLanHost, toMarkdown, sessionFileName, markOrphanedDice, applyPartyUpdate, makeRoomCode } from '../lib/session'
 import { useSessionPersistence } from '../hooks/useSessionPersistence'
 import { useWebSocket } from '../hooks/useWebSocket'
+import { isActiveTurn } from '../lib/turnStateMachine.js'
 
 // Phase A: localStorage key for the persisted session payload (same shape that
 // Phase A2's .md and Phase B's sync server use — defined once in session.js).
@@ -112,6 +113,11 @@ export default function Chat({
   // Phase 4: multiplayer presence — list of { displayName, status } from server.
   const [presence, setPresence] = useState([])
 
+  // Phase 5: server-authoritative phase ('free-roam' | 'combat' | 'awaiting-dm' | 'resolving').
+  // Driven by session:update and session:state events from the server.
+  // Single-player: stays 'free-roam' (never updated via WS).
+  const [serverPhase, setServerPhase] = useState('free-roam')
+
   // ─── Multiplayer mode predicate (§3.7, MC-5) ────────────────────────────────
   // MULTIPLAYER iff the WebSocket is OPEN *and* the server has confirmed the room
   // is joined (first session:state received). `roomJoined` is set true only on
@@ -136,6 +142,10 @@ export default function Chat({
         // gate in useSessionPersistence (turnSequence OR savedAt check, MC-6).
         // onSessionUpdateRef is wired after both hooks mount (below).
         onSessionUpdateRef.current?.(payload)
+        // Phase 5: track server phase for combat HUD + input gating.
+        if (payload?.phase) {
+          setServerPhase(payload.phase)
+        }
         // If the server phase returns to a resting phase, loading is done.
         if (payload?.phase && payload.phase !== 'awaiting-dm' && payload.phase !== 'resolving') {
           setIsLoading(false)
@@ -210,6 +220,10 @@ export default function Chat({
       wsReadyStateRef.current = WebSocket.OPEN
       // Apply the full snapshot (messages, party) via the session persistence hook.
       onSessionStateRef.current?.(payload)
+      // Phase 5: restore server phase from session:state (MC-7 sentinel reset).
+      if (payload?.phase) {
+        setServerPhase(payload.phase)
+      }
       // Also update local presence if the snapshot contains connections.
       // (presence:update follows immediately from the server anyway)
     } catch {
@@ -552,6 +566,28 @@ export default function Chat({
   // Phase C: derive active member from LLM-owned party state (desktop turn-pill)
   const activeMember = party.find(m => m.isActive) ?? party[0]
 
+  // Phase 5: combat turn gating.
+  // myDisplayName is the connection-bound identity; it drives the turn check.
+  // Single-player: isMultiplayer is false → myTurn stays true (input always enabled).
+  // Multiplayer free-roam: phase !== 'combat' → myTurn is true.
+  // Multiplayer combat: myTurn is true only if this player's name matches isActive member.
+  const myDisplayName = isMultiplayer ? (displayName ?? '') : ''
+  const myTurn = !isMultiplayer || serverPhase !== 'combat' || isActiveTurn(myDisplayName, party)
+
+  // Input is disabled when:
+  //   (a) local isLoading (streaming in progress — both single-player and MP)
+  //   (b) multiplayer phase is awaiting-dm / resolving (whole-room lock)
+  //   (c) multiplayer combat and it's not this player's turn
+  const inputBusy = isLoading ||
+    (isMultiplayer && (serverPhase === 'awaiting-dm' || serverPhase === 'resolving'))
+  const inputDisabled = inputBusy || (isMultiplayer && !myTurn)
+
+  // Placeholder text: shows the active player's name when it's not our turn in combat.
+  const activeName = party.find(m => m.isActive)?.name ?? ''
+  const inputPlaceholder = isMultiplayer && serverPhase === 'combat' && !myTurn
+    ? `Waiting for ${activeName}'s action…`
+    : genre.inputPlaceholder
+
   return (
     <div
       className="app-layout"
@@ -566,6 +602,7 @@ export default function Chat({
         isOpen={showHistory}
         onToggle={() => setShowHistory(s => !s)}
         party={party}
+        phase={serverPhase}
       />
 
       <div className="chat-container">
@@ -646,7 +683,8 @@ export default function Chat({
         </header>
 
         {/* Phase B: mobile-only party strip — visibility controlled by CSS media query */}
-        <PartyStrip party={party} />
+        {/* Phase 5: pass phase so PartyStrip can dim inactive cells in combat */}
+        <PartyStrip party={party} phase={serverPhase} />
 
         {showDice && <DiceRoller onRoll={handleDiceRoll} />}
 
@@ -761,14 +799,14 @@ export default function Chat({
             value={input}
             onChange={e => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder={genre.inputPlaceholder}
+            placeholder={inputPlaceholder}
             rows={1}
-            disabled={isLoading}
+            disabled={inputDisabled}
           />
           <button
             className="send-btn"
             onClick={() => sendMessage(input)}
-            disabled={!input.trim() || isLoading}
+            disabled={!input.trim() || inputDisabled}
             title="Send (Enter)"
           >
             ➤

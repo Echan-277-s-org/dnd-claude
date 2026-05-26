@@ -1,8 +1,12 @@
 // HistoryPanel — left sidebar (desktop).
 // party prop is optional with a safe default ([]) so existing tests that
 // render without the prop continue to pass unchanged (backward-compatible).
+// Phase 5: phase prop is optional (default 'free-roam'); when 'combat', renders
+// a turn-order indicator showing who is currently active.
 
-export default function HistoryPanel({ entities, sessionLog, isOpen, onToggle, party = [] }) {
+export default function HistoryPanel({ entities, sessionLog, isOpen, onToggle, party = [], phase = 'free-roam' }) {
+  const isCombat = phase === 'combat'
+  const activePartyMember = isCombat ? (party.find(m => m.isActive) ?? null) : null
   return (
     <aside className={`history-panel ${isOpen ? 'history-panel--open' : ''}`}>
       {/* Toggle tab */}
@@ -41,6 +45,28 @@ export default function HistoryPanel({ entities, sessionLog, isOpen, onToggle, p
             ))
           )}
         </div>
+
+        {/* Phase 5: Combat turn-order indicator — shown only during combat phase */}
+        {isCombat && (
+          <div className="history-combat-section">
+            <div className="panel-header" style={{ marginTop: '20px', marginBottom: '8px' }}>
+              Combat Turn
+            </div>
+            <div className="history-combat-active">
+              {activePartyMember
+                ? (
+                  <span className="history-combat-active-name">
+                    {/* Active player name rendered as text node — never innerHTML (XSS guard B) */}
+                    {activePartyMember.name} is acting
+                  </span>
+                )
+                : (
+                  <span className="history-combat-active-name">Resolving turn…</span>
+                )
+              }
+            </div>
+          </div>
+        )}
 
         {/* Party sub-section — at-a-glance HP for all members (README:170) */}
         {party.length > 0 && (

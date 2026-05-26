@@ -31,6 +31,7 @@ import { randomUUID } from 'node:crypto'
 import { WebSocketServer } from 'ws'
 import { toMarkdown, fromMarkdown, serializeSession, applyPartyUpdate } from '../src/lib/session.js'
 import { getGenre } from '../src/lib/genres.js'
+import { isActiveTurn } from '../src/lib/turnStateMachine.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const DEFAULT_DIR = path.resolve(__dirname, 'sessions')
@@ -318,6 +319,20 @@ export function createSyncServer({ sessionsDir = DEFAULT_DIR } = {}) {
       }
 
       const conn = room.clients.get(ws)
+
+      // ── (0) Phase 5: combat turn enforcement (MULTIPLAYER-ARCHITECTURE.md §4.4) ──
+      // If the room is in combat, only the connection-bound active player may act.
+      // Connection-bound displayName from room.clients.get(ws) — never from payload
+      // (security item C: per-message displayName is ignored for authorization).
+      // This check fires BEFORE the DM_BUSY gate so a non-active player gets the
+      // correct NOT_YOUR_TURN error (not DM_BUSY) even when the room is resting.
+      if (room.phase === 'combat') {
+        const connectionDisplayName = room.clients.get(ws)?.displayName ?? ''
+        if (!isActiveTurn(connectionDisplayName, room.party ?? [])) {
+          ws.send(JSON.stringify({ type: 'error', payload: { code: 'NOT_YOUR_TURN' } }))
+          return
+        }
+      }
 
       // ── (1) Per-connection rate limit + DM-busy gate (sec G) ──────────────────
       // Reject (do NOT enqueue) when: this connection already has an action in

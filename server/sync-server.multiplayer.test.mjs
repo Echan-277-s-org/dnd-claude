@@ -891,13 +891,330 @@ describe('Phase 4 — MC-9 latency smoke: cross-client session:update < 2000ms',
 
 // ─── Phase 5 — Combat turn enforcement ────────────────────────────────────────
 
-describe.skip('Phase 5 — NOT_YOUR_TURN and active-player enforcement', () => {
-  it('active player action is accepted in combat phase', () => {})
-  it('non-active player action is rejected with NOT_YOUR_TURN', () => {})
-  it('any player action is rejected with DM_BUSY in awaiting-dm phase', () => {})
-  it('after dm:done with all isActive=false, all players can act (free-roam restored)', () => {})
-  it('turnSequence advances by exactly 1 per completed DM turn', () => {})
-  it('two clients acting within 10ms in free-roam: exactly one succeeds, one gets DM_BUSY', () => {})
+describe('Phase 5 — NOT_YOUR_TURN and active-player enforcement', () => {
+  let ctx
+  let prevOllamaHost
+
+  // Unique session IDs per-test to avoid cross-test room state collisions.
+  let p5seq = 0
+  function freshIds() {
+    p5seq += 1
+    const hex = String(p5seq).padStart(8, '0')
+    return { sessionId: `${hex}-0000-0000-0000-000000000500`, roomCode: `dnd-p5${hex}` }
+  }
+
+  // Start a mock Ollama that emits a party block putting `activePlayerName`
+  // into isActive:true. Returns the mock so the test can swap it out.
+  async function startCombatOllama(activePlayerName) {
+    const partyBlock = JSON.stringify([
+      { name: activePlayerName, role: 'Fighter', hpPct: 90, isActive: true },
+      { name: 'Wren', role: 'Rogue', hpPct: 80, isActive: false },
+    ])
+    return startMockOllama({
+      chunks: [
+        'Combat begins! ',
+        `\n\`\`\`party\n${partyBlock}\n\`\`\``,
+      ],
+    })
+  }
+
+  // Start a mock Ollama that returns all-inactive party (→ free-roam).
+  async function startFreeRoamOllama() {
+    const partyBlock = JSON.stringify([
+      { name: 'Theron', role: 'Fighter', hpPct: 90, isActive: false },
+      { name: 'Wren', role: 'Rogue', hpPct: 80, isActive: false },
+    ])
+    return startMockOllama({
+      chunks: [
+        'Peace restored. ',
+        `\n\`\`\`party\n${partyBlock}\n\`\`\``,
+      ],
+    })
+  }
+
+  // Cleanly swap the mock Ollama within a test. Destroys the old one and
+  // returns the new one (already set in ctx.mockOllama and OLLAMA_HOST).
+  async function swapMock(newMock) {
+    if (ctx.mockOllama) {
+      ctx.mockOllama.destroy()
+      await new Promise(r => ctx.mockOllama.server.close(r))
+    }
+    ctx.mockOllama = newMock
+    process.env.OLLAMA_HOST = newMock.host
+  }
+
+  // Track open clients so we can force-terminate them in afterEach.
+  // A test that fails mid-stream leaves live WS connections that block server.close().
+  const openClients = new Set()
+
+  async function p5Connect(wsBase, joinPayload) {
+    const result = await connectClient(wsBase, joinPayload)
+    openClients.add(result.ws)
+    return result
+  }
+
+  beforeEach(async () => {
+    prevOllamaHost = process.env.OLLAMA_HOST
+    ctx = await startTestServer()
+    openClients.clear()
+  })
+  afterEach(async () => {
+    // Force-terminate any clients the test left open (avoids server.close() stall).
+    for (const ws of openClients) {
+      try { ws.terminate() } catch { /* already gone */ }
+    }
+    openClients.clear()
+    if (prevOllamaHost === undefined) delete process.env.OLLAMA_HOST
+    else process.env.OLLAMA_HOST = prevOllamaHost
+    // closeAllConnections() (Node 18.2+) forcibly kills open keep-alive sockets.
+    if (typeof ctx.server.closeAllConnections === 'function') {
+      ctx.server.closeAllConnections()
+    }
+    await new Promise(r => ctx.server.close(r))
+    if (ctx.mockOllama) {
+      try { ctx.mockOllama.destroy() } catch { /* already destroyed */ }
+      await new Promise(r => ctx.mockOllama.server.close(r)).catch(() => {})
+    }
+    await cleanupDir(ctx.dir)
+  }, 15000)
+
+  it('active player action is accepted in combat phase', async () => {
+    // Strategy: only Theron joins the room (no Wren, keeps it simple). Theron acts
+    // once with the combat mock → room enters combat with Theron as active player.
+    // Then Theron acts again → should be accepted (not NOT_YOUR_TURN) → dm:done fires.
+    await swapMock(await startCombatOllama('Theron'))
+    const { sessionId, roomCode } = freshIds()
+
+    const theron = await p5Connect(ctx.wsBase, {
+      roomCode, sessionId, displayName: 'Theron', lastTurnSequence: 0,
+    })
+    expect(theron.firstMessage.type).toBe('session:state')
+
+    // Step 1: Trigger a free-roam action.
+    // Listen for dm:done THEN the final session:update (which carries phase:combat).
+    const done1 = waitForMessage(theron.ws, m => m.type === 'dm:done', 10000)
+    const combat1 = waitForMessage(
+      theron.ws,
+      m => m.type === 'session:update' && m.payload.phase === 'combat',
+      10000
+    )
+    theron.ws.send(JSON.stringify({
+      type: 'action', roomCode, payload: { content: 'Attack!', type: 'user' },
+    }))
+    await done1   // wait for dm:done first
+    await combat1 // then wait for the combat session:update (already queued or arriving next)
+
+    // Step 2: swap to a simple mock (no party block → phase computed from unchanged party).
+    await swapMock(await startMockOllama({ chunks: ['Theron strikes!'] }))
+
+    // Step 3: Wait min-interval, then Theron acts in combat — should be ACCEPTED.
+    await new Promise(r => setTimeout(r, 600))
+    const done2 = waitForMessage(theron.ws, m => m.type === 'dm:done', 10000)
+    theron.ws.send(JSON.stringify({
+      type: 'action', roomCode, payload: { content: 'I strike the goblin.', type: 'user' },
+    }))
+    const result = await done2
+    // dm:done with no error → action was accepted (not NOT_YOUR_TURN).
+    expect(result.payload.error).toBeUndefined()
+
+    theron.ws.close()
+  }, 30000)
+
+  it('non-active player action is rejected with NOT_YOUR_TURN', async () => {
+    // Get the room into combat with Theron as the active player.
+    await swapMock(await startCombatOllama('Theron'))
+    const { sessionId, roomCode } = freshIds()
+
+    const theron = await p5Connect(ctx.wsBase, {
+      roomCode, sessionId, displayName: 'Theron', lastTurnSequence: 0,
+    })
+    const wren = await p5Connect(ctx.wsBase, {
+      roomCode, sessionId, displayName: 'Wren', lastTurnSequence: 0,
+    })
+
+    // Set up listener before sending.
+    const combatPhasePromise = waitForMessage(
+      wren.ws,
+      m => m.type === 'session:update' && m.payload.phase === 'combat',
+      10000
+    )
+    theron.ws.send(JSON.stringify({
+      type: 'action', roomCode, payload: { content: 'Start combat!', type: 'user' },
+    }))
+    await combatPhasePromise
+
+    // Wren (NOT the active player) tries to act — must be rejected with NOT_YOUR_TURN.
+    const notYourTurn = waitForMessage(wren.ws, m => m.type === 'error', 3000)
+    wren.ws.send(JSON.stringify({
+      type: 'action', roomCode, payload: { content: 'I also attack!', type: 'user' },
+    }))
+    const err = await notYourTurn
+    expect(err.type).toBe('error')
+    expect(err.payload.code).toBe('NOT_YOUR_TURN')
+
+    theron.ws.close()
+    wren.ws.close()
+  }, 20000)
+
+  it('any player action is rejected with DM_BUSY in awaiting-dm phase', async () => {
+    // Hang mock: the room gets stuck in awaiting-dm.
+    await swapMock(await startMockOllama({ hang: true }))
+    const { sessionId, roomCode } = freshIds()
+
+    const theron = await p5Connect(ctx.wsBase, {
+      roomCode, sessionId, displayName: 'Theron', lastTurnSequence: 0,
+    })
+    const wren = await p5Connect(ctx.wsBase, {
+      roomCode, sessionId, displayName: 'Wren', lastTurnSequence: 0,
+    })
+
+    // Set up listener before sending.
+    const awaitingDmPromise = waitForMessage(
+      theron.ws,
+      m => m.type === 'session:update' && m.payload.phase === 'awaiting-dm',
+      5000
+    )
+    theron.ws.send(JSON.stringify({
+      type: 'action', roomCode, payload: { content: 'First.', type: 'user' },
+    }))
+    await awaitingDmPromise
+
+    // Wren tries to act while the room is awaiting-dm → DM_BUSY.
+    const wrenError = waitForMessage(wren.ws, m => m.type === 'error', 3000)
+    wren.ws.send(JSON.stringify({
+      type: 'action', roomCode, payload: { content: 'Wren acts.', type: 'user' },
+    }))
+    const err = await wrenError
+    expect(err.payload.code).toBe('DM_BUSY')
+
+    theron.ws.close()
+    wren.ws.close()
+  }, 15000)
+
+  it('after dm:done with all isActive=false, all players can act (free-roam restored)', async () => {
+    // Step 1: Emit a party block with all isActive:false → free-roam.
+    await swapMock(await startFreeRoamOllama())
+    const { sessionId, roomCode } = freshIds()
+
+    const theron = await p5Connect(ctx.wsBase, {
+      roomCode, sessionId, displayName: 'Theron', lastTurnSequence: 0,
+    })
+    const wren = await p5Connect(ctx.wsBase, {
+      roomCode, sessionId, displayName: 'Wren', lastTurnSequence: 0,
+    })
+
+    // Theron fires the first action; mock returns free-roam party.
+    const freeRoamPromise = waitForMessage(
+      wren.ws,
+      m => m.type === 'session:update' && m.payload.phase === 'free-roam',
+      10000
+    )
+    theron.ws.send(JSON.stringify({
+      type: 'action', roomCode, payload: { content: 'Peace.', type: 'user' },
+    }))
+    await freeRoamPromise
+
+    // Step 2: swap to a fresh mock for Wren's turn.
+    await swapMock(await startMockOllama({ chunks: ['Wren acts freely.'] }))
+
+    // Wren acts — should be accepted (free-roam, no turn restriction).
+    const done2 = waitForMessage(wren.ws, m => m.type === 'dm:done', 10000)
+    wren.ws.send(JSON.stringify({
+      type: 'action', roomCode, payload: { content: 'Wren acts freely.', type: 'user' },
+    }))
+    const result = await done2
+    expect(result.payload.error).toBeUndefined()
+
+    theron.ws.close()
+    wren.ws.close()
+  }, 30000)
+
+  it('turnSequence advances by exactly 1 per completed DM turn', async () => {
+    await swapMock(await startMockOllama({ chunks: ['Turn done.'] }))
+    const { sessionId, roomCode } = freshIds()
+
+    const { ws, firstMessage } = await p5Connect(ctx.wsBase, {
+      roomCode, sessionId, displayName: 'Alex', lastTurnSequence: 0,
+    })
+    const initialSeq = firstMessage.payload.turnSequence
+
+    // First turn.
+    const done1 = waitForMessage(ws, m => m.type === 'dm:done', 10000)
+    ws.send(JSON.stringify({
+      type: 'action', roomCode, payload: { content: 'Turn 1.', type: 'user' },
+    }))
+    const d1 = await done1
+    expect(d1.payload.turnSequence).toBe(initialSeq + 1)
+
+    // Swap mock for the second turn.
+    await swapMock(await startMockOllama({ chunks: ['Turn 2 done.'] }))
+
+    // Wait for the ACTION_MIN_INTERVAL_MS (500ms) to pass before acting again.
+    await new Promise(r => setTimeout(r, 600))
+
+    const done2 = waitForMessage(ws, m => m.type === 'dm:done', 10000)
+    ws.send(JSON.stringify({
+      type: 'action', roomCode, payload: { content: 'Turn 2.', type: 'user' },
+    }))
+    const d2 = await done2
+    expect(d2.payload.turnSequence).toBe(initialSeq + 2)
+
+    ws.close()
+  }, 20000)
+
+  it('two clients acting within ~10ms in free-roam: exactly one succeeds, one gets DM_BUSY', async () => {
+    await swapMock(await startMockOllama({ chunks: ['One DM reply.'] }))
+    const { sessionId, roomCode } = freshIds()
+
+    const a = await p5Connect(ctx.wsBase, {
+      roomCode, sessionId, displayName: 'Alpha', lastTurnSequence: 0,
+    })
+    const b = await p5Connect(ctx.wsBase, {
+      roomCode, sessionId, displayName: 'Beta', lastTurnSequence: 0,
+    })
+
+    // Set up listeners BEFORE sending both actions in the same tick.
+    const aError = waitForMessage(a.ws, m => m.type === 'error', 5000)
+    const bError = waitForMessage(b.ws, m => m.type === 'error', 5000)
+    const aDone = waitForMessage(a.ws, m => m.type === 'dm:done', 10000)
+    const bDone = waitForMessage(b.ws, m => m.type === 'dm:done', 10000)
+
+    // Fire both in the same synchronous tick.
+    a.ws.send(JSON.stringify({
+      type: 'action', roomCode, payload: { content: 'A acts.', type: 'user' },
+    }))
+    b.ws.send(JSON.stringify({
+      type: 'action', roomCode, payload: { content: 'B acts.', type: 'user' },
+    }))
+
+    // One of {a,b} gets DM_BUSY; the other gets dm:done.
+    // Collect whichever error or done arrives first.
+    const firstOutcome = await Promise.race([
+      aError.then(e => ({ who: 'a', type: 'error', code: e.payload.code })),
+      bError.then(e => ({ who: 'b', type: 'error', code: e.payload.code })),
+      aDone.then(d => ({ who: 'a', type: 'done', seq: d.payload.turnSequence })),
+      bDone.then(d => ({ who: 'b', type: 'done', seq: d.payload.turnSequence })),
+    ])
+
+    if (firstOutcome.type === 'error') {
+      // The first resolved was a DM_BUSY — valid.
+      expect(firstOutcome.code).toBe('DM_BUSY')
+      // The other connection should get dm:done.
+      const otherDone = firstOutcome.who === 'a' ? bDone : aDone
+      await otherDone
+    } else {
+      // The first resolved was dm:done. The other should get DM_BUSY.
+      const otherError = firstOutcome.who === 'a' ? bError : aError
+      const err = await otherError
+      expect(err.payload.code).toBe('DM_BUSY')
+    }
+
+    // Exactly one Ollama POST fired despite two concurrent actions.
+    expect(ctx.mockOllama.getCallCount()).toBe(1)
+
+    a.ws.close()
+    b.ws.close()
+  }, 20000)
 })
 
 // ─── Phase 6 — Presence, disconnect, rejoin ────────────────────────────────────

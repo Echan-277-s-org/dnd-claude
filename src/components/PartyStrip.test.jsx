@@ -172,3 +172,49 @@ describe('PartyStrip — stable keys, no console.error key warning (PB-16)', () 
     expect(keyWarnings.length).toBe(0)
   })
 })
+
+// ─── Phase 5 — Combat phase highlighting (appended, no existing tests modified) ──
+
+describe('PartyStrip — Phase 5 combat phase highlighting', () => {
+  const COMBAT_PARTY = [
+    { id: 'id-aelis', name: 'Aelis', role: 'Ranger', hpPct: 80, isActive: true },
+    { id: 'id-borin', name: 'Borin', role: 'Cleric', hpPct: 50, isActive: false },
+  ]
+
+  it('PS5-01 inactive cells get --dimmed class when phase is combat', () => {
+    const { container } = render(<PartyStrip party={COMBAT_PARTY} phase="combat" />)
+    const dimmedCells = container.querySelectorAll('.party-strip-cell--dimmed')
+    expect(dimmedCells.length).toBe(1)
+    expect(dimmedCells[0].textContent).toContain('Borin')
+  })
+
+  it('PS5-02 active cell does NOT get --dimmed class in combat', () => {
+    const { container } = render(<PartyStrip party={COMBAT_PARTY} phase="combat" />)
+    const activeCells = container.querySelectorAll('.party-strip-cell--active')
+    expect(activeCells.length).toBe(1)
+    expect(activeCells[0].classList).not.toContain('party-strip-cell--dimmed')
+  })
+
+  it('PS5-03 no --dimmed classes in free-roam phase (default)', () => {
+    const { container } = render(<PartyStrip party={COMBAT_PARTY} phase="free-roam" />)
+    const dimmedCells = container.querySelectorAll('.party-strip-cell--dimmed')
+    expect(dimmedCells.length).toBe(0)
+  })
+
+  it('PS5-04 no --dimmed classes when phase prop is omitted (backward-compat default)', () => {
+    const { container } = render(<PartyStrip party={COMBAT_PARTY} />)
+    const dimmedCells = container.querySelectorAll('.party-strip-cell--dimmed')
+    expect(dimmedCells.length).toBe(0)
+  })
+
+  it('PS5-05 all cells non-dimmed when all members inactive in combat (edge case)', () => {
+    const allInactive = [
+      { id: 'a', name: 'A', role: 'F', hpPct: 80, isActive: false },
+      { id: 'b', name: 'B', role: 'C', hpPct: 50, isActive: false },
+    ]
+    const { container } = render(<PartyStrip party={allInactive} phase="combat" />)
+    // All inactive → all get dimmed (none can skip)
+    const dimmedCells = container.querySelectorAll('.party-strip-cell--dimmed')
+    expect(dimmedCells.length).toBe(2)
+  })
+})

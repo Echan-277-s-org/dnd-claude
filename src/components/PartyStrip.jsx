@@ -4,14 +4,23 @@
 // Rendered in Chat.jsx immediately after <header> inside .chat-container;
 // visibility is controlled by the .party-strip CSS (hidden by default,
 // display:grid inside @media (max-width:768px)).
+//
+// Phase 5: accepts an optional `phase` prop. In combat phase, the active cell is
+// highlighted (--active class already exists) and inactive cells receive the
+// --dimmed modifier so the current combatant stands out visually.
 
-export default function PartyStrip({ party = [] }) {
+export default function PartyStrip({ party = [], phase = 'free-roam' }) {
+  const isCombat = phase === 'combat'
   return (
     <div className="party-strip" aria-label="Party status">
       {party.map(member => (
         <div
           key={member.id}
-          className={`party-strip-cell${member.isActive ? ' party-strip-cell--active' : ''}`}
+          className={[
+            'party-strip-cell',
+            member.isActive ? 'party-strip-cell--active' : '',
+            isCombat && !member.isActive ? 'party-strip-cell--dimmed' : '',
+          ].filter(Boolean).join(' ')}
           aria-current={member.isActive ? 'true' : undefined}
         >
           <div className="party-strip-top">
