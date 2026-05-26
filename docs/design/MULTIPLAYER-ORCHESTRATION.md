@@ -5,7 +5,9 @@
 > handoff contracts defined here. The orchestrator does NOT write feature code and does NOT spawn
 > agents — this plan is the script the coordinator follows literally.
 >
-> **Status:** DESIGN-ARC, not started. No production feature code until the §4 user-approval gate clears.
+> **Status:** DESIGN-ARC complete; **GATE G1 PASSED** (user-approved 2026-05-25). V1 is unblocked but
+> **on hold** at the user's explicit "pause before coding" instruction — no production feature code until
+> the user sequences the V1 phases (§3.1 D2 Phases 0–7).
 
 ---
 
@@ -233,8 +235,8 @@ DONE before the row may start.
 | D3b | `security-auditor` | `MULTIPLAYER-SECURITY-REVIEW.md` | **DONE — 10 findings A–J, all block-G1** | D2 architecture (parallel to D3) |
 | G2-fold | `game-developer` | `MULTIPLAYER-ARCHITECTURE.md` (revised) | **DONE — MC-1…MC-9 + A–J folded in (see "Revision log (post-review)")** | D3 + D3b |
 | G2-refresh | `qa-expert` + `test-automator` + `chaos-engineer` (PARALLEL) | `MULTIPLAYER-QA-PLAN.md` / `-TEST-AUTOMATION.md` / `-CHAOS-PLAN.md` (refreshed) | **DONE — all three carry a `Post-revision refresh (G2)` section (QG-12/13/14 + MC-8; MC-1…MC-7 + sec D/F/G/H skeletons, ~417 CI tests; EX-3C/EX-MC5/EX-2b/EX-6b)** | G2-fold |
-| **G1** | **User** | — (approval) | NOT STARTED | D3 verdict + D3b + 3 test-readiness artifacts refreshed (G2-refresh DONE) |
-| V1 | code agents (coordinator routes per CLAUDE.md: `react-specialist` for `Chat.jsx`/client, `websocket-engineer` for transport, `backend-developer` for the server, `llm-architect` for the single-DM-trigger) | implementation | NOT STARTED | **G1 cleared** + D2 phased build plan |
+| **G1** | **User** | — (approval) | **PASSED — user-approved 2026-05-25, with an explicit "pause before coding" instruction** | D3 verdict + D3b + 3 test-readiness artifacts refreshed (G2-refresh DONE) |
+| V1 | code agents (coordinator routes per CLAUDE.md: `react-specialist` for `Chat.jsx`/client, `websocket-engineer` for transport, `backend-developer` for the server, `llm-architect` for the single-DM-trigger) | implementation | NOT STARTED — unblocked (G1 cleared) but **on hold** pending the user's V1 phase-sequencing decision; follows the §3.1 D2 phased build plan (Phases 0–7) | **G1 cleared** + D2 phased build plan |
 | V2-qa | `qa-expert` | (executes `MULTIPLAYER-QA-PLAN.md`) | NOT STARTED | V1 |
 | V2-test | `test-automator` | (implements + runs suites in CI) | NOT STARTED | V1 |
 | V2-chaos | `chaos-engineer` | (runs `MULTIPLAYER-CHAOS-PLAN.md` experiments) | NOT STARTED | V1 |
@@ -260,5 +262,7 @@ DONE before the row may start.
   **G2-refresh** loop above (**DONE**). It is a lighter-weight variant of the §2 "loop on REVISE" rule:
   no D2 re-run and no D3 re-review (the verdict already cleared as APPROVE-WITH-CHANGES) — only the three
   plans realign to the folded architecture. With G2-refresh **DONE**, G1's blocks-on (D3 verdict + D3b +
-  3 refreshed test-readiness artifacts) is now satisfied and **G1 is reachable** — but it remains
-  **NOT STARTED** as the hard user-approval pause. **No V1 code begins until the user clears G1.**
+  3 refreshed test-readiness artifacts) was satisfied and **G1 PASSED** — the user approved the reviewed,
+  test-ready design on **2026-05-25**, but with an explicit **"pause before coding"** instruction. V1 is
+  therefore **unblocked but on hold**: the user will sequence the V1 phases (the §3.1 D2 Phases 0–7) before
+  any production feature code is written. **No V1 code begins until the user issues that phase-sequencing go.**
