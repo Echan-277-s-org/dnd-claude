@@ -140,13 +140,23 @@ function normalizeSyncedCharacter(raw) {
   }
 }
 
+// Reserved JS prototype keys. Assigning one of these as a property key on an
+// ordinary object mutates the prototype chain instead of adding an own property.
+// CHANGE 2c: pickCharacters skips these keys so a malicious .md/PUT body with a
+// '__proto__' key cannot pollute Object.prototype. The output uses a null-prototype
+// object for the same reason (JSON.stringify serializes it correctly).
+const RESERVED_CHAR_KEYS = new Set(['__proto__', 'constructor', 'prototype'])
+
 // Normalize the characters map from a raw payload.
 // Returns {} when absent/invalid; otherwise maps each entry through
 // normalizeSyncedCharacter (dropping any entries that come back null).
 function pickCharacters(raw) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {}
-  const out = {}
+  // Null-prototype object: assignment of a reserved key is always a plain own-property.
+  const out = Object.create(null)
   for (const [key, val] of Object.entries(raw)) {
+    // Skip reserved prototype-polluting keys.
+    if (RESERVED_CHAR_KEYS.has(String(key).toLowerCase())) continue
     const norm = normalizeSyncedCharacter(val)
     if (norm) out[key] = norm
   }

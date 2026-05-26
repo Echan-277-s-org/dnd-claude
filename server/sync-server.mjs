@@ -94,13 +94,22 @@ function buildAllowedOrigins() {
 }
 
 // ─── displayName sanitization (security item B) ───────────────────────────────
+// CHANGE 2a: After sanitizing, reject names that are reserved JS prototype keys.
+// A player named '__proto__' would cause room.characters['__proto__'] = … to
+// reassign Object.prototype instead of adding an own property — the entry would
+// silently vanish from snapshots and re-run on every rejoin. Returning '' causes
+// the join handler to reject with 'invalid_name'.
+const RESERVED_KEYS = new Set(['__proto__', 'constructor', 'prototype'])
 function sanitizeDisplayName(s) {
-  return String(s ?? '')
+  const sanitized = String(s ?? '')
     .trim()
     .replace(/[<>&"']/g, '')
     // Strip Unicode control characters (category Cc)
     .replace(/\p{Cc}/gu, '')
     .slice(0, 64)
+  // Reject reserved prototype-polluting identifiers (case-insensitive).
+  if (RESERVED_KEYS.has(sanitized.toLowerCase())) return ''
+  return sanitized
 }
 
 // ─── Character sanitization (Phase 1 — security item for join handler) ────────
@@ -270,6 +279,22 @@ export function createSyncServer({ sessionsDir = DEFAULT_DIR, roomGcMs = 30 * 60
         return
       }
       const savedAt = new Date().toISOString() // server-stamped (clock-skew safe)
+      // CHANGE 1 (M1): sanitize every character in the PUT body through sanitizeCharacter
+      // so the HTTP PUT path enforces the same bounds as the WS join path (strip injection
+      // chars, cap string lengths, clamp abilities, range-check ac/hpMax).
+      // Skip reserved prototype keys (__proto__/constructor/prototype) to prevent pollution.
+      // When body.characters is absent, pass undefined so serializeSession/pickCharacters
+      // yields {} as before (no fabrication).
+      let sanitizedCharacters
+      if (body.characters != null && typeof body.characters === 'object' && !Array.isArray(body.characters)) {
+        sanitizedCharacters = {}
+        for (const [key, val] of Object.entries(body.characters)) {
+          if (RESERVED_KEYS.has(String(key).toLowerCase())) continue
+          sanitizedCharacters[key] = sanitizeCharacter(val)
+        }
+      }
+      // undefined when body.characters absent → serializeSession/pickCharacters produces {}
+
       const payload = serializeSession(
         {
           // sessionId is taken from the path (already validated), never trusted from body.
@@ -283,9 +308,8 @@ export function createSyncServer({ sessionsDir = DEFAULT_DIR, roomGcMs = 30 * 60
           roomCode: body.roomCode ?? null,
           phase: body.phase,
           turnSequence: body.turnSequence,
-          // D-02: forward v3 characters map — pickCharacters(undefined) was returning {}
-          // and silently stripping all player character data on every HTTP PUT.
-          characters: body.characters,
+          // M1: forward sanitized v3 characters map.
+          characters: sanitizedCharacters,
         },
         savedAt
       )
@@ -497,7 +521,14 @@ export function createSyncServer({ sessionsDir = DEFAULT_DIR, roomGcMs = 30 * 60
 
           // (3b) Build the user message; record a server-side dice event so a forged
           // verdict.roll (one not matching the real roll) can be discarded later.
-          const userMsg = { role: 'user', content, id: randomUUID() }
+          // CHANGE 4: stamp senderName so every client (and .md reload) knows who spoke.
+          // The field is set from the server-bound conn.displayName (never from payload).
+          const userMsg = {
+            role: 'user',
+            content,
+            id: randomUUID(),
+            senderName: conn?.displayName ?? null,
+          }
           if (actionType === 'dice') {
             const parsed = parseDiceContent(payload?.content) ?? {
               die: payload?.die ?? null,
@@ -530,16 +561,38 @@ export function createSyncServer({ sessionsDir = DEFAULT_DIR, roomGcMs = 30 * 60
             return -1
           })()
 
+          // CHANGE 5: prefix user messages with the speaker name so the DM knows who is
+          // speaking in multi-player sessions. Applied ONLY to the Ollama prompt, NOT to
+          // the stored room.messages content (which must stay clean).
+          //
+          // INVARIANT: when NO message has a senderName (single-player-style room), the
+          // assembled prompt is byte-identical to the pre-change shape. The prefix is
+          // guarded on senderName presence so this always holds.
+          // Dice-derived prompt lines ([Dice roll: …]) are never prefixed — they have no sender.
+          const hasSender = !!conn?.displayName
+          const prefixContent = (senderName, rawContent) =>
+            senderName ? `${senderName}: ${rawContent}` : rawContent
+
           const apiMessages = engine.trimContext([
             ...baseMessages.map((m, i) => {
-              if (m.role !== 'dice') return m
-              const checkCtx =
-                i === lastDiceIdx && pendingCheck
-                  ? ` | pending check: ${pendingCheck.skill} DC ${pendingCheck.dc}`
-                  : ''
-              return { role: 'user', content: `[Dice roll: ${m.die} → ${m.result}${checkCtx}]` }
+              if (m.role === 'dice') {
+                const checkCtx =
+                  i === lastDiceIdx && pendingCheck
+                    ? ` | pending check: ${pendingCheck.skill} DC ${pendingCheck.dc}`
+                    : ''
+                return { role: 'user', content: `[Dice roll: ${m.die} → ${m.result}${checkCtx}]` }
+              }
+              // For historical user messages: prefix when they carry senderName.
+              // Messages without senderName (legacy / single-player-origin) pass through unchanged.
+              if (m.role === 'user' && m.senderName) {
+                return { ...m, content: prefixContent(m.senderName, m.content) }
+              }
+              return m
             }),
-            userMsg,
+            // Prefix the new action with the current speaker (guarded: no-op when no displayName).
+            hasSender
+              ? { ...userMsg, content: prefixContent(conn.displayName, content) }
+              : userMsg,
           ])
 
           // (3d) Validate the model against the allowlist (sec H).
@@ -610,12 +663,31 @@ export function createSyncServer({ sessionsDir = DEFAULT_DIR, roomGcMs = 30 * 60
           room.messages = [...baseMessages, userMsg]
 
           // verdict — discard a forged roll that doesn't match the server's record.
+          // CHANGE 3 (L2): tighter forgery check with two invariants:
+          //   (a) A verdict that carries a `roll` field but has NO corresponding
+          //       server-recorded dice event (room.lastDiceEvent === null) is forged —
+          //       there is nothing to validate it against, so it is always rejected.
+          //   (a') A dice event recorded on an EARLIER turn (left uncleared because that
+          //       turn produced no verdict) is stale: a verdict may only validate against
+          //       a roll recorded in the CURRENT turn. lastDiceEvent.turnSequence is
+          //       stamped (step 3b) with the pre-increment room.turnSequence, which still
+          //       equals room.turnSequence here (the counter is bumped further below), so
+          //       a current-turn roll matches and any prior-turn roll does not.
+          //   (b) After verdict resolution (applied or rejected), clear lastDiceEvent
+          //       so a later turn's verdict cannot reuse a stale dice-event record.
+          //       Recording for the NEXT turn happens in step 3b (start of action),
+          //       so clearing here at end-of-verdict is safe.
           const verdictRaw = extractBlock('verdict', fullText)
           if (verdictRaw?.result === 'PASS' || verdictRaw?.result === 'FAIL') {
             const forged =
-              verdictRaw.roll != null &&
-              room.lastDiceEvent &&
-              verdictRaw.roll !== room.lastDiceEvent.result
+              verdictRaw.roll != null && (
+                // (a) No dice event recorded for this turn → always forged.
+                !room.lastDiceEvent ||
+                // (a') Dice event is from a prior turn (stale) → forged.
+                room.lastDiceEvent.turnSequence !== (room.turnSequence ?? 0) ||
+                // Original check: roll mismatch against the recorded dice result.
+                verdictRaw.roll !== room.lastDiceEvent.result
+              )
             if (!forged) {
               // Resolve the most-recent unresolved, non-orphaned dice message.
               const idx = [...room.messages]
@@ -630,6 +702,10 @@ export function createSyncServer({ sessionsDir = DEFAULT_DIR, roomGcMs = 30 * 60
                 )
               }
             }
+            // (b) Clear the dice event record after verdict resolution so it cannot be
+            // reused by a subsequent turn's verdict. The next action will re-record if
+            // a dice roll occurs (step 3b above).
+            room.lastDiceEvent = null
           }
 
           // party — apply when present and non-empty.
@@ -877,9 +953,16 @@ export function createSyncServer({ sessionsDir = DEFAULT_DIR, roomGcMs = 30 * 60
           // Phase 2 (mp-character-sync): per-player static character map.
           // Keyed by displayName; populated on join from joinCharacter. Restored
           // from .md on first join when stored?.characters is present.
-          characters: stored?.characters && typeof stored.characters === 'object'
-            ? { ...stored.characters }
-            : {},
+          // CHANGE 2b: use a null-prototype object so assignment of a reserved key
+          // (__proto__/constructor/prototype) is a plain own-property write, never
+          // a prototype mutation. Spread into { ...room.characters } for snapshots
+          // still serializes correctly (JSON.stringify handles null-proto objects).
+          characters: Object.assign(
+            Object.create(null),
+            stored?.characters && typeof stored.characters === 'object'
+              ? stored.characters
+              : {}
+          ),
           actionQueue: Promise.resolve(), // Phase 2: per-room serialization queue
           dmBusy: false,                   // Phase 3: synchronous single-trigger gate
           lastDiceEvent: null,             // Phase 3: forged-verdict.roll guard
@@ -953,7 +1036,9 @@ export function createSyncServer({ sessionsDir = DEFAULT_DIR, roomGcMs = 30 * 60
         room.characters[displayName] = sanitizeCharacter(joinCharacter ?? null)
       }
       // room.characters is now guaranteed to be initialized (set on room creation).
-      if (!room.characters) room.characters = {}
+      // Use a null-prototype map for the fallback too, so a reserved key could never
+      // pollute even if this defensive branch ever runs (consistency with creation).
+      if (!room.characters) room.characters = Object.create(null)
 
       // Build the snapshot payload. Use stored data when available; fall back to
       // safe defaults so the first join creates an empty room without writing a .md.

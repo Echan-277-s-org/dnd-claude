@@ -1011,6 +1011,81 @@ describe('Phase 6 (G-C2 + import flow) — extractCharacterFromPayload on v1/v2 
   })
 })
 
+// ─── CHANGE 2c (M2) — pickCharacters / deserializeSession: proto-pollution guard ─
+describe('M2 — pickCharacters/deserializeSession skips reserved prototype keys', () => {
+  it('deserializeSession with a __proto__ key in characters does not pollute Object.prototype', () => {
+    const before = Object.prototype.toString
+    const raw = {
+      schemaVersion: 3,
+      sessionId: 'test-proto-guard',
+      savedAt: '2026-01-01T00:00:00.000Z',
+      campaign: { name: 'Test', genre: 'dnd', sessionId: 'test-proto-guard' },
+      messages: [],
+      sessionLog: [],
+      party: [],
+      characters: {
+        // A key that would pollute Object.prototype on an ordinary object.
+        __proto__: { name: 'Evil', race: 'Human', charClass: 'Fighter',
+          abilities: { STR: 10, DEX: 10, CON: 10, INT: 10, WIS: 10, CHA: 10 }, ac: 10, hpMax: 10 },
+        Alex: { name: 'Alex', race: 'Human', charClass: 'Fighter',
+          abilities: { STR: 10, DEX: 10, CON: 10, INT: 10, WIS: 10, CHA: 10 }, ac: 10, hpMax: 10 },
+      },
+    }
+    const result = deserializeSession(raw)
+    // Object.prototype must not be polluted.
+    expect(Object.prototype.toString).toBe(before)
+    expect(result).not.toBeNull()
+    // The reserved key must be dropped.
+    expect(result.characters).not.toHaveProperty('__proto__')
+    // The valid key must be kept.
+    expect(result.characters).toHaveProperty('Alex')
+  })
+
+  it('deserializeSession with a "constructor" key in characters drops it', () => {
+    const raw = {
+      schemaVersion: 3,
+      sessionId: 'test-constructor-guard',
+      savedAt: '2026-01-01T00:00:00.000Z',
+      campaign: { name: 'Test', genre: 'dnd', sessionId: 'test-constructor-guard' },
+      messages: [],
+      sessionLog: [],
+      party: [],
+      characters: {
+        constructor: { name: 'Hack', race: 'Human', charClass: 'Fighter',
+          abilities: { STR: 10, DEX: 10, CON: 10, INT: 10, WIS: 10, CHA: 10 }, ac: 10, hpMax: 10 },
+        Beth: { name: 'Beth', race: 'Elf', charClass: 'Ranger',
+          abilities: { STR: 10, DEX: 14, CON: 12, INT: 12, WIS: 14, CHA: 10 }, ac: 14, hpMax: 35 },
+      },
+    }
+    const result = deserializeSession(raw)
+    expect(result.characters).not.toHaveProperty('constructor')
+    expect(result.characters).toHaveProperty('Beth')
+    expect(result.characters.Beth.charClass).toBe('Ranger')
+  })
+
+  it('serializeSession with a __proto__ key in characters drops it on round-trip', () => {
+    // Ensures that even a client that somehow has __proto__ in its characters state
+    // cannot persist it through the serialize/deserialize cycle.
+    const state = {
+      campaign: { name: 'Test', genre: 'dnd', sessionId: 'proto-rt-test' },
+      messages: [],
+      sessionLog: [],
+      party: [],
+      // Simulate a payload with a reserved key (rare but possible if the map was built with Object.assign).
+      characters: Object.assign(Object.create(null), {
+        Alex: { name: 'Alex', race: 'Human', charClass: 'Fighter',
+          abilities: { STR: 10, DEX: 10, CON: 10, INT: 10, WIS: 10, CHA: 10 }, ac: 10, hpMax: 10 },
+      }),
+    }
+    const p = serializeSession(state)
+    expect(p.characters).toHaveProperty('Alex')
+    // JSON round-trip: JSON.stringify handles null-proto objects correctly.
+    const json = JSON.stringify(p)
+    const back = deserializeSession(JSON.parse(json))
+    expect(back.characters).toHaveProperty('Alex')
+  })
+})
+
 // G-C3: single-player unaffected — buildPlayersForPrompt + buildPlayerSection with null/empty
 describe('Phase 6 (G-C3) — single-player path: no characters → prompt unchanged', () => {
   it('buildPlayersForPrompt with no characters returns [] (SP path unaffected)', () => {

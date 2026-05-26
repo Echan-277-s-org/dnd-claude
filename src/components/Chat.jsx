@@ -782,10 +782,28 @@ export default function Chat({
             }
 
             if (msg.role === 'user') {
-              // Phase 4: player messages are labeled with the sender's displayName
+              // CHANGE 4: player messages are labeled with the sender's displayName
               // when available. The label is rendered as a React text node — never
               // dangerouslySetInnerHTML (XSS guard, security item B).
-              const senderLabel = msg.senderName || (displayName && isMultiplayer ? displayName : 'Player')
+              //
+              // Attribution logic:
+              //   - senderName present AND equals local displayName → "You" (your own line)
+              //   - senderName present AND different from local → show senderName (other player)
+              //   - senderName absent AND multiplayer → neutral "Player" (never mis-attribute
+              //     a senderName-less message to the local viewer)
+              //   - senderName absent AND single-player → existing behavior (displayName or 'Player')
+              let senderLabel
+              if (msg.senderName) {
+                // senderName is set (multiplayer message with attribution).
+                senderLabel = msg.senderName === displayName ? 'You' : msg.senderName
+              } else if (isMultiplayer) {
+                // Multiplayer but no senderName (legacy / transitional message) — use a
+                // neutral label so we never mis-attribute to the local viewer.
+                senderLabel = 'Player'
+              } else {
+                // Single-player: show the local displayName (or 'Player' as fallback).
+                senderLabel = displayName || 'Player'
+              }
               return (
                 <div key={i} className="message player-message">
                   <div className="message-header">

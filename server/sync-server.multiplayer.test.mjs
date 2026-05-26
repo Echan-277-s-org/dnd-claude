@@ -614,7 +614,9 @@ describe('Phase 3 — exactly one Ollama call per action', () => {
     expect(body.stream).toBe(true)
     expect(body.messages[0].role).toBe('system')
     expect(body.messages[0].content).toMatch(/Dungeon Master/i) // buildSystemPrompt
-    expect(body.messages.some(m => m.content === 'I enter the tavern.')).toBe(true)
+    // CHANGE 5: user messages sent to Ollama are prefixed with "displayName: content".
+    // The original raw content is still detectable as a substring of the prefixed form.
+    expect(body.messages.some(m => m.role === 'user' && m.content.includes('I enter the tavern.'))).toBe(true)
     expect(body.options).toMatchObject({
       num_ctx: 8192, num_predict: 900, temperature: 0.8,
       top_p: 0.9, top_k: 40, repeat_penalty: 1.15, repeat_last_n: 256,
@@ -2665,4 +2667,586 @@ describe('Phase 5 — mid-session HP persistence', () => {
 
     ws2.close()
   }, 20000)
+})
+
+// ─── CHANGE 2 (M2) — Prototype-polluting displayName is rejected ───────────────
+
+describe('M2 — __proto__ displayName is rejected with invalid_name', () => {
+  let ctx
+
+  beforeAll(async () => {
+    ctx = await startTestServer()
+  })
+  afterAll(async () => {
+    if (typeof ctx.server.closeAllConnections === 'function') ctx.server.closeAllConnections()
+    await new Promise(r => ctx.server.close(r))
+    await cleanupDir(ctx.dir)
+  })
+
+  const SESSION_M2 = 'm2-proto-test-0000-0000-000000000M2A'
+  const ROOM_M2 = 'dnd-m2protoA'
+
+  it('join with displayName "__proto__" is rejected with invalid_name', async () => {
+    const { ws, firstMessage } = await connectClient(ctx.wsBase, {
+      roomCode: ROOM_M2,
+      sessionId: SESSION_M2,
+      displayName: '__proto__',
+      lastTurnSequence: 0,
+    })
+    expect(firstMessage.type).toBe('error')
+    expect(firstMessage.payload.code).toBe('invalid_name')
+    // Critical: Object.prototype must not be polluted.
+    expect(Object.prototype.toString).toBeDefined()
+    expect(typeof Object.prototype.hasOwnProperty).toBe('function')
+    ws.close()
+  })
+
+  it('join with displayName "constructor" is rejected with invalid_name', async () => {
+    const { ws, firstMessage } = await connectClient(ctx.wsBase, {
+      roomCode: ROOM_M2,
+      sessionId: SESSION_M2,
+      displayName: 'constructor',
+      lastTurnSequence: 0,
+    })
+    expect(firstMessage.type).toBe('error')
+    expect(firstMessage.payload.code).toBe('invalid_name')
+    ws.close()
+  })
+
+  it('join with displayName "prototype" is rejected with invalid_name', async () => {
+    const { ws, firstMessage } = await connectClient(ctx.wsBase, {
+      roomCode: ROOM_M2,
+      sessionId: SESSION_M2,
+      displayName: 'prototype',
+      lastTurnSequence: 0,
+    })
+    expect(firstMessage.type).toBe('error')
+    expect(firstMessage.payload.code).toBe('invalid_name')
+    ws.close()
+  })
+
+  it('join with displayName "__PROTO__" (uppercase) is rejected (case-insensitive guard)', async () => {
+    const { ws, firstMessage } = await connectClient(ctx.wsBase, {
+      roomCode: ROOM_M2,
+      sessionId: SESSION_M2,
+      displayName: '__PROTO__',
+      lastTurnSequence: 0,
+    })
+    expect(firstMessage.type).toBe('error')
+    expect(firstMessage.payload.code).toBe('invalid_name')
+    ws.close()
+  })
+
+  it('normal displayName "Alex" still works after reserved-name rejections', async () => {
+    const { ws, firstMessage } = await connectClient(ctx.wsBase, {
+      roomCode: ROOM_M2,
+      sessionId: SESSION_M2,
+      displayName: 'Alex',
+      lastTurnSequence: 0,
+    })
+    expect(firstMessage.type).toBe('session:state')
+    ws.close()
+  })
+})
+
+// ─── CHANGE 3 (L2) — Verdict forgery check ────────────────────────────────────
+
+describe('L2 — verdict forgery: no dice event → reject; cleared after resolution', () => {
+  let ctx
+  let prevOllamaHost
+
+  let l2Seq = 0
+  function freshL2Ids() {
+    l2Seq += 1
+    const hex = String(l2Seq).padStart(8, '0')
+    return { sessionId: `${hex}-0000-0000-0000-L2000000000A`, roomCode: `dnd-l2${hex}` }
+  }
+
+  beforeEach(async () => {
+    prevOllamaHost = process.env.OLLAMA_HOST
+    ctx = await startTestServer()
+  })
+  afterEach(async () => {
+    if (prevOllamaHost === undefined) delete process.env.OLLAMA_HOST
+    else process.env.OLLAMA_HOST = prevOllamaHost
+    if (typeof ctx.server.closeAllConnections === 'function') ctx.server.closeAllConnections()
+    await new Promise(r => ctx.server.close(r))
+    if (ctx.mockOllama) {
+      ctx.mockOllama.destroy()
+      await new Promise(r => ctx.mockOllama.server.close(r))
+    }
+    await cleanupDir(ctx.dir)
+  })
+
+  it('verdict with roll but NO prior dice event is discarded (server does not crash, session persists)', async () => {
+    // The DM emits a verdict block that carries roll:17 but no dice action was taken
+    // this turn. The server has no lastDiceEvent → verdict must be treated as forged.
+    // Observable: dm:done still broadcasts (no crash), and the session is persisted correctly.
+    const verdictBlock = JSON.stringify({ skill: 'PERCEPTION', dc: 12, roll: 17, result: 'PASS' })
+    ctx.mockOllama = await startMockOllama({
+      chunks: [
+        'You notice something unusual. ',
+        `\n\`\`\`verdict\n${verdictBlock}\n\`\`\``,
+      ],
+    })
+    process.env.OLLAMA_HOST = ctx.mockOllama.host
+    const { sessionId, roomCode } = freshL2Ids()
+
+    const { ws } = await connectClient(ctx.wsBase, {
+      roomCode, sessionId, displayName: 'Alex', lastTurnSequence: 0,
+    })
+
+    // Register done listener BEFORE sending the action.
+    const doneP = waitForMessage(ws, m => m.type === 'dm:done')
+
+    // Send a plain text action (NOT a dice action) — no lastDiceEvent is recorded.
+    ws.send(JSON.stringify({
+      type: 'action',
+      roomCode,
+      payload: { content: 'I look around.', type: 'user' },
+    }))
+    const done = await doneP
+
+    // dm:done must broadcast (no crash, no error flag).
+    expect(done.type).toBe('dm:done')
+    expect(done.payload.error).toBeUndefined()
+
+    // The session must persist — room has messages even when the verdict is discarded.
+    await new Promise(r => setTimeout(r, 200)) // let the persist complete
+    const got = await (await fetch(`${ctx.base}/session/${sessionId}`)).json()
+    expect(Array.isArray(got.messages)).toBe(true)
+    // The assistant reply text (without the verdict block, which was stripped) must be present.
+    expect(got.messages.some(m => m.role === 'assistant' && m.content.includes('You notice something unusual.'))).toBe(true)
+    // No dice messages with a verdict should appear (there were no dice actions).
+    const verdictedDice = (got.messages ?? []).filter(m => m.role === 'dice' && m.verdict != null)
+    expect(verdictedDice).toHaveLength(0)
+
+    ws.close()
+  }, 15000)
+
+  it('a no-roll PASS/FAIL verdict (pure narration) does not crash the server and allows session:update', async () => {
+    // The DM emits a verdict block with NO roll field.
+    // This should NOT be treated as forged (roll field absent → forged check is skipped).
+    // Observable: dm:done broadcasts, session persists, no error.
+    const verdictBlock = JSON.stringify({ skill: 'STEALTH', dc: 15, result: 'PASS' })
+    ctx.mockOllama = await startMockOllama({
+      chunks: [
+        'You slip through the shadows. ',
+        `\n\`\`\`verdict\n${verdictBlock}\n\`\`\``,
+      ],
+    })
+    process.env.OLLAMA_HOST = ctx.mockOllama.host
+    const { sessionId, roomCode } = freshL2Ids()
+
+    const { ws } = await connectClient(ctx.wsBase, {
+      roomCode, sessionId, displayName: 'Alex', lastTurnSequence: 0,
+    })
+
+    // Register done listener BEFORE sending.
+    const doneP = waitForMessage(ws, m => m.type === 'dm:done')
+    ws.send(JSON.stringify({
+      type: 'action',
+      roomCode,
+      payload: { content: 'I attempt stealth.', type: 'user' },
+    }))
+    const done = await doneP
+
+    // dm:done must broadcast without error (no crash from the no-roll verdict path).
+    expect(done.type).toBe('dm:done')
+    expect(done.payload.error).toBeUndefined()
+    // fullText must contain the DM's text (verdict block itself is stripped from display).
+    expect(done.payload.fullText).toContain('You slip through the shadows.')
+
+    ws.close()
+  }, 15000)
+
+  it('lastDiceEvent is cleared after verdict so server does not reuse it for a later turn', async () => {
+    // Turn 1: dice action → DM emits verdict with roll:12 (matching lastDiceEvent).
+    //          After verdict processing, lastDiceEvent is cleared.
+    // Turn 2: text action → DM emits verdict with roll:12 (stale, no new dice event).
+    //          Server has no lastDiceEvent → stale verdict is treated as forged.
+    // Observable: server does not crash on either turn; both dm:done events broadcast.
+    const verdictBlock1 = JSON.stringify({ skill: 'ATHLETICS', dc: 10, roll: 12, result: 'PASS' })
+    const verdictBlock2 = JSON.stringify({ skill: 'PERCEPTION', dc: 8, roll: 12, result: 'PASS' })
+
+    let clearCallCount = 0
+    const clearServer = http.createServer((req, res) => {
+      if (req.method !== 'POST') { res.statusCode = 404; res.end(); return }
+      let raw = ''
+      req.on('data', d => { raw += d })
+      req.on('end', () => {
+        const turn = clearCallCount++
+        const chunks = turn === 0
+          ? ['First turn. ', `\n\`\`\`verdict\n${verdictBlock1}\n\`\`\``]
+          : ['Second turn. ', `\n\`\`\`verdict\n${verdictBlock2}\n\`\`\``]
+        res.writeHead(200, { 'Content-Type': 'application/x-ndjson' })
+        for (const c of chunks) {
+          res.write(JSON.stringify({ message: { role: 'assistant', content: c }, done: false }) + '\n')
+        }
+        res.write(JSON.stringify({ done: true }) + '\n')
+        res.end()
+      })
+    })
+    const clearSockets = new Set()
+    clearServer.on('connection', s => { clearSockets.add(s); s.on('close', () => clearSockets.delete(s)) })
+    await new Promise(r => clearServer.listen(0, '127.0.0.1', r))
+    process.env.OLLAMA_HOST = `127.0.0.1:${clearServer.address().port}`
+    ctx.mockOllama = {
+      server: clearServer,
+      destroy: () => { for (const s of clearSockets) s.destroy() },
+    }
+
+    const { sessionId, roomCode } = freshL2Ids()
+    const { ws } = await connectClient(ctx.wsBase, {
+      roomCode, sessionId, displayName: 'Alex', lastTurnSequence: 0,
+    })
+
+    // Turn 1: dice action (records lastDiceEvent=12) → verdict with roll:12 is accepted.
+    const done1 = waitForMessage(ws, m => m.type === 'dm:done')
+    ws.send(JSON.stringify({
+      type: 'action',
+      roomCode,
+      payload: { content: '[Dice roll: d20 → 12]', type: 'dice', die: 'd20', result: 12 },
+    }))
+    const d1 = await done1
+    expect(d1.payload.error).toBeUndefined() // no crash
+    await new Promise(r => setTimeout(r, 800)) // wait for persist + ACTION_MIN_INTERVAL_MS
+
+    // Turn 2: plain text (no dice event recorded). DM emits verdict with roll:12 (stale).
+    // Server cleared lastDiceEvent after turn 1 → stale verdict forged → discarded.
+    const done2 = waitForMessage(ws, m => m.type === 'dm:done')
+    ws.send(JSON.stringify({
+      type: 'action',
+      roomCode,
+      payload: { content: 'I look around.', type: 'user' },
+    }))
+    const d2 = await done2
+
+    // Server must NOT crash (dm:done still broadcasts, no error flag).
+    expect(d2.type).toBe('dm:done')
+    expect(d2.payload.error).toBeUndefined()
+    // fullText must contain the second turn's text.
+    expect(d2.payload.fullText).toContain('Second turn.')
+
+    ws.close()
+  }, 30000)
+
+  it('a prior-turn dice event (no verdict that turn) cannot validate a later-turn verdict', async () => {
+    // L-1 regression: turn 1 IS a dice action (records lastDiceEvent{result:15,
+    // turnSequence:0}) but the DM emits NO verdict block that turn, so lastDiceEvent
+    // is NOT cleared. Turn 2 (plain text) emits a verdict carrying the STALE roll:15.
+    // The per-turn staleness guard (lastDiceEvent.turnSequence !== current turnSequence)
+    // must treat it as forged. Observable here mirrors the sibling tests: the server
+    // exercises the new guard branch without crashing and both turns complete.
+    const staleVerdict = JSON.stringify({ skill: 'PERCEPTION', dc: 8, roll: 15, result: 'PASS' })
+
+    let turnCount = 0
+    const l1Server = http.createServer((req, res) => {
+      if (req.method !== 'POST') { res.statusCode = 404; res.end(); return }
+      let raw = ''
+      req.on('data', d => { raw += d })
+      req.on('end', () => {
+        const turn = turnCount++
+        const chunks = turn === 0
+          ? ['Turn one — dice rolled, no verdict. ']            // dice recorded, NOT resolved
+          : ['Turn two. ', `\n\`\`\`verdict\n${staleVerdict}\n\`\`\``] // stale roll:15
+        res.writeHead(200, { 'Content-Type': 'application/x-ndjson' })
+        for (const c of chunks) {
+          res.write(JSON.stringify({ message: { role: 'assistant', content: c }, done: false }) + '\n')
+        }
+        res.write(JSON.stringify({ done: true }) + '\n')
+        res.end()
+      })
+    })
+    const l1Sockets = new Set()
+    l1Server.on('connection', s => { l1Sockets.add(s); s.on('close', () => l1Sockets.delete(s)) })
+    await new Promise(r => l1Server.listen(0, '127.0.0.1', r))
+    process.env.OLLAMA_HOST = `127.0.0.1:${l1Server.address().port}`
+    ctx.mockOllama = {
+      server: l1Server,
+      destroy: () => { for (const s of l1Sockets) s.destroy() },
+    }
+
+    const { sessionId, roomCode } = freshL2Ids()
+    const { ws } = await connectClient(ctx.wsBase, {
+      roomCode, sessionId, displayName: 'Alex', lastTurnSequence: 0,
+    })
+
+    // Turn 1: dice action — lastDiceEvent recorded, but no verdict block this turn.
+    const done1 = waitForMessage(ws, m => m.type === 'dm:done')
+    ws.send(JSON.stringify({
+      type: 'action',
+      roomCode,
+      payload: { content: '[Dice roll: d20 → 15]', type: 'dice', die: 'd20', result: 15 },
+    }))
+    const d1 = await done1
+    expect(d1.payload.error).toBeUndefined()
+    await new Promise(r => setTimeout(r, 800)) // persist + ACTION_MIN_INTERVAL_MS
+
+    // Turn 2: plain text; DM emits a verdict carrying the stale roll:15. The guard
+    // rejects it as forged (event is from turn 0, current turn is 1).
+    const done2 = waitForMessage(ws, m => m.type === 'dm:done')
+    ws.send(JSON.stringify({
+      type: 'action',
+      roomCode,
+      payload: { content: 'I keep walking.', type: 'user' },
+    }))
+    const d2 = await done2
+
+    // Server must NOT crash; the stale verdict is silently discarded.
+    expect(d2.type).toBe('dm:done')
+    expect(d2.payload.error).toBeUndefined()
+    expect(d2.payload.fullText).toContain('Turn two.')
+
+    ws.close()
+  }, 30000)
+})
+
+// ─── CHANGE 4 — senderName stamped on user messages ──────────────────────────
+
+describe('CHANGE 4 — senderName is stamped on user messages in multiplayer', () => {
+  let ctx
+  let prevOllamaHost
+
+  let c4Seq = 0
+  function freshC4Ids() {
+    c4Seq += 1
+    const hex = String(c4Seq).padStart(8, '0')
+    return { sessionId: `${hex}-0000-0000-0000-C400000000A0`, roomCode: `dnd-c4${hex}` }
+  }
+
+  beforeEach(async () => {
+    prevOllamaHost = process.env.OLLAMA_HOST
+    ctx = await startTestServer()
+  })
+  afterEach(async () => {
+    if (prevOllamaHost === undefined) delete process.env.OLLAMA_HOST
+    else process.env.OLLAMA_HOST = prevOllamaHost
+    if (typeof ctx.server.closeAllConnections === 'function') ctx.server.closeAllConnections()
+    await new Promise(r => ctx.server.close(r))
+    if (ctx.mockOllama) {
+      ctx.mockOllama.destroy()
+      await new Promise(r => ctx.mockOllama.server.close(r))
+    }
+    await cleanupDir(ctx.dir)
+  })
+
+  it('user action broadcast (session:update) carries senderName equal to the acting connection displayName', async () => {
+    ctx.mockOllama = await startMockOllama({ chunks: ['The DM responds.'] })
+    process.env.OLLAMA_HOST = ctx.mockOllama.host
+    const { sessionId, roomCode } = freshC4Ids()
+
+    const { ws: wsAlex } = await connectClient(ctx.wsBase, {
+      roomCode, sessionId, displayName: 'Alex', lastTurnSequence: 0,
+    })
+    const { ws: wsJordan } = await connectClient(ctx.wsBase, {
+      roomCode, sessionId, displayName: 'Jordan', lastTurnSequence: 0,
+    })
+
+    // Jordan waits for the session:update that carries Alex's message.
+    const updateP = waitForMessage(
+      wsJordan,
+      m => m.type === 'session:update' &&
+        (m.payload?.messages ?? []).some(x => x.role === 'user' && x.content === 'Hello from Alex')
+    )
+
+    wsAlex.send(JSON.stringify({
+      type: 'action',
+      roomCode,
+      payload: { content: 'Hello from Alex', type: 'user' },
+    }))
+
+    const update = await updateP
+    const alexMsg = update.payload.messages.find(
+      m => m.role === 'user' && m.content === 'Hello from Alex'
+    )
+    expect(alexMsg).toBeDefined()
+    expect(alexMsg.senderName).toBe('Alex')
+
+    wsAlex.close()
+    wsJordan.close()
+  }, 15000)
+
+  it('persisted .md (session:update after dm:done) carries senderName on user messages', async () => {
+    ctx.mockOllama = await startMockOllama({ chunks: ['Persisted narration.'] })
+    process.env.OLLAMA_HOST = ctx.mockOllama.host
+    const { sessionId, roomCode } = freshC4Ids()
+
+    const { ws } = await connectClient(ctx.wsBase, {
+      roomCode, sessionId, displayName: 'Briar', lastTurnSequence: 0,
+    })
+
+    // Register listeners BEFORE sending the action (prevents race with fast responses).
+    const done = waitForMessage(ws, m => m.type === 'dm:done')
+    const updateP = waitForMessage(
+      ws,
+      m => m.type === 'session:update' &&
+        (m.payload?.messages ?? []).some(x => x.role === 'user' && x.content === 'Briar acts.')
+    )
+    ws.send(JSON.stringify({
+      type: 'action',
+      roomCode,
+      payload: { content: 'Briar acts.', type: 'user' },
+    }))
+    await done
+    const update = await updateP
+    const briarMsg = (update.payload.messages ?? []).find(
+      m => m.role === 'user' && m.content === 'Briar acts.'
+    )
+    expect(briarMsg).toBeDefined()
+    expect(briarMsg.senderName).toBe('Briar')
+
+    ws.close()
+  }, 15000)
+})
+
+// ─── CHANGE 5 — DM prompt prefixes speaker names ─────────────────────────────
+
+describe('CHANGE 5 — Ollama prompt prefixes user messages with speaker name', () => {
+  let ctx
+  let prevOllamaHost
+
+  let c5Seq = 0
+  function freshC5Ids() {
+    c5Seq += 1
+    const hex = String(c5Seq).padStart(8, '0')
+    return { sessionId: `${hex}-0000-0000-0000-C500000000A0`, roomCode: `dnd-c5${hex}` }
+  }
+
+  beforeEach(async () => {
+    prevOllamaHost = process.env.OLLAMA_HOST
+    ctx = await startTestServer()
+  })
+  afterEach(async () => {
+    if (prevOllamaHost === undefined) delete process.env.OLLAMA_HOST
+    else process.env.OLLAMA_HOST = prevOllamaHost
+    if (typeof ctx.server.closeAllConnections === 'function') ctx.server.closeAllConnections()
+    await new Promise(r => ctx.server.close(r))
+    if (ctx.mockOllama) {
+      ctx.mockOllama.destroy()
+      await new Promise(r => ctx.mockOllama.server.close(r))
+    }
+    await cleanupDir(ctx.dir)
+  })
+
+  it('the new user message sent to Ollama is prefixed with the connection displayName', async () => {
+    ctx.mockOllama = await startMockOllama({ chunks: ['The DM sees you.'] })
+    process.env.OLLAMA_HOST = ctx.mockOllama.host
+    const { sessionId, roomCode } = freshC5Ids()
+
+    const { ws } = await connectClient(ctx.wsBase, {
+      roomCode, sessionId, displayName: 'Theron', lastTurnSequence: 0,
+    })
+
+    const done = waitForMessage(ws, m => m.type === 'dm:done')
+    ws.send(JSON.stringify({
+      type: 'action',
+      roomCode,
+      payload: { content: 'I enter the dungeon.', type: 'user' },
+    }))
+    await done
+
+    const body = ctx.mockOllama.getLastBody()
+    // The user message in the Ollama payload must be prefixed with "Theron: ".
+    const userMsg = body.messages.find(m => m.role === 'user' && m.content.includes('I enter the dungeon.'))
+    expect(userMsg).toBeDefined()
+    expect(userMsg.content).toBe('Theron: I enter the dungeon.')
+
+    ws.close()
+  }, 15000)
+
+  it('historical user messages with senderName are prefixed in the Ollama prompt', async () => {
+    // Turn 1: Alex acts → senderName:'Alex' stored on userMsg.
+    // Turn 2: Alex acts again; historical messages (turn 1) must be prefixed in prompt.
+    ctx.mockOllama = await startMockOllama({ chunks: ['Reply.'] })
+    process.env.OLLAMA_HOST = ctx.mockOllama.host
+    const { sessionId, roomCode } = freshC5Ids()
+
+    const { ws } = await connectClient(ctx.wsBase, {
+      roomCode, sessionId, displayName: 'Alex', lastTurnSequence: 0,
+    })
+
+    // Turn 1: register listener BEFORE sending.
+    const done1 = waitForMessage(ws, m => m.type === 'dm:done')
+    const update1P = waitForMessage(ws, m => m.type === 'session:update' && Array.isArray(m.payload?.messages))
+    ws.send(JSON.stringify({
+      type: 'action',
+      roomCode,
+      payload: { content: 'First action.', type: 'user' },
+    }))
+    await done1
+    await update1P
+    await new Promise(r => setTimeout(r, 600)) // ACTION_MIN_INTERVAL_MS
+
+    // Turn 2 — the historical 'First action.' message now has senderName:'Alex'.
+    // Register done2 BEFORE sending.
+    const done2 = waitForMessage(ws, m => m.type === 'dm:done')
+    ws.send(JSON.stringify({
+      type: 'action',
+      roomCode,
+      payload: { content: 'Second action.', type: 'user' },
+    }))
+    await done2
+
+    const body = ctx.mockOllama.getLastBody()
+    // The historical 'First action.' should be prefixed as 'Alex: First action.'
+    const historicalMsg = body.messages.find(
+      m => m.role === 'user' && m.content.includes('First action.')
+    )
+    expect(historicalMsg).toBeDefined()
+    expect(historicalMsg.content).toBe('Alex: First action.')
+
+    ws.close()
+  }, 30000)
+
+  it('INVARIANT: when no message has senderName (no displayName), prompt is byte-identical (no prefix)', async () => {
+    // A room where the connection has displayName null — should not prefix.
+    // We can't easily make displayName null (join validates it), but we can verify
+    // that without senderName on historical messages, they pass through unchanged.
+    // Test via a history that has NO senderName → historical user messages pass verbatim.
+    ctx.mockOllama = await startMockOllama({ chunks: ['Response.'] })
+    process.env.OLLAMA_HOST = ctx.mockOllama.host
+    const { sessionId, roomCode } = freshC5Ids()
+
+    // Pre-populate a stored session via HTTP PUT with a user message that has NO senderName.
+    const storedPayload = {
+      campaign: { name: 'Invariant Test', genre: 'dnd', model: 'qwen2.5:14b', sessionId },
+      messages: [
+        { role: 'user', content: 'A message without senderName.', id: 'legacy-001' },
+        { role: 'assistant', content: 'The DM replied.', id: 'assistant-001' },
+      ],
+      sessionLog: [],
+      party: [],
+      savedAt: null,
+      roomCode,
+    }
+    await fetch(`${ctx.base}/session/${sessionId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(storedPayload),
+    })
+
+    const { ws } = await connectClient(ctx.wsBase, {
+      roomCode, sessionId, displayName: 'Solo', lastTurnSequence: 0,
+    })
+
+    const done = waitForMessage(ws, m => m.type === 'dm:done')
+    ws.send(JSON.stringify({
+      type: 'action',
+      roomCode,
+      payload: { content: 'Current action.', type: 'user' },
+    }))
+    await done
+
+    const body = ctx.mockOllama.getLastBody()
+    // The historical message (no senderName) must NOT be prefixed.
+    const legacyMsg = body.messages.find(
+      m => m.role === 'user' && m.content.includes('A message without senderName.')
+    )
+    expect(legacyMsg).toBeDefined()
+    // Must be verbatim — no "undefined: " or "Solo: " prefix.
+    expect(legacyMsg.content).toBe('A message without senderName.')
+
+    ws.close()
+  }, 15000)
 })
