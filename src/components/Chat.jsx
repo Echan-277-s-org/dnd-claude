@@ -5,7 +5,7 @@ import CharacterPanel from './CharacterPanel'
 import PartyStrip from './PartyStrip'
 import DiceChip from './DiceChip'
 import { getGenre } from '../lib/genres'
-import { serializeSession, deserializeSession, getLanHost, toMarkdown, sessionFileName, markOrphanedDice } from '../lib/session'
+import { serializeSession, deserializeSession, getLanHost, toMarkdown, sessionFileName, markOrphanedDice, applyPartyUpdate } from '../lib/session'
 import { useSessionPersistence } from '../hooks/useSessionPersistence'
 
 // Phase A: localStorage key for the persisted session payload (same shape that
@@ -41,24 +41,8 @@ function extractBlock(tag, text) {
   }
 }
 
-// Reconcile incoming LLM party data with existing IDs so React keys stay stable.
-// Matches by normalized (lowercased/trimmed) name. New members get a UUID.
-// Guards every field defensively; zero-member arrays must be rejected BEFORE calling.
-function applyPartyUpdate(rawArray, existing) {
-  return rawArray.map(raw => {
-    const normalizedName = String(raw.name ?? '').trim().toLowerCase()
-    const found = existing.find(
-      e => e.name.trim().toLowerCase() === normalizedName
-    )
-    return {
-      id: found?.id ?? crypto.randomUUID(),
-      name: String(raw.name ?? '').trim() || 'Unknown',
-      role: String(raw.role ?? '').trim() || '',
-      hpPct: Math.max(0, Math.min(100, Math.round(Number(raw.hpPct) || 0))),
-      isActive: Boolean(raw.isActive),
-    }
-  })
-}
+// `applyPartyUpdate` moved to src/lib/session.js (Phase 0) — imported above so the
+// client and the server-side DM proxy share one implementation.
 
 function parseMarkdown(text) {
   const escaped = text

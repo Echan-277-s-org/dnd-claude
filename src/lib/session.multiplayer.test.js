@@ -1,15 +1,11 @@
 // @vitest-environment jsdom
 //
-// Multiplayer schema / session.js unit tests — Phase 0 gate
+// Multiplayer schema / session.js unit tests — Phase 0 gate (ACTIVE)
 //
-// ALL TESTS ARE SKIPPED. No implementation exists yet.
-// These skeletons document the exact assertions required before Phase 0 is
-// considered "done". Remove the .skip prefix file-by-file as implementation lands.
-//
-// Test surface addressed:
+// Activated 2026-05-26 when Phase 0 implementation landed. Covers:
 //   - SCHEMA_VERSION bump to 2
 //   - deserializeSession v1→v2 backward-compat branch
-//   - deserializeSession v2 native path
+//   - deserializeSession v2 native path (lenient read; clamp invalid phase)
 //   - toMarkdown / fromMarkdown round-trip for v2 fields
 //   - applyPartyUpdate as a named export from session.js (moved from Chat.jsx)
 //   - roomCode derivation helper (makeRoomCode)
@@ -19,18 +15,15 @@
 //   MULTIPLAYER-TEST-AUTOMATION.md §1 (unit tier)
 
 import { describe, it, expect } from 'vitest'
-
-// These imports will resolve once Phase 0 implementation lands.
-// The test file is already valid JS; the .skip prevents any runtime failure.
-// import {
-//   SCHEMA_VERSION,
-//   serializeSession,
-//   deserializeSession,
-//   toMarkdown,
-//   fromMarkdown,
-//   applyPartyUpdate,
-//   makeRoomCode,
-// } from './session'
+import {
+  SCHEMA_VERSION,
+  serializeSession,
+  deserializeSession,
+  toMarkdown,
+  fromMarkdown,
+  applyPartyUpdate,
+  makeRoomCode,
+} from './session'
 
 // ─── fixtures ─────────────────────────────────────────────────────────────────
 
@@ -60,238 +53,291 @@ const V2_CAMPAIGN = {
   name: 'Multiplayer Keep',
 }
 
+const baseState = () => ({
+  campaign: V2_CAMPAIGN,
+  messages: [],
+  sessionLog: [],
+  party: [],
+})
+
 // ─── SCHEMA_VERSION ───────────────────────────────────────────────────────────
 
-describe.skip('SCHEMA_VERSION (v2)', () => {
+describe('SCHEMA_VERSION (v2)', () => {
   it('SCHEMA_VERSION equals 2 after the Phase 0 bump', () => {
-    // const { SCHEMA_VERSION } = await import('./session')
-    // expect(SCHEMA_VERSION).toBe(2)
-    expect(true).toBe(true) // placeholder
+    expect(SCHEMA_VERSION).toBe(2)
   })
 })
 
 // ─── deserializeSession v1 → v2 backward-compat ───────────────────────────────
 
-describe.skip('deserializeSession — v1 → v2 backward-compat', () => {
+describe('deserializeSession — v1 → v2 backward-compat', () => {
   it('accepts a v1 payload and fills v2 defaults', () => {
-    // const result = deserializeSession(V1_PAYLOAD_STRING)
-    // expect(result).not.toBeNull()
-    // expect(result.schemaVersion).toBe(2)
-    // expect(result.phase).toBe('free-roam')
-    // expect(result.roomCode).toBeNull()
-    // expect(result.turnSequence).toBe(0)
+    const result = deserializeSession(V1_PAYLOAD_STRING)
+    expect(result).not.toBeNull()
+    expect(result.schemaVersion).toBe(2)
+    expect(result.phase).toBe('free-roam')
+    expect(result.roomCode).toBeNull()
+    expect(result.turnSequence).toBe(0)
   })
 
   it('preserves all v1 fields when upgrading to v2', () => {
-    // const result = deserializeSession(V1_PAYLOAD_STRING)
-    // expect(result.sessionId).toBe('v1-legacy-uuid')
-    // expect(result.messages).toHaveLength(1)
-    // expect(result.party).toHaveLength(1)
-    // expect(result.campaign.name).toBe('Legacy Campaign')
+    const result = deserializeSession(V1_PAYLOAD_STRING)
+    expect(result.sessionId).toBe('v1-legacy-uuid')
+    expect(result.messages).toHaveLength(1)
+    expect(result.party).toHaveLength(1)
+    expect(result.campaign.name).toBe('Legacy Campaign')
   })
 
   it('does NOT mutate the original v1 object', () => {
-    // const original = JSON.parse(V1_PAYLOAD_STRING)
-    // deserializeSession(original)
-    // expect(original.schemaVersion).toBe(1)
-    // expect(original).not.toHaveProperty('phase')
+    const original = JSON.parse(V1_PAYLOAD_STRING)
+    deserializeSession(original)
+    expect(original.schemaVersion).toBe(1)
+    expect(original).not.toHaveProperty('phase')
   })
 
   it('returns null for schemaVersion 0 (pre-v1; still unsupported)', () => {
-    // expect(deserializeSession(JSON.stringify({ schemaVersion: 0 }))).toBeNull()
+    expect(deserializeSession(JSON.stringify({ schemaVersion: 0 }))).toBeNull()
   })
 
   it('returns null for schemaVersion 3 (future; still unsupported)', () => {
-    // expect(deserializeSession(JSON.stringify({ schemaVersion: 3 }))).toBeNull()
+    expect(deserializeSession(JSON.stringify({ schemaVersion: 3 }))).toBeNull()
   })
 })
 
 // ─── deserializeSession v2 native path ────────────────────────────────────────
 
-describe.skip('deserializeSession — v2 native path', () => {
+describe('deserializeSession — v2 native path', () => {
   it('round-trips a v2 payload (serialize → deserialize)', () => {
-    // const p = serializeSession(
-    //   { campaign: V2_CAMPAIGN, messages: [], sessionLog: [], party: [] },
-    //   '2026-05-25T12:00:00.000Z',
-    //   { phase: 'combat', roomCode: 'dnd-a1b2c3d4', turnSequence: 7 }
-    // )
-    // const back = deserializeSession(JSON.stringify(p))
-    // expect(back).toEqual(p)
-    // expect(back.phase).toBe('combat')
-    // expect(back.roomCode).toBe('dnd-a1b2c3d4')
-    // expect(back.turnSequence).toBe(7)
+    const p = serializeSession(baseState(), '2026-05-25T12:00:00.000Z', {
+      phase: 'combat',
+      roomCode: 'dnd-a1b2c3d4',
+      turnSequence: 7,
+    })
+    const back = deserializeSession(JSON.stringify(p))
+    expect(back).toEqual(p)
+    expect(back.phase).toBe('combat')
+    expect(back.roomCode).toBe('dnd-a1b2c3d4')
+    expect(back.turnSequence).toBe(7)
   })
 
-  it('fills v2 defaults when optional v2 fields are omitted from an otherwise-valid v2 object', () => {
-    // const bare = {
-    //   schemaVersion: 2,
-    //   sessionId: V2_SESSION_ID,
-    //   savedAt: '2026-05-25T00:00:00.000Z',
-    //   campaign: V2_CAMPAIGN,
-    //   messages: [],
-    //   sessionLog: [],
-    //   party: [],
-    //   // phase, roomCode, turnSequence intentionally absent
-    // }
-    // const result = deserializeSession(bare)
-    // expect(result.phase).toBe('free-roam')
-    // expect(result.roomCode).toBeNull()
-    // expect(result.turnSequence).toBe(0)
+  it('fills v2 defaults when optional v2 fields are omitted from a valid v2 object', () => {
+    const bare = {
+      schemaVersion: 2,
+      sessionId: V2_SESSION_ID,
+      savedAt: '2026-05-25T00:00:00.000Z',
+      campaign: V2_CAMPAIGN,
+      messages: [],
+      sessionLog: [],
+      party: [],
+      // phase, roomCode, turnSequence intentionally absent
+    }
+    const result = deserializeSession(bare)
+    expect(result.phase).toBe('free-roam')
+    expect(result.roomCode).toBeNull()
+    expect(result.turnSequence).toBe(0)
   })
 
-  it('accepts all four valid phase values', () => {
-    // for (const phase of ['free-roam', 'combat', 'awaiting-dm', 'resolving']) {
-    //   const payload = { schemaVersion: 2, phase, sessionId: 'x', savedAt: 'T', campaign: {}, messages: [], sessionLog: [], party: [] }
-    //   expect(deserializeSession(payload).phase).toBe(phase)
-    // }
+  it('accepts all four valid phase values on the read path', () => {
+    for (const phase of ['free-roam', 'combat', 'awaiting-dm', 'resolving']) {
+      const payload = {
+        schemaVersion: 2,
+        phase,
+        sessionId: 'x',
+        savedAt: 'T',
+        campaign: {},
+        messages: [],
+        sessionLog: [],
+        party: [],
+      }
+      expect(deserializeSession(payload).phase).toBe(phase)
+    }
   })
 
   it('clamps an invalid phase string to free-roam', () => {
-    // const payload = { schemaVersion: 2, phase: 'invalid-phase', sessionId: 'x', savedAt: 'T', campaign: {}, messages: [], sessionLog: [], party: [] }
-    // expect(deserializeSession(payload).phase).toBe('free-roam')
+    const payload = {
+      schemaVersion: 2,
+      phase: 'invalid-phase',
+      sessionId: 'x',
+      savedAt: 'T',
+      campaign: {},
+      messages: [],
+      sessionLog: [],
+      party: [],
+    }
+    expect(deserializeSession(payload).phase).toBe('free-roam')
+  })
+})
+
+// ─── serializeSession — write-path phase sanitize (MC-3 / MC-4) ───────────────
+
+describe('serializeSession — v2 carry + phase-sanitize', () => {
+  it('carries v2 fields supplied via the opts arg', () => {
+    const p = serializeSession(baseState(), 'T', {
+      phase: 'combat',
+      roomCode: 'dnd-zzz',
+      turnSequence: 4,
+    })
+    expect(p.schemaVersion).toBe(2)
+    expect(p.phase).toBe('combat')
+    expect(p.roomCode).toBe('dnd-zzz')
+    expect(p.turnSequence).toBe(4)
+  })
+
+  it('reads v2 fields from state when no opts given (HTTP PUT rebuild path)', () => {
+    const p = serializeSession(
+      { ...baseState(), phase: 'combat', roomCode: 'dnd-state', turnSequence: 9 },
+      'T'
+    )
+    expect(p.phase).toBe('combat')
+    expect(p.roomCode).toBe('dnd-state')
+    expect(p.turnSequence).toBe(9)
+  })
+
+  it('coerces a transient phase to free-roam on the write path', () => {
+    for (const transient of ['awaiting-dm', 'resolving', 'nonsense']) {
+      const p = serializeSession(baseState(), 'T', { phase: transient })
+      expect(p.phase).toBe('free-roam')
+    }
+  })
+
+  it('defaults v2 fields when entirely absent', () => {
+    const p = serializeSession(baseState(), 'T')
+    expect(p.roomCode).toBeNull()
+    expect(p.phase).toBe('free-roam')
+    expect(p.turnSequence).toBe(0)
   })
 })
 
 // ─── toMarkdown / fromMarkdown — v2 fields ────────────────────────────────────
 
-describe.skip('toMarkdown / fromMarkdown — v2 field round-trips', () => {
-  it('toMarkdown writes phase and roomCode as prose metadata lines', () => {
-    // const p = serializeSession(
-    //   { campaign: V2_CAMPAIGN, messages: [], sessionLog: [], party: [] },
-    //   '2026-05-25T12:00:00.000Z',
-    //   { phase: 'combat', roomCode: 'dnd-a1b2c3d4', turnSequence: 3 }
-    // )
-    // const md = toMarkdown(p)
-    // expect(md).toContain('phase: combat')
-    // expect(md).toContain('roomCode: dnd-a1b2c3d4')
-    // The session block must carry v2 fields for fromMarkdown to restore them
-    // expect(md).toContain('"phase": "combat"')
-    // expect(md).toContain('"turnSequence": 3')
+describe('toMarkdown / fromMarkdown — v2 field round-trips', () => {
+  it('toMarkdown writes phase and roomCode as prose metadata + in the session block', () => {
+    const p = serializeSession(baseState(), '2026-05-25T12:00:00.000Z', {
+      phase: 'combat',
+      roomCode: 'dnd-a1b2c3d4',
+      turnSequence: 3,
+    })
+    const md = toMarkdown(p)
+    expect(md).toContain('phase: combat')
+    expect(md).toContain('roomCode: dnd-a1b2c3d4')
+    expect(md).toContain('"phase": "combat"')
+    expect(md).toContain('"turnSequence": 3')
   })
 
   it('fromMarkdown(toMarkdown(v2)) restores phase, roomCode, turnSequence losslessly', () => {
-    // const p = serializeSession(
-    //   { campaign: V2_CAMPAIGN, messages: [], sessionLog: [], party: [] },
-    //   '2026-05-25T12:00:00.000Z',
-    //   { phase: 'combat', roomCode: 'dnd-a1b2c3d4', turnSequence: 7 }
-    // )
-    // const back = fromMarkdown(toMarkdown(p))
-    // expect(back).toEqual(p)
+    const p = serializeSession(baseState(), '2026-05-25T12:00:00.000Z', {
+      phase: 'combat',
+      roomCode: 'dnd-a1b2c3d4',
+      turnSequence: 7,
+    })
+    const back = fromMarkdown(toMarkdown(p))
+    expect(back).toEqual(p)
   })
 
-  it('a v2 .md file loaded as single-player starts in free-roam (graceful degradation)', () => {
-    // const p = serializeSession(
-    //   { campaign: V2_CAMPAIGN, messages: [], sessionLog: [], party: [] },
-    //   '2026-05-25T12:00:00.000Z',
-    //   { phase: 'combat', roomCode: 'dnd-a1b2c3d4', turnSequence: 7 }
-    // )
-    // const md = toMarkdown(p)
-    // const restored = fromMarkdown(md)
-    // // When loaded in single-player the phase is preserved but the app
-    // // treats it as free-roam because there is no WebSocket connection.
-    // // This test asserts the payload itself; the single-player fallback
-    // // is a Chat.jsx concern tested in the integration tier.
-    // expect(restored.phase).toBe('combat')    // payload-level: faithfully restored
-    // expect(restored.roomCode).toBe('dnd-a1b2c3d4')
-    // expect(restored.turnSequence).toBe(7)
-  })
-
-  it('a v1 .md file (no phase/roomCode/turnSequence in session block) loads with v2 defaults', () => {
-    // const v1Md = toMarkdown_v1(/* a real v1 payload from session.test.js fixtures */)
-    // const result = fromMarkdown(v1Md)
-    // expect(result.phase).toBe('free-roam')
-    // expect(result.roomCode).toBeNull()
-    // expect(result.turnSequence).toBe(0)
-    // This is the R2/R3 regression guard.
+  it('a v1 .md file (no v2 fields in the session block) loads with v2 defaults', () => {
+    const v1Block = JSON.stringify({
+      schemaVersion: 1,
+      sessionId: 'v1-legacy-uuid',
+      savedAt: '2026-01-01T00:00:00.000Z',
+      campaign: V1_CAMPAIGN,
+      messages: [],
+      sessionLog: [],
+      party: [],
+    })
+    const v1Md = `# Session — Legacy\n\n\`\`\`session\n${v1Block}\n\`\`\`\n`
+    const result = fromMarkdown(v1Md)
+    expect(result.phase).toBe('free-roam')
+    expect(result.roomCode).toBeNull()
+    expect(result.turnSequence).toBe(0)
   })
 
   it('connections and dmClientId are NOT written to the .md session block', () => {
-    // const p = serializeSession(
-    //   { campaign: V2_CAMPAIGN, messages: [], sessionLog: [], party: [] },
-    //   '2026-05-25T12:00:00.000Z',
-    //   { phase: 'free-roam', roomCode: 'dnd-a1b2c3d4', turnSequence: 0,
-    //     connections: [{ displayName: 'Alex', status: 'connected' }],
-    //     dmClientId: 'conn-xyz' }
-    // )
-    // const md = toMarkdown(p)
-    // expect(md).not.toContain('connections')
-    // expect(md).not.toContain('dmClientId')
+    const p = serializeSession(baseState(), '2026-05-25T12:00:00.000Z', {
+      phase: 'free-roam',
+      roomCode: 'dnd-a1b2c3d4',
+      turnSequence: 0,
+      connections: [{ displayName: 'Alex', status: 'connected' }],
+      dmClientId: 'conn-xyz',
+    })
+    const md = toMarkdown(p)
+    expect(md).not.toContain('connections')
+    expect(md).not.toContain('dmClientId')
   })
 })
 
 // ─── makeRoomCode ─────────────────────────────────────────────────────────────
 
-describe.skip('makeRoomCode', () => {
+describe('makeRoomCode', () => {
   it('derives a stable dnd- prefixed code from a sessionId', () => {
-    // const code = makeRoomCode('a1b2c3d4-e5f6-7890-abcd-ef1234567890')
-    // expect(code).toBe('dnd-a1b2c3d4')
+    expect(makeRoomCode('a1b2c3d4-e5f6-7890-abcd-ef1234567890')).toBe('dnd-a1b2c3d4')
   })
 
   it('produces the same code for repeated calls with the same sessionId', () => {
-    // expect(makeRoomCode(V2_SESSION_ID)).toBe(makeRoomCode(V2_SESSION_ID))
+    expect(makeRoomCode(V2_SESSION_ID)).toBe(makeRoomCode(V2_SESSION_ID))
   })
 
   it('produces distinct codes for distinct sessionIds', () => {
-    // const a = makeRoomCode('a1b2c3d4-0000-0000-0000-000000000000')
-    // const b = makeRoomCode('b1b2c3d4-0000-0000-0000-000000000000')
-    // expect(a).not.toBe(b)
+    const a = makeRoomCode('a1b2c3d4-0000-0000-0000-000000000000')
+    const b = makeRoomCode('b1b2c3d4-0000-0000-0000-000000000000')
+    expect(a).not.toBe(b)
   })
 })
 
 // ─── applyPartyUpdate (moved from Chat.jsx to session.js) ─────────────────────
 
-describe.skip('applyPartyUpdate — named export from session.js', () => {
+describe('applyPartyUpdate — named export from session.js', () => {
   const EXISTING = [
     { id: 'uuid-1', name: 'Theron', role: 'Paladin', hpPct: 80, isActive: false },
     { id: 'uuid-2', name: 'Wren', role: 'Rogue', hpPct: 60, isActive: true },
   ]
 
   it('is exported as a named function from session.js', () => {
-    // expect(typeof applyPartyUpdate).toBe('function')
+    expect(typeof applyPartyUpdate).toBe('function')
   })
 
   it('preserves existing ids on name-match (case-insensitive)', () => {
-    // const result = applyPartyUpdate([
-    //   { name: 'theron', role: 'Paladin', hpPct: 75, isActive: true },
-    // ], EXISTING)
-    // expect(result[0].id).toBe('uuid-1')
-    // expect(result[0].hpPct).toBe(75)
-    // expect(result[0].isActive).toBe(true)
+    const result = applyPartyUpdate(
+      [{ name: 'theron', role: 'Paladin', hpPct: 75, isActive: true }],
+      EXISTING
+    )
+    expect(result[0].id).toBe('uuid-1')
+    expect(result[0].hpPct).toBe(75)
+    expect(result[0].isActive).toBe(true)
   })
 
-  it('assigns a new UUID for an unmatched name (new party member)', () => {
-    // const result = applyPartyUpdate([
-    //   { name: 'Casey', role: 'Mage', hpPct: 100, isActive: false },
-    // ], EXISTING)
-    // expect(result[0].id).not.toBe('uuid-1')
-    // expect(result[0].id).not.toBe('uuid-2')
-    // expect(typeof result[0].id).toBe('string')
-    // expect(result[0].id.length).toBeGreaterThan(0)
+  it('assigns a new id for an unmatched name (new party member)', () => {
+    const result = applyPartyUpdate(
+      [{ name: 'Casey', role: 'Mage', hpPct: 100, isActive: false }],
+      EXISTING
+    )
+    expect(result[0].id).not.toBe('uuid-1')
+    expect(result[0].id).not.toBe('uuid-2')
+    expect(typeof result[0].id).toBe('string')
+    expect(result[0].id.length).toBeGreaterThan(0)
   })
 
   it('clamps hpPct to [0, 100]', () => {
-    // const result = applyPartyUpdate([
-    //   { name: 'Theron', role: 'Paladin', hpPct: 150, isActive: false },
-    // ], EXISTING)
-    // expect(result[0].hpPct).toBe(100)
+    const result = applyPartyUpdate(
+      [{ name: 'Theron', role: 'Paladin', hpPct: 150, isActive: false }],
+      EXISTING
+    )
+    expect(result[0].hpPct).toBe(100)
   })
 
   it('defaults missing fields defensively', () => {
-    // const result = applyPartyUpdate([{}], [])
-    // expect(result[0].name).toBe('Unknown')
-    // expect(result[0].role).toBe('')
-    // expect(result[0].hpPct).toBe(0)
-    // expect(result[0].isActive).toBe(false)
+    const result = applyPartyUpdate([{}], [])
+    expect(result[0].name).toBe('Unknown')
+    expect(result[0].role).toBe('')
+    expect(result[0].hpPct).toBe(0)
+    expect(result[0].isActive).toBe(false)
   })
 
   it('behaviour is identical to the Chat.jsx inline version (regression guard)', () => {
-    // Verify the move did not silently change behaviour by running the same
-    // inputs as Chat.test.jsx's applyPartyUpdate block.
-    // const result = applyPartyUpdate(
-    //   [{ name: 'Wren', role: 'Rogue', hpPct: 55, isActive: false }],
-    //   EXISTING
-    // )
-    // expect(result[0].id).toBe('uuid-2') // same id preserved
-    // expect(result[0].hpPct).toBe(55)
+    const result = applyPartyUpdate(
+      [{ name: 'Wren', role: 'Rogue', hpPct: 55, isActive: false }],
+      EXISTING
+    )
+    expect(result[0].id).toBe('uuid-2')
+    expect(result[0].hpPct).toBe(55)
   })
 })
