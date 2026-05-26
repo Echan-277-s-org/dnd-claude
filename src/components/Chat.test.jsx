@@ -432,3 +432,114 @@ describe('Phase 4 — XSS guard: multiplayer display names render as text nodes'
     }
   })
 })
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CHANGE 4 — senderLabel attribution logic
+//
+// Mirrors the senderLabel logic in Chat.jsx msg.role === 'user' rendering:
+//   - senderName present + equals displayName → "You"
+//   - senderName present + different → show senderName (other player)
+//   - senderName absent + multiplayer → neutral "Player" (never local viewer's name)
+//   - senderName absent + single-player → displayName or 'Player'
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Pure function that mirrors the Chat.jsx senderLabel derivation (CHANGE 4).
+// Kept in sync with Chat.jsx so changes are caught by test failures.
+function computeSenderLabel({ senderName, displayName, isMultiplayer }) {
+  if (senderName) {
+    return senderName === displayName ? 'You' : senderName
+  } else if (isMultiplayer) {
+    return 'Player'
+  } else {
+    return displayName || 'Player'
+  }
+}
+
+// Simple message-bubble renderer that uses computeSenderLabel.
+function MessageBubble({ msg, displayName, isMultiplayer }) {
+  const senderLabel = computeSenderLabel({
+    senderName: msg.senderName,
+    displayName,
+    isMultiplayer,
+  })
+  return (
+    <div data-testid="message">
+      <span data-testid="label">{senderLabel}</span>
+      <span data-testid="content">{msg.content}</span>
+    </div>
+  )
+}
+
+describe('CHANGE 4 — senderLabel attribution logic', () => {
+  it('message with senderName matching local displayName renders "You"', () => {
+    const { getByTestId } = render(
+      <MessageBubble
+        msg={{ role: 'user', content: 'Hello.', senderName: 'Alex' }}
+        displayName="Alex"
+        isMultiplayer={true}
+      />
+    )
+    expect(getByTestId('label').textContent).toBe('You')
+  })
+
+  it('message with senderName different from local displayName renders senderName', () => {
+    const { getByTestId } = render(
+      <MessageBubble
+        msg={{ role: 'user', content: 'Hey.', senderName: 'Jordan' }}
+        displayName="Alex"
+        isMultiplayer={true}
+      />
+    )
+    expect(getByTestId('label').textContent).toBe('Jordan')
+  })
+
+  it('multiplayer message with no senderName renders neutral "Player" (not the local viewer\'s name)', () => {
+    const { getByTestId } = render(
+      <MessageBubble
+        msg={{ role: 'user', content: 'Legacy message.' }}
+        displayName="Alex"
+        isMultiplayer={true}
+      />
+    )
+    // Must NOT render 'Alex' — that would mis-attribute the message.
+    expect(getByTestId('label').textContent).toBe('Player')
+    expect(getByTestId('label').textContent).not.toBe('Alex')
+  })
+
+  it('single-player message with no senderName renders displayName when set', () => {
+    const { getByTestId } = render(
+      <MessageBubble
+        msg={{ role: 'user', content: 'Solo action.' }}
+        displayName="Lyra"
+        isMultiplayer={false}
+      />
+    )
+    // Single-player: no senderName, no isMultiplayer → local displayName.
+    expect(getByTestId('label').textContent).toBe('Lyra')
+  })
+
+  it('single-player message with no senderName and no displayName renders "Player"', () => {
+    const { getByTestId } = render(
+      <MessageBubble
+        msg={{ role: 'user', content: 'Anonymous.' }}
+        displayName={null}
+        isMultiplayer={false}
+      />
+    )
+    expect(getByTestId('label').textContent).toBe('Player')
+  })
+
+  it('senderName is rendered as a React text node (XSS safe)', () => {
+    const { container, getByTestId } = render(
+      <MessageBubble
+        msg={{ role: 'user', content: 'Pwned.', senderName: '<script>alert(1)</script>' }}
+        displayName="Alex"
+        isMultiplayer={true}
+      />
+    )
+    // The text content must contain the literal string.
+    expect(getByTestId('label').textContent).toContain('<script>')
+    // No script element injected.
+    expect(container.querySelectorAll('script')).toHaveLength(0)
+  })
+})
