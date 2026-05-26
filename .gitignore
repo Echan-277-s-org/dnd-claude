@@ -12,3 +12,25 @@ docs/screenshots/*.cjs
 # Personal campaign notes — keep only the documented example tracked (see CLAUDE.md).
 campaigns/*
 !campaigns/jaycen-hawke-day2.md
+
+# Development/testing scaffolding — planning, coordination, QA, and review docs.
+# Kept on disk but untracked; the docs CLAUDE.md links to stay tracked.
+CODE-REVIEW.md
+OPTIMIZATION-PROGRESS.md
+CROSS-DEVICE-SYNC-FIXBATCH-HANDOFF.md
+CROSS-DEVICE-SYNC-PLAN.md
+CROSS-DEVICE-SYNC-REVIEW.md
+PARTY-HUD-COORDINATION.md
+PARTY-HUD-GITFLOW.md
+PARTY-HUD-TEST-PLAN.md
+PARTY-HUD-WORK-QUEUE.md
+QA-FIXES-CONTINUATION.md
+QA-RESULTS-2026-05-24.md
+QA-RESULTS-UIUX.md
+QA-TEST-PLAN.md
+QA-TESTING-PROGRESS.md
+THEMING-COORDINATION.md
+THEMING-OVERVIEW.md
+THEMING-WORKTREE-PLAN.md
+archive/
+stress-test/PROTOCOL.md
