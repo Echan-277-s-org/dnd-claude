@@ -55,4 +55,4 @@ The human-readable prose above the fenced block is what an LLM reads; the traili
 ` ```session ` block is the lossless machine payload the app uses to restore exact state.
 
 > Implemented — Phase A2. Save via the 💾 button in the chat header; load via the setup screen's
-> **Load .md file**. Design: `../CROSS-DEVICE-SYNC-EVALUATION.md` §2.5.
+> **Load .md file**. Design: `../docs/design/CROSS-DEVICE-SYNC-EVALUATION.md` §2.5.

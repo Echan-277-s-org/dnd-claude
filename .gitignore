@@ -14,23 +14,24 @@ campaigns/*
 !campaigns/jaycen-hawke-day2.md
 
 # Development/testing scaffolding — planning, coordination, QA, and review docs.
-# Kept on disk but untracked; the docs CLAUDE.md links to stay tracked.
-CODE-REVIEW.md
-OPTIMIZATION-PROGRESS.md
-CROSS-DEVICE-SYNC-FIXBATCH-HANDOFF.md
-CROSS-DEVICE-SYNC-PLAN.md
-CROSS-DEVICE-SYNC-REVIEW.md
-PARTY-HUD-COORDINATION.md
-PARTY-HUD-GITFLOW.md
-PARTY-HUD-TEST-PLAN.md
-PARTY-HUD-WORK-QUEUE.md
-QA-FIXES-CONTINUATION.md
-QA-RESULTS-2026-05-24.md
-QA-RESULTS-UIUX.md
-QA-TEST-PLAN.md
-QA-TESTING-PROGRESS.md
-THEMING-COORDINATION.md
-THEMING-OVERVIEW.md
-THEMING-WORKTREE-PLAN.md
-archive/
+# Collected under docs/design/; kept on disk but untracked. The design docs
+# CLAUDE.md and source code link to stay tracked (see docs/design/*.md exceptions below).
+docs/design/CODE-REVIEW.md
+docs/design/OPTIMIZATION-PROGRESS.md
+docs/design/CROSS-DEVICE-SYNC-FIXBATCH-HANDOFF.md
+docs/design/CROSS-DEVICE-SYNC-PLAN.md
+docs/design/CROSS-DEVICE-SYNC-REVIEW.md
+docs/design/PARTY-HUD-COORDINATION.md
+docs/design/PARTY-HUD-GITFLOW.md
+docs/design/PARTY-HUD-TEST-PLAN.md
+docs/design/PARTY-HUD-WORK-QUEUE.md
+docs/design/QA-FIXES-CONTINUATION.md
+docs/design/QA-RESULTS-2026-05-24.md
+docs/design/QA-RESULTS-UIUX.md
+docs/design/QA-TEST-PLAN.md
+docs/design/QA-TESTING-PROGRESS.md
+docs/design/THEMING-COORDINATION.md
+docs/design/THEMING-OVERVIEW.md
+docs/design/THEMING-WORKTREE-PLAN.md
+docs/design/archive/
 stress-test/PROTOCOL.md

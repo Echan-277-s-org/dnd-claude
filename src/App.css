@@ -1558,7 +1558,7 @@ body {
 
 /* ═══════════════════════════════════════════════════════════════════════
    PHASE B — Mobile party strip + HistoryPanel party sub-section
-   CSS corrected per design-bridge review (PARTY-HUD-PLAN.md Section 8):
+   CSS corrected per design-bridge review (docs/design/PARTY-HUD-PLAN.md Section 8):
    - Cell base: --surface-1 (not surface-2), radius 6px (not 4px)
    - Active inset bar: --gold (not --border-gold)
    - Active tint: color-mix over --surface-1 (not surface-2)

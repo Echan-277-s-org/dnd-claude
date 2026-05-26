@@ -4,7 +4,7 @@
 // app saves) by reusing the ONE serialize layer in src/lib/session.js — so the
 // server's store is itself a folder of resumable handoffs, no second format.
 //
-// Implements all 6 MUST-FIX from CROSS-DEVICE-SYNC-EVALUATION.md §2:
+// Implements all 6 MUST-FIX from docs/design/CROSS-DEVICE-SYNC-EVALUATION.md §2:
 //   M1 stable id (the client sends campaign.sessionId as :id — never a name slug)
 //   M2 campaign travels in the payload (handled by the serialize layer)
 //   M3 CORS + OPTIONS preflight

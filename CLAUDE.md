@@ -64,7 +64,7 @@ at the end of each response; `Chat.jsx` strips them from the displayed text and 
   dice message into a resolved `DiceChip`.
 
 Parser is defensive: malformed/missing/partial-stream blocks → keep last-known state, no throw.
-Full spec + rationale: `PARTY-HUD-PLAN.md` (and `PARTY-HUD-QWEN-VALIDATION.md` for model compliance).
+Full spec + rationale: `docs/design/PARTY-HUD-PLAN.md` (and `docs/design/PARTY-HUD-QWEN-VALIDATION.md` for model compliance).
 
 ## Session persistence & cross-device sync
 
@@ -90,7 +90,7 @@ messages, sessionLog, party }`). `entities` are excluded (re-derived via `extrac
 
 Folders: `campaigns/` = authored world notes → `campaign.context`; `sessions/` = app-authored saves
 (see `sessions/README.md`); the sync server's `server/sessions/` store is gitignored.
-Full design + rationale: `CROSS-DEVICE-SYNC-EVALUATION.md` (canonical) and `-HANDOFF.md`.
+Full design + rationale: `docs/design/CROSS-DEVICE-SYNC-EVALUATION.md` (canonical) and `docs/design/CROSS-DEVICE-SYNC-HANDOFF.md`.
 
 ## Campaign notes
 
@@ -99,7 +99,7 @@ reads one into `campaign.context`, injected into the system prompt as prior worl
 `buildSystemPrompt`). Bold every NPC/location name (`**Name**`) so the continuity tracker
 (`extractEntities`) picks them up. Example: `campaigns/jaycen-hawke-day2.md`.
 
-> Historical note: `CONTEXT.md` documents the (now-complete) Anthropic→Ollama migration. The app
+> Historical note: `docs/design/CONTEXT.md` documents the (now-complete) Anthropic→Ollama migration. The app
 > already runs on local Ollama; that doc is kept for reference only.
 
 ## Agent routing
