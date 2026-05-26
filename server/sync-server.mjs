@@ -12,19 +12,49 @@
 //   M5 atomic writes (temp+rename) + per-session lock + server-stamped savedAt
 //   M6 is a client concern (persist per turn) — see useSessionPersistence.js
 //
+// Phase 1 multiplayer additions (MULTIPLAYER-ARCHITECTURE.md §2.1):
+//   MC-1: createSyncServer now returns http.Server (not the express app).
+//   D:   WS upgrade origin allowlist via WS_ALLOWED_ORIGINS env var.
+//   F:   maxPayload 65536, try/catch on all WS handlers, socket+server error handlers.
+//   J:   NAME_TAKEN guard per active connection.
+//   B:   displayName sanitization.
+//
 // No auth / plain http: acceptable on a trusted LAN (backend-developer NICE tier).
 
 import express from 'express'
 import cors from 'cors'
+import http from 'node:http'
 import { mkdir, readFile, writeFile, rename, readdir, unlink } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { randomUUID } from 'node:crypto'
+import { WebSocketServer } from 'ws'
 import { toMarkdown, fromMarkdown, serializeSession } from '../src/lib/session.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const DEFAULT_DIR = path.resolve(__dirname, 'sessions')
 const ID_RE = /^[A-Za-z0-9_-]{1,128}$/
+
+// ─── Origin allowlist for WS upgrades (security item D) ───────────────────────
+// Configured via WS_ALLOWED_ORIGINS (comma-split). An empty/absent Origin header
+// is always allowed (test harness + non-browser LAN clients).
+function buildAllowedOrigins() {
+  const env = process.env.WS_ALLOWED_ORIGINS
+  if (env && env.trim()) {
+    return env.split(',').map(s => s.trim()).filter(Boolean)
+  }
+  return ['http://localhost:5173']
+}
+
+// ─── displayName sanitization (security item B) ───────────────────────────────
+function sanitizeDisplayName(s) {
+  return String(s ?? '')
+    .trim()
+    .replace(/[<>&"']/g, '')
+    // Strip Unicode control characters (category Cc)
+    .replace(/\p{Cc}/gu, '')
+    .slice(0, 64)
+}
 
 export function createSyncServer({ sessionsDir = DEFAULT_DIR } = {}) {
   // M4 — resolve a path-safe filename for an id, or null if it escapes the dir.
@@ -149,7 +179,251 @@ export function createSyncServer({ sessionsDir = DEFAULT_DIR } = {}) {
     res.status(bad ? 400 : 500).json({ error: bad ? 'invalid JSON' : 'server error' })
   })
 
-  return app
+  // ─── MC-1: wrap in http.Server so WS can share the same port ────────────────
+  const server = http.createServer(app)
+
+  // ─── Phase 1: WebSocket /ws endpoint ────────────────────────────────────────
+  // Per-room in-memory state (keyed by sessionId — never roomCode, per sec item I).
+  // { sessionId, roomCode, clients: Map<ws, {displayName, partyId, connectedAt}>,
+  //   phase: 'free-roam', turnSequence: 0 }
+  const rooms = new Map()
+
+  const wss = new WebSocketServer({ noServer: true, maxPayload: 65536 })
+
+  // Catch-all WS server errors (e.g. listen failures) — never let them crash the process.
+  wss.on('error', err => {
+    // eslint-disable-next-line no-console
+    console.error('[wss] server error:', err?.message ?? err)
+  })
+
+  // Build the presence array for a room from its current clients map.
+  function presenceList(room) {
+    return Array.from(room.clients.values()).map(c => ({
+      displayName: c.displayName,
+      status: 'connected',
+    }))
+  }
+
+  // Broadcast a JSON message to every client in a room.
+  function broadcast(room, msg) {
+    const data = JSON.stringify(msg)
+    for (const [ws] of room.clients) {
+      try {
+        if (ws.readyState === ws.OPEN) ws.send(data)
+      } catch {
+        // best-effort — ignore send failures to individual clients
+      }
+    }
+  }
+
+  // ─── WS upgrade filter (security item D) ──────────────────────────────────
+  server.on('upgrade', (req, socket, head) => {
+    const allowed = buildAllowedOrigins()
+    const origin = req.headers.origin ?? ''
+    // Allow empty/absent Origin (test harness, curl, non-browser LAN clients)
+    // and any explicitly listed origin.
+    const originOk = origin === '' || allowed.some(o => origin === o)
+    if (!originOk) {
+      socket.write('HTTP/1.1 403 Forbidden\r\n\r\n')
+      socket.destroy()
+      return
+    }
+    if (req.url === '/ws') {
+      wss.handleUpgrade(req, socket, head, ws => wss.emit('connection', ws, req))
+    } else {
+      // Unknown WS path — reject cleanly.
+      socket.write('HTTP/1.1 404 Not Found\r\n\r\n')
+      socket.destroy()
+    }
+  })
+
+  // ─── WS connection handler ─────────────────────────────────────────────────
+  wss.on('connection', ws => {
+    // Per-socket error handler — prevents one bad socket crashing the server.
+    ws.on('error', err => {
+      // eslint-disable-next-line no-console
+      console.error('[ws] socket error:', err?.message ?? err)
+    })
+
+    ws.on('message', data => {
+      // Wrap entire handler in try/catch so a malformed message never crashes.
+      try {
+        let msg
+        try {
+          msg = JSON.parse(data)
+        } catch {
+          ws.send(JSON.stringify({ type: 'error', payload: { code: 'bad_message' } }))
+          return
+        }
+
+        const { type } = msg ?? {}
+
+        // ─── type allowlist (security item F) ───────────────────────────────
+        if (!['join', 'action', 'ping'].includes(type)) {
+          // Unknown type — drop silently (don't send error; avoid info leakage).
+          return
+        }
+
+        // ─── ping / pong ─────────────────────────────────────────────────────
+        if (type === 'ping') {
+          ws.send(JSON.stringify({ type: 'pong' }))
+          return
+        }
+
+        // ─── join ─────────────────────────────────────────────────────────────
+        if (type === 'join') {
+          handleJoin(ws, msg)
+          return
+        }
+
+        // ─── action (Phase 2+; not implemented yet in Phase 1) ───────────────
+        // Drop silently — will be wired up in Phase 2.
+
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error('[ws] message handler error:', err?.message ?? err)
+      }
+    })
+
+    ws.on('close', () => {
+      try {
+        handleClose(ws)
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error('[ws] close handler error:', err?.message ?? err)
+      }
+    })
+  })
+
+  // ─── join handler ──────────────────────────────────────────────────────────
+  async function handleJoin(ws, msg) {
+    try {
+      const { roomCode, sessionId, displayName: rawDisplayName, lastTurnSequence } = msg ?? {}
+
+      // Validate roomCode (must also be a valid ID_RE string — it's the primary key
+      // users type, but the .md store uses sessionId; both must pass ID_RE).
+      if (!ID_RE.test(String(roomCode ?? ''))) {
+        ws.send(JSON.stringify({
+          type: 'error',
+          payload: { code: 'invalid_room', message: 'roomCode failed validation' },
+        }))
+        return
+      }
+
+      // Validate sessionId (the .md store key — must pass ID_RE).
+      if (!ID_RE.test(String(sessionId ?? ''))) {
+        ws.send(JSON.stringify({
+          type: 'error',
+          payload: { code: 'invalid_room', message: 'sessionId failed validation' },
+        }))
+        return
+      }
+
+      // Sanitize + validate displayName (security item B).
+      const displayName = sanitizeDisplayName(rawDisplayName)
+      if (!displayName) {
+        ws.send(JSON.stringify({
+          type: 'error',
+          payload: { code: 'invalid_name', message: 'displayName must be non-empty after sanitization' },
+        }))
+        return
+      }
+
+      // Ensure room exists in-memory (keyed by sessionId per sec item I).
+      if (!rooms.has(sessionId)) {
+        rooms.set(sessionId, {
+          sessionId,
+          roomCode,
+          clients: new Map(),
+          phase: 'free-roam',
+          turnSequence: 0,
+        })
+      }
+      const room = rooms.get(sessionId)
+
+      // NAME_TAKEN: check if displayName (trimmed, lowercased) is already bound
+      // to an OPEN connection in this room (security item J).
+      const normalizedName = displayName.trim().toLowerCase()
+      for (const [existingWs, info] of room.clients) {
+        if (
+          info.displayName.trim().toLowerCase() === normalizedName &&
+          existingWs.readyState === existingWs.OPEN &&
+          existingWs !== ws
+        ) {
+          ws.send(JSON.stringify({
+            type: 'error',
+            payload: { code: 'NAME_TAKEN', message: 'A player with that name is already connected' },
+          }))
+          return
+        }
+      }
+
+      // Load any stored session (reads from .md, never keyed by roomCode).
+      const stored = await readStored(sessionId)
+
+      // Build the snapshot payload. Use stored data when available; fall back to
+      // safe defaults so the first join creates an empty room without writing a .md.
+      const snapshot = {
+        messages: stored?.messages ?? [],
+        party: stored?.party ?? [],
+        phase: stored?.phase ?? 'free-roam',
+        turnSequence: stored?.turnSequence ?? 0,
+        roomCode,
+        savedAt: stored?.savedAt ?? null,
+        campaign: stored?.campaign ?? null,
+      }
+
+      // Resolve partyId by name-match against the stored party array.
+      const partyId = (() => {
+        if (!stored?.party?.length) return null
+        const match = stored.party.find(
+          m => String(m?.name ?? '').trim().toLowerCase() === normalizedName
+        )
+        return match?.id ?? null
+      })()
+
+      // Bind this ws → connection info in the room's clients map.
+      room.clients.set(ws, { displayName, partyId, connectedAt: new Date().toISOString() })
+
+      // Update room's turnSequence from stored data if this is the first join.
+      if (stored?.turnSequence != null && stored.turnSequence > room.turnSequence) {
+        room.turnSequence = stored.turnSequence
+      }
+      if (stored?.phase) room.phase = stored.phase
+
+      // Send session:state to the joining client.
+      ws.send(JSON.stringify({ type: 'session:state', roomCode, payload: snapshot }))
+
+      // Broadcast presence:update to all clients in the room (including the new joiner).
+      broadcast(room, {
+        type: 'presence:update',
+        payload: presenceList(room),
+      })
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error('[ws] handleJoin error:', err?.message ?? err)
+    }
+  }
+
+  // ─── close handler ─────────────────────────────────────────────────────────
+  function handleClose(ws) {
+    for (const [sessionId, room] of rooms) {
+      if (room.clients.has(ws)) {
+        room.clients.delete(ws)
+        // Broadcast updated presence to remaining clients.
+        if (room.clients.size > 0) {
+          broadcast(room, {
+            type: 'presence:update',
+            payload: presenceList(room),
+          })
+        }
+        // Optionally clean up empty rooms (keep them in-memory until Phase 6 GC).
+        break
+      }
+    }
+  }
+
+  return server
 }
 
 // Start only when run directly (not when imported by tests).
