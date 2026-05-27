@@ -619,6 +619,8 @@ async function runHarness4P({ mode, maxRounds, runId, port, manageServer, model 
   // ─── State ────────────────────────────────────────────────────────────────────
   let currentPhase = 'free-roam'
   let latestParty = []              // most-recent party from any dm:done or session:update
+  let rosterCursor = 0              // index into ROSTER of last real player who acted
+  let phantomPickedThisBeat = false // set true by pickActingClient when it recovers a phantom
   let lastSessionUpdate = null      // most-recent round-final session:update payload
   let turnIndex = 0                 // global turn counter (1-based)
   let roundIndex = 0                // current round number (1-based)
@@ -779,18 +781,24 @@ async function runHarness4P({ mode, maxRounds, runId, port, manageServer, model 
   // ─── Helper: determine which client to use for this beat ─────────────────────
   // Turn 1 (no party yet): always Kael.
   // Subsequent turns: use the isActive member from the latest party.
-  // If isActive member is not in our roster (unlikely), fall back to Kael.
+  // If isActive member is not in our roster (DM name-slip), advance the cursor
+  // to the next real roster player and return that client — non-fatal recovery.
   function pickActingClient(beatIndex) {
     if (beatIndex === 0 || latestParty.length === 0) {
       return clients['Kael']
     }
     const owner = getSpotlightOwner(latestParty)
     if (owner && clients[owner]) {
+      // Keep cursor in sync with the real player now acting
+      rosterCursor = ROSTER.indexOf(owner)
       return clients[owner]
     }
-    // Spotlight owner not in roster — fall back to Kael
-    console.warn(`  pickActingClient: spotlight "${owner}" not in roster, falling back to Kael`)
-    return clients['Kael']
+    // Spotlight owner is a phantom name not in roster — advance cursor to next real player
+    rosterCursor = (rosterCursor + 1) % ROSTER.length
+    const recoveredName = ROSTER[rosterCursor]
+    phantomPickedThisBeat = true
+    console.warn(`  pickActingClient: spotlight "${owner}" not in roster — PHANTOM_ROSTER_RECOVERED, advancing cursor to ${recoveredName}`)
+    return clients[recoveredName]
   }
 
   // ─── Turn execution ───────────────────────────────────────────────────────────
@@ -809,6 +817,7 @@ async function runHarness4P({ mode, maxRounds, runId, port, manageServer, model 
 
     // ─── Determine acting client (follow-the-spotlight) ────────────────────────
     // Mutable: may be overridden on NOT_YOUR_TURN retry
+    phantomPickedThisBeat = false   // reset before each pick; set by pickActingClient on phantom recovery
     let actingClient = pickActingClient(beatIdx)
     let scheduledPlayer = actingClient.displayName
 
@@ -848,6 +857,10 @@ async function runHarness4P({ mode, maxRounds, runId, port, manageServer, model 
       let finalSessionUpdate = null
       let retried = false
       let notYourTurnRetried = false
+      // phantomAdvances counts cursor-advances this beat to cap non-roster recovery
+      let phantomAdvancesDice = 0
+      // dicePhantomFlags collects PHANTOM_ROSTER_RECOVERED flags for this beat's JSONL record
+      const dicePhantomFlags = []
 
       while (true) {
         let msg
@@ -881,10 +894,25 @@ async function runHarness4P({ mode, maxRounds, runId, port, manageServer, model 
               break
             }
           } else if (code === 'NOT_YOUR_TURN') {
-            // Re-read latest party and retry as the now-active player
-            if (!notYourTurnRetried) {
+            // Re-read latest party and retry as the now-active player.
+            const newOwner = getSpotlightOwner(latestParty)
+            if (!clients[newOwner] && phantomAdvancesDice < ROSTER.length) {
+              // Phantom name-slip: advance cursor to next real roster player — non-fatal
+              phantomAdvancesDice++
+              rosterCursor = (rosterCursor + 1) % ROSTER.length
+              actingClient = clients[ROSTER[rosterCursor]]
+              scheduledPlayer = ROSTER[rosterCursor]
+              dicePhantomFlags.push('PHANTOM_ROSTER_RECOVERED')
+              console.warn(`  ${label} NOT_YOUR_TURN (dice) — phantom spotlight "${newOwner}", PHANTOM_ROSTER_RECOVERED → advancing cursor to ${scheduledPlayer}`)
+              await delay(300)
+              actingClient.send({
+                type: 'action', roomCode,
+                payload: { type: 'dice', content: `[Dice roll: ${beat.die} → ${beat.result}]` },
+              })
+            } else if (!notYourTurnRetried) {
+              // Real roster player: single retry allowed
               notYourTurnRetried = true
-              const newOwner = getSpotlightOwner(latestParty)
+              dicePhantomFlags.push('SPOTLIGHT_RACE') // parity with the action path's race flag
               console.warn(`  ${label} NOT_YOUR_TURN (dice) — spotlight now "${newOwner}", retrying`)
               if (newOwner && clients[newOwner]) {
                 actingClient = clients[newOwner]
@@ -896,9 +924,10 @@ async function runHarness4P({ mode, maxRounds, runId, port, manageServer, model 
                 payload: { type: 'dice', content: `[Dice roll: ${beat.die} → ${beat.result}]` },
               })
             } else {
+              // Second NOT_YOUR_TURN against a real roster player — genuine server desync
               stopReason = 'SERVER_ERROR'
               stopRound = round
-              console.error(`  ${label} FATAL: double NOT_YOUR_TURN on dice`)
+              console.error(`  ${label} FATAL: double NOT_YOUR_TURN on dice (real player desync)`)
               break
             }
           }
@@ -954,7 +983,10 @@ async function runHarness4P({ mode, maxRounds, runId, port, manageServer, model 
 
       // ─── CJK / non-Latin leak scan (HEADLINE metric) — dice turn DM text ───────
       const diceFullText = dmDoneMsg?.payload?.fullText ?? ''
-      const diceEventFlags = []
+      // Merge phantom-recovery flags: from pickActingClient (initial pick) and from message loop
+      const diceEventFlags = phantomPickedThisBeat
+        ? ['PHANTOM_ROSTER_RECOVERED', ...dicePhantomFlags]
+        : [...dicePhantomFlags]
       const diceLeak = detectNonLatinLeak(diceFullText)
       if (diceLeak) {
         diceEventFlags.push('CJK_LEAK')
@@ -1010,10 +1042,13 @@ async function runHarness4P({ mode, maxRounds, runId, port, manageServer, model 
     const wallT0 = Date.now()
     let retried = false
     let notYourTurnRetried = false
+    // phantomAdvancesAction counts cursor-advances this beat to cap non-roster recovery
+    let phantomAdvancesAction = 0
     let dmDoneMsg = null
     let finalSessionUpdate = null
     let fullText = ''
-    let eventFlags = []
+    // Seed with PHANTOM_ROSTER_RECOVERED if pickActingClient already recovered a phantom this beat
+    let eventFlags = phantomPickedThisBeat ? ['PHANTOM_ROSTER_RECOVERED'] : []
 
     // Send action on the acting client (spotlight owner)
     actingClient.send({
@@ -1057,12 +1092,24 @@ async function runHarness4P({ mode, maxRounds, runId, port, manageServer, model 
         }
         if (code === 'NOT_YOUR_TURN') {
           // Re-read latest party and retry as the now-active player.
-          // This handles the race where the DM switched spotlight between our
-          // pickActingClient call and the action arriving at the server.
-          if (!notYourTurnRetried) {
+          const newOwner = getSpotlightOwner(latestParty)
+          if (!clients[newOwner] && phantomAdvancesAction < ROSTER.length) {
+            // Phantom name-slip: advance cursor to next real roster player — non-fatal
+            phantomAdvancesAction++
+            rosterCursor = (rosterCursor + 1) % ROSTER.length
+            actingClient = clients[ROSTER[rosterCursor]]
+            scheduledPlayer = ROSTER[rosterCursor]
+            eventFlags.push('PHANTOM_ROSTER_RECOVERED')
+            console.warn(`  ${label} NOT_YOUR_TURN — phantom spotlight "${newOwner}", PHANTOM_ROSTER_RECOVERED → advancing cursor to ${scheduledPlayer}`)
+            await delay(300)
+            actingClient.send({
+              type: 'action', roomCode,
+              payload: { type: 'user', content: actionText, pendingCheck },
+            })
+          } else if (!notYourTurnRetried) {
+            // Real roster player: single retry allowed (normal spotlight-race handling)
             notYourTurnRetried = true
             eventFlags.push('SPOTLIGHT_RACE')
-            const newOwner = getSpotlightOwner(latestParty)
             console.warn(`  ${label} NOT_YOUR_TURN (spotlight race) — now "${newOwner}", retrying`)
             if (newOwner && clients[newOwner]) {
               actingClient = clients[newOwner]
@@ -1074,9 +1121,10 @@ async function runHarness4P({ mode, maxRounds, runId, port, manageServer, model 
               payload: { type: 'user', content: actionText, pendingCheck },
             })
           } else {
+            // Second NOT_YOUR_TURN against a real roster player — genuine server desync
             stopReason = 'SERVER_ERROR'
             stopRound = round
-            console.error(`  ${label} FATAL: double NOT_YOUR_TURN — cannot recover`)
+            console.error(`  ${label} FATAL: double NOT_YOUR_TURN — real player desync, cannot recover`)
             break
           }
           continue

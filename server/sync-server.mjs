@@ -187,6 +187,57 @@ export function anchorJoinedPCNames(newParty, oldParty, characters) {
   const newPartyNamesLower = new Set(
     newParty.map(m => String(m?.name ?? '').trim().toLowerCase())
   )
+
+  // ── 1a. Safety net — total confabulation (turn-1 and mid-run). ───────────────
+  //
+  // Check BEFORE the missingPCs pass: if newParty contains ZERO canonical roster PCs,
+  // the DM wholesale-confabulated the entire party. This catches turn-1 confabulation
+  // (oldParty=[]) where missingPCs would be empty (all oldIndex===-1 → skipped) and
+  // the normal passes cannot run.
+  //
+  // Triggering conditions (strict):
+  //   - characters is non-empty (multiplayer roster, already guarded above).
+  //   - newParty contains ZERO names from rosterLower.
+  //   - NEVER triggers on partial confabulation (≥1 roster PC present).
+  //   - NEVER triggers for N=1 / empty characters (early-return guard above covers this).
+  //
+  // Rebuild policy:
+  //   - One entry per canonical roster member (Object.keys(characters) order).
+  //   - name = exact roster key/displayName.
+  //   - role = characters[name].charClass if present; else confab entry's role at the
+  //     same positional index; else ''.
+  //   - isActive and hpPct carried over from the confabulated newParty entry at the
+  //     SAME positional index (preserves DM's intent for active/HP state).
+  //     Where no index aligns, default isActive=false, hpPct=100.
+  //   - id: match oldParty by canonical name if present (preserve id); else reuse
+  //     the confab entry's id at that index; else undefined (applyPartyUpdate will
+  //     assign a fresh id on the next name-match).
+
+  const hasAnyRosterPC = rosterEntries.some(
+    name => newPartyNamesLower.has(name.trim().toLowerCase())
+  )
+
+  if (!hasAnyRosterPC) {
+    // Total confabulation detected — rebuild newParty from canonical roster in place.
+    const rebuilt = rosterEntries.map((canonicalName, idx) => {
+      const confabEntry = newParty[idx] ?? null
+      const charData = characters[canonicalName]
+      const role = (charData && charData.charClass)
+        ? charData.charClass
+        : (confabEntry ? String(confabEntry.role ?? '') : '')
+      const isActive = confabEntry ? Boolean(confabEntry.isActive) : false
+      const hpPct   = confabEntry ? (typeof confabEntry.hpPct === 'number' ? confabEntry.hpPct : 100) : 100
+      const oldEntry = oldParty.find(
+        m => String(m?.name ?? '').trim().toLowerCase() === canonicalName.trim().toLowerCase()
+      )
+      const id = oldEntry?.id ?? confabEntry?.id ?? undefined
+      return { id, name: canonicalName, role, hpPct, isActive }
+    })
+    newParty.length = 0
+    for (const entry of rebuilt) newParty.push(entry)
+    return newParty
+  }
+
   const missingPCs = [] // { canonicalName, normalizedKey, oldIndex }
   for (const [normalizedKey, canonicalName] of rosterLower) {
     if (newPartyNamesLower.has(normalizedKey)) continue // still present — fine
@@ -200,21 +251,143 @@ export function anchorJoinedPCNames(newParty, oldParty, characters) {
 
   if (missingPCs.length === 0) return newParty // nothing missing → no-op
 
-  // ── 2. For each missing PC, correct the same-index slot if it is a non-PC name.
+  // ── 2. Build phantom candidate set (used by both pass 1 and pass 2). ──────────
+  //
+  // A "phantom candidate" is a newParty entry whose name is:
+  //   (a) NOT in rosterLower (not a canonical PC), AND
+  //   (b) NOT in the old party (brand-new this turn — not a pre-existing NPC/companion).
+  //
+  // These are the only entries that could be a confabulated rename. Pre-existing NPCs
+  // that persisted from the prior turn are excluded by condition (b), so legitimate
+  // companions are never touched.
+
+  const oldPartyNamesLower = new Set(
+    oldParty.map(m => String(m?.name ?? '').trim().toLowerCase())
+  )
+
+  // Collect phantom candidates: brand-new non-PC entries.
+  // Each phantom carries its newParty index for targeted mutation.
+  const phantomCandidates = [] // { index, entry, nameLower }
+  for (let i = 0; i < newParty.length; i++) {
+    const entry = newParty[i]
+    if (!entry) continue
+    const nameLower = String(entry.name ?? '').trim().toLowerCase()
+    if (rosterLower.has(nameLower)) continue      // canonical PC — not a phantom
+    if (oldPartyNamesLower.has(nameLower)) continue // was already in old party — skip
+    phantomCandidates.push({ index: i, entry, nameLower })
+  }
+
+  // ── 3. Pass 1 — role-matched assignment (global, NOT index-restricted). ───────
+  //
+  // For each missing PC whose old role is known, find phantom candidates (across ALL
+  // slots, not just the PC's own old index) whose role matches. A unique role match
+  // is a confident remap and is applied immediately. Preference is given to the
+  // candidate at the PC's own old index when it role-matches, but any unique role
+  // match qualifies. Each phantom is consumed once.
+  //
+  // This pass runs BEFORE the same-slot fallback so that a phantom at the PC's old
+  // index is never stolen by a different PC just because their old index happens to
+  // coincide — only a genuine role match earns the assignment.
+  //
+  // Disambiguation strategy:
+  //   - Unique role match (global): confident remap; prefer own-index if it qualifies.
+  //   - Multiple role matches for the same PC: ambiguous; defer to same-slot fallback.
+  //   - No role match: defer to same-slot fallback (Pass 2).
+  //   - Roles incompatible in 1:1: leave unchanged (safety net for hard conflicts).
+
   for (const { canonicalName, normalizedKey, oldIndex } of missingPCs) {
-    // The confabulated entry would be at the same position in newParty.
+    if (newPartyNamesLower.has(normalizedKey)) continue // already resolved — skip
+
+    const oldRole = oldIndex !== -1 && oldParty[oldIndex]
+      ? String(oldParty[oldIndex].role ?? '').trim().toLowerCase()
+      : ''
+
+    if (!oldRole) continue // no role info → defer to same-slot fallback
+
+    // Filter to phantoms still available (not already consumed by a prior iteration).
+    const available = phantomCandidates.filter(p => newPartyNamesLower.has(p.nameLower))
+    if (available.length === 0) continue
+
+    const roleMatches = available.filter(
+      p => String(p.entry.role ?? '').trim().toLowerCase() === oldRole
+    )
+
+    if (roleMatches.length === 0) continue // no role match → defer to same-slot fallback
+    if (roleMatches.length > 1) continue   // ambiguous multiple matches → defer
+
+    // Unique role match — pick it (prefer own-index if it happens to be that candidate,
+    // but any unique match is confident).
+    const ownIndexMatch = roleMatches.find(p => p.index === oldIndex)
+    const chosen = ownIndexMatch ?? roleMatches[0]
+
+    newParty[chosen.index] = { ...chosen.entry, name: canonicalName }
+    newPartyNamesLower.delete(chosen.nameLower)
+    newPartyNamesLower.add(normalizedKey)
+  }
+
+  // ── 4. Pass 2 — same-slot fallback (role-guarded). ───────────────────────────
+  //
+  // For any PC still missing after Pass 1, apply the original same-slot rule: if the
+  // (still-available, not-yet-consumed) entry at the PC's own old index is a non-PC
+  // name, rename it to the canonical PC name. A role-compatibility guard (added to
+  // match Passes 1 & 3) prevents overwriting a brand-new NPC whose role explicitly
+  // differs from the missing PC's old role — that scenario is indistinguishable from
+  // a new NPC at the same slot and must be preserved rather than mangled.
+  //
+  // Trade-off: a DM rename that also changes the PC's role (rename+reclass in a single
+  // turn) will no longer be auto-repaired by this pass. That case is indistinguishable
+  // from a new NPC, so we err on the side of preservation.
+
+  for (const { canonicalName, normalizedKey, oldIndex } of missingPCs) {
+    if (newPartyNamesLower.has(normalizedKey)) continue // already resolved — skip
     if (oldIndex >= newParty.length) continue // party shrank past this index — skip
     const slot = newParty[oldIndex]
     if (!slot) continue
     const slotNameLower = String(slot.name ?? '').trim().toLowerCase()
-    // Only correct if the slot holds a name that is NOT a joined PC name.
-    // If the slot is already a different joined PC, don't overwrite them.
+    // Only correct if the slot holds a name that is NOT a joined PC name AND is still
+    // available (not already consumed by Pass 1 or an earlier iteration of this pass).
     if (rosterLower.has(slotNameLower)) continue // legitimate same-slot PC — skip
+    if (!newPartyNamesLower.has(slotNameLower)) continue // already consumed — skip
+    // Role-compatibility guard: if BOTH the missing PC's old role and the slot entry's
+    // role are non-empty AND they differ, this is a role conflict — the slot is likely
+    // a brand-new NPC, not a confabulated rename. Leave it alone.
+    const oldRole = oldIndex !== -1 && oldParty[oldIndex]
+      ? String(oldParty[oldIndex].role ?? '').trim().toLowerCase() : ''
+    const slotRole = String(slot.role ?? '').trim().toLowerCase()
+    if (oldRole && slotRole && oldRole !== slotRole) continue // role conflict — not a rename, leave the NPC alone
     // Restore the canonical name; all other DM-emitted fields are kept as-is.
     newParty[oldIndex] = { ...slot, name: canonicalName }
-    // Remove from the set so the phase/fairness guard sees the correct name.
     newPartyNamesLower.delete(slotNameLower)
     newPartyNamesLower.add(normalizedKey)
+  }
+
+  // ── 5. Pass 3 — cross-slot 1:1 fallback (no-role single rename). ─────────────
+  //
+  // If exactly one PC is still missing and exactly one phantom is still available,
+  // and the roles are compatible (same, or at least one side unknown), remap it.
+  // This handles cross-slot single confabulations where role data is absent.
+
+  const stillMissing = missingPCs.filter(
+    ({ normalizedKey }) => !newPartyNamesLower.has(normalizedKey)
+  )
+
+  if (stillMissing.length === 1) {
+    const available = phantomCandidates.filter(p => newPartyNamesLower.has(p.nameLower))
+    if (available.length === 1) {
+      const { canonicalName, normalizedKey, oldIndex } = stillMissing[0]
+      const oldRole = oldIndex !== -1 && oldParty[oldIndex]
+        ? String(oldParty[oldIndex].role ?? '').trim().toLowerCase()
+        : ''
+      const candidateRole = String(available[0].entry.role ?? '').trim().toLowerCase()
+      const rolesCompatible = !oldRole || !candidateRole || oldRole === candidateRole
+      if (rolesCompatible) {
+        const chosen = available[0]
+        newParty[chosen.index] = { ...chosen.entry, name: canonicalName }
+        newPartyNamesLower.delete(chosen.nameLower)
+        newPartyNamesLower.add(normalizedKey)
+      }
+      // If roles are explicitly incompatible, leave newParty unchanged — hard conflict.
+    }
   }
 
   return newParty
