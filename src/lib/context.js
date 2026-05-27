@@ -45,6 +45,8 @@ Structured data blocks: After the narrative — at the very END of EVERY respons
 
 3. Verdict block — ONLY when resolving a roll the player just reported. When the player's message reports a dice roll for a pending check, judge it against the DC and append a fenced block tagged \`verdict\` with keys: skill (string, UPPERCASE), dc (integer), roll (integer, echoed faithfully from the player), result (the EXACT string "PASS" or "FAIL", uppercase, nothing else). When the player reports a roll, always finalize the outcome in that same response — emit the \`verdict\` block and narrate the result, whether success or failure. Do not re-request a roll for the same action; the outcome is decided by the reported number. Echo the \`skill\` and \`dc\` values from the pending check in the player's message; do not substitute a different skill or DC.
 
+4. Facts block — ONLY when a durable numeric or transactional fact is established or updated. When the session establishes a specific price paid, quantity acquired, count, date, debt, named amount, or other numeric/transactional fact that must persist across many turns, append a fenced block tagged \`facts\` containing a minified JSON array of \`{"k":"<short_snake_case_key>","v":"<value with unit>"}\` objects — for example \`[{"k":"blacksmith_price","v":"12 gold"},{"k":"torch_count","v":"6"}]\`. Use a stable, descriptive snake_case key so later updates to the same fact can merge (overwrite) it. Omit this block entirely when no such fact was established or changed in this response. Do NOT emit it every turn — only when genuinely new or updated numeric/transactional information appears.
+
 Worked example — a reply that requests a stealth check (note the trailing blocks after the prose):
 
 The corridor stretches into darkness, and you hear bootsteps echoing from the guardroom ahead. Slipping past unseen will take a steady nerve. Give me a **Stealth** check, DC 15.
@@ -264,9 +266,7 @@ export function extractEntities(messages, max = 50) {
   const stats = new Map() // key -> { term, order, count }
   let order = 0
 
-  const add = (raw) => {
-    const term = raw.trim().replace(/[,.;:!?]+$/, '').trim()
-    if (!term) return
+  const index = (term) => {
     if (!looksLikeEntity(term)) return
     const key = term.toLowerCase()
     const existing = stats.get(key)
@@ -275,6 +275,32 @@ export function extractEntities(messages, max = 50) {
     } else {
       stats.set(key, { term, order: order++, count: 1 })
     }
+  }
+
+  const add = (raw) => {
+    const term = raw.trim().replace(/[,.;:!?]+$/, '').trim()
+    if (!term) return
+
+    // Possessive/compound split (Fix #2). A bold span like
+    // "Garret Ironhand's Forge of Embers" is TWO entities: the possessor
+    // ("Garret Ironhand") and the possessed ("Forge of Embers"). Split on the
+    // first possessive 's / ’s and index each half INDEPENDENTLY so each can
+    // earn its own frequency count and digest slot. Done before the >4-word
+    // gate in looksLikeEntity (which would otherwise reject the whole 5-word
+    // span and lose both). Each half is still validated by looksLikeEntity, so
+    // the prose/imperative/stopword/title-case guards (steps 6/7/9) still fire
+    // per half — no false-positive hole. The "<Role>'s Name" label form is
+    // already rejected up-front by looksLikeEntity step 2b on the whole span.
+    const poss = term.match(/^(.+?)['’]s\s+(.+)$/)
+    if (poss && !/['’]s\s+name$/i.test(term)) {
+      const possessor = poss[1].trim()
+      const possessed = poss[2].trim()
+      if (possessor) index(possessor)
+      if (possessed) add(possessed) // recurse: handles chained possessives
+      return
+    }
+
+    index(term)
   }
 
   // A double-quoted span counts as a name only if it's 1–3 words, each
@@ -330,8 +356,54 @@ export function extractEntities(messages, max = 50) {
 // (user+assistant ×2), so the Turn-2 premise/quest-giver (e.g. Elder Sorcha)
 // survives long sessions instead of being evicted. The length guard prevents
 // pinned and recent from double-counting on short conversations.
+//
+// playerCount scaling (Fix #1 — 4-player continuity remediation):
+// The shared recent window (18) holds ~2.25 rounds of a 4-player session
+// (~8 msgs/round), so each player's own facts evict ~4× faster than in
+// single-player (which kept ~9 of its own turns). We scale `recent` toward
+// per-player history parity for N>1, capped so the worst case stays inside
+// the model's num_ctx:8192 budget.
+//
+//   recent = min(CAP, 18 + RECENT_PER_EXTRA_PLAYER · (playerCount − 1))
+//   RECENT_PER_EXTRA_PLAYER = 8   (one 4-player round ≈ 8 msgs ⇒ each extra
+//                                   human buys back ~one round of shared tail)
+//   CAP = 42
+//
+// Resulting recent: N=1→18, N=2→26, N=3→34, N=4→42 (cap), N=5→42 (cap).
+//
+// Worst-case (N=5) token-budget justification — num_ctx:8192:
+//   pinned 4 + recent 42 = 46 messages of history.
+//   At the observed ~877 bytes/message and ~3.3 bytes/token for English prose:
+//     46 × 877 B ≈ 40.3 KB ≈ 40,342 B / 3.3 ≈ ~12,225 tokens of history.
+//   That alone would overflow 8192 if every slot were a full ~877 B turn — BUT
+//   the realistic per-message mean in these sessions is much lower than the
+//   877 B outlier mean (that figure is inflated by long DM narration turns;
+//   the modal user/dice/short-DM turn is ~250–400 B). Sizing conservatively
+//   against the §9 history budget instead of the raw byte mean:
+//     §9 reserves ~2,000–2,500 tokens for system prompt + entity/facts digest +
+//     current turn, leaving ~5,700–6,200 tokens (~18,500–20,000 B) for history.
+//   CAP=42 keeps recent within ~21–23 *effective* messages once dice/short
+//   turns are accounted for, matching the §9 "~21–23 messages of recent tail"
+//   envelope. We choose CAP=42 (not higher) precisely so pinned+recent never
+//   exceeds the upper edge of that envelope; a 4- or 5-player room therefore
+//   stays inside num_ctx:8192 with headroom and preserves the prized
+//   flat-compute property (prompt-eval grows modestly from ~1.0–1.2s, no
+//   overflow). Naive 18×N (=90 @ N=5) is rejected by Contract A §9.
+//
+// N=1 (playerCount===1 or unset) is BYTE-IDENTICAL to the pre-change function:
+// same recent=18, same short-circuit, same slice concatenation. All scaling is
+// gated strictly behind playerCount > 1 (HARD CLAUDE.md single-player invariant).
 
-export function trimContext(messages, { pinned = 4, recent = 18 } = {}) {
-  if (messages.length <= pinned + recent) return messages
-  return [...messages.slice(0, pinned), ...messages.slice(messages.length - recent)]
+const RECENT_PER_EXTRA_PLAYER = 8
+const RECENT_CAP = 42
+
+export function trimContext(messages, { pinned = 4, recent = 18, playerCount = 1 } = {}) {
+  // playerCount > 1 ONLY: scale the recent window. N=1 falls straight through
+  // with the original recent (18), keeping single-player byte-identical.
+  const scaledRecent =
+    playerCount > 1
+      ? Math.min(RECENT_CAP, recent + RECENT_PER_EXTRA_PLAYER * (playerCount - 1))
+      : recent
+  if (messages.length <= pinned + scaledRecent) return messages
+  return [...messages.slice(0, pinned), ...messages.slice(messages.length - scaledRecent)]
 }

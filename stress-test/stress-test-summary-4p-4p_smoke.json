@@ -1,0 +1,127 @@
+{
+  "run_id": "4p_smoke",
+  "mode": "smoke",
+  "max_rounds": 1,
+  "total_rounds": 1,
+  "total_turns": 5,
+  "stop_reason": "completed",
+  "stop_round": null,
+  "wall_time_seconds": 27,
+  "spotlight_distribution": {
+    "Kael": 1,
+    "Lyra": 2,
+    "Bron": 0,
+    "Sora": 2
+  },
+  "max_starvation_gap": {
+    "Kael": 4,
+    "Lyra": 2,
+    "Bron": 5,
+    "Sora": 3
+  },
+  "spotlight_fairness": "STARVATION: Bron never received spotlight over 5 turns",
+  "free_roam_turns": 0,
+  "category_accuracy": {
+    "A": 1,
+    "B": null,
+    "C": null
+  },
+  "category_counts": {
+    "passed": {
+      "A": 3,
+      "B": 0,
+      "C": 0
+    },
+    "total": {
+      "A": 3,
+      "B": 0,
+      "C": 0
+    }
+  },
+  "category_B_accuracy_by_spotlight_owner": {
+    "Kael": null,
+    "Lyra": null,
+    "Bron": null,
+    "Sora": null
+  },
+  "drift_onset": null,
+  "rounds_to_B_collapse": null,
+  "party_shrink_events": [],
+  "probe_results": {
+    "P_SMOKE": {
+      "round": 1,
+      "passed": 3,
+      "total": 3,
+      "accuracy": 1,
+      "spotlight_owner_at_probe": "Sora",
+      "anchors": [
+        {
+          "id": "A1",
+          "expected": "Ravenmoor",
+          "category": "A",
+          "pass": true
+        },
+        {
+          "id": "A2",
+          "expected": "Broken Lantern",
+          "category": "A",
+          "pass": true
+        },
+        {
+          "id": "A3",
+          "expected": "Sorcha",
+          "category": "A",
+          "pass": true
+        }
+      ]
+    }
+  },
+  "performance": {
+    "mean_tok_per_sec": 87.19,
+    "p25_tok_per_sec": 85.33,
+    "p75_tok_per_sec": 88.47,
+    "p95_tok_per_sec": 88.47,
+    "sample_count": 4
+  },
+  "cpu_offload_detected": false,
+  "cpu_offload_first_turn": null,
+  "persist_bytes_series": [
+    {
+      "round": 1,
+      "bytes": 9794
+    },
+    {
+      "round": 1,
+      "bytes": 10610
+    }
+  ],
+  "turns_to_localStorage_cap": null,
+  "room_bytes_series": [
+    {
+      "round": 1,
+      "count": 8,
+      "bytes": 8275
+    },
+    {
+      "round": 1,
+      "count": 10,
+      "bytes": 9091
+    }
+  ],
+  "server_heap_series": [
+    {
+      "round": 1,
+      "bytes": 13122048
+    },
+    {
+      "round": 1,
+      "bytes": 13371192
+    }
+  ],
+  "R_continuity": null,
+  "R_localstorage": null,
+  "R_server": null,
+  "R_hardfail": null,
+  "limiting_factor": null,
+  "headline_rounds": null
+}

@@ -17,7 +17,7 @@ const SESSION_KEY = 'dnd_session'
 // ─── Structured-block parser (Phase A) ────────────────────────────────────────
 // These tags carry LLM-owned data; they are NEVER rendered in the chat bubble.
 
-const BLOCK_TAGS = ['party', 'check', 'verdict']
+const BLOCK_TAGS = ['party', 'check', 'verdict', 'facts']
 
 // One compiled regex strips all known structured blocks before display.
 // The lazy [\s\S]*? + required closing ``` means an unclosed fence mid-stream
@@ -45,6 +45,38 @@ function extractBlock(tag, text) {
 
 // `applyPartyUpdate` moved to src/lib/session.js (Phase 0) — imported above so the
 // client and the server-side DM proxy share one implementation.
+
+// ─── Facts accumulator helpers (Fix #3 — Contract B) ────────────────────────
+// Merge a new facts array into an existing facts map (keyed by `k`).
+// Latest value wins; entries over the cap of 12 are evicted oldest-first.
+// Returns a new array (insertion-order preserved, oldest → newest for eviction).
+const FACTS_CAP = 12
+
+function mergeFacts(existing, incoming) {
+  if (!Array.isArray(incoming)) return existing
+  // Work from a copy of the existing list to preserve insertion order.
+  const entries = [...existing]
+  for (const item of incoming) {
+    if (!item || typeof item.k !== 'string' || typeof item.v !== 'string') continue
+    const k = item.k.trim()
+    const v = item.v.trim()
+    if (!k) continue
+    const idx = entries.findIndex(e => e.k === k)
+    if (idx !== -1) {
+      // Update in-place (preserves insertion position for cap eviction order).
+      entries[idx] = { k, v }
+    } else {
+      entries.push({ k, v })
+    }
+  }
+  // Evict oldest entries when over the cap.
+  return entries.length > FACTS_CAP ? entries.slice(entries.length - FACTS_CAP) : entries
+}
+
+function factsDigestLine(facts) {
+  if (!facts || facts.length === 0) return ''
+  return 'Established facts: ' + facts.map(e => `${e.k}=${e.v}`).join('; ') + '.'
+}
 
 function parseMarkdown(text) {
   const escaped = text
@@ -109,6 +141,19 @@ export default function Chat({
   // Reviewers also ruled out persisting the raw value (cross-device "answered-twice"
   // hazard). It self-heals: the DM re-emits a ```check block on the next turn.
   const [pendingCheck, setPendingCheck] = useState(null)
+
+  // facts — Fix #3 (Contract B): accumulated numeric/transactional facts from the
+  // DM's ```facts``` blocks. Merged by key (latest wins), capped at FACTS_CAP=12.
+  // Persistence decision: facts are session-only (not persisted to the session
+  // payload) — like pendingCheck, they are treated as derived/accumulated state
+  // that the DM re-emits over time. This avoids any schema change to
+  // serializeSession/deserializeSession and keeps v1/v2 backward-compat intact.
+  // The facts digest is injected into systemContent on every turn (when non-empty),
+  // giving the LLM the accumulated facts in the prompt even if specific messages
+  // have scrolled out of the trim window. On a fresh load (page refresh), facts
+  // re-accumulate from the restored messages via applyStructuredBlocks at mount
+  // time (see the initialization in applyStructuredBlocks at the finally block).
+  const [sessionFacts, setSessionFacts] = useState([])
 
   // Phase 4: multiplayer presence — list of { displayName, status } from server.
   const [presence, setPresence] = useState([])
@@ -408,6 +453,13 @@ export default function Chat({
         )
       })
     }
+
+    // 4. facts — merge into accumulated session facts (Fix #3, Contract B).
+    // Defensive: malformed / non-array / absent → keep last-known, no throw.
+    const factsRaw = extractBlock('facts', fullText)
+    if (Array.isArray(factsRaw)) {
+      setSessionFacts(prev => mergeFacts(prev, factsRaw))
+    }
   }
 
   async function sendMessage(text) {
@@ -444,22 +496,39 @@ export default function Chat({
 
     // Serialize messages for the LLM. The most-recent dice roll carries pendingCheck
     // context so the LLM can judge the roll against the DC.
-    const apiMessages = trimContext([
-      ...messages.map((m, i) => {
-        if (m.role !== 'dice') return m
-        const checkCtx =
-          i === lastDiceIdx && pendingCheck
-            ? ` | pending check: ${pendingCheck.skill} DC ${pendingCheck.dc}`
-            : ''
-        return { role: 'user', content: `[Dice roll: ${m.die} → ${m.result}${checkCtx}]` }
-      }),
-      userMsg,
-    ])
+    //
+    // Fix #1: scale the recent window with the number of humans sharing this
+    // session. The party array can hold DM-managed companions even in
+    // single-player, so we gate playerCount on actual multiplayer presence
+    // (roomCode set) — single-player always resolves to 1, preserving the N=1
+    // byte-identity invariant regardless of party contents. In a room we use
+    // the roster size (party.length, falling back to players.length per
+    // Contract A §9).
+    const playerCount = roomCode
+      ? Math.max(1, party?.length || players?.length || 1)
+      : 1
+    const apiMessages = trimContext(
+      [
+        ...messages.map((m, i) => {
+          if (m.role !== 'dice') return m
+          const checkCtx =
+            i === lastDiceIdx && pendingCheck
+              ? ` | pending check: ${pendingCheck.skill} DC ${pendingCheck.dc}`
+              : ''
+          return { role: 'user', content: `[Dice roll: ${m.die} → ${m.result}${checkCtx}]` }
+        }),
+        userMsg,
+      ],
+      { playerCount },
+    )
 
     const entities = extractEntities(messages)
+    // Fix #3 (Contract B): inject facts digest immediately after the entities line.
+    // ONLY when sessionFacts is non-empty — empty ⇒ systemContent byte-identical to today.
+    const factsLine = factsDigestLine(sessionFacts)
     const systemContent = entities.length
-      ? `${systemPrompt}\n\n---\nEstablished entities so far (stay consistent with these named NPCs, locations, and items): ${entities.join(', ')}.`
-      : systemPrompt
+      ? `${systemPrompt}\n\n---\nEstablished entities so far (stay consistent with these named NPCs, locations, and items): ${entities.join(', ')}.${factsLine ? '\n' + factsLine : ''}`
+      : (factsLine ? `${systemPrompt}\n\n---\n${factsLine}` : systemPrompt)
 
     const assistantId = crypto.randomUUID()
     setMessages(prev => [...prev, userMsg, { role: 'assistant', content: '', id: assistantId }])
@@ -622,6 +691,7 @@ export default function Chat({
       setEntities([])
       setSessionLog([])
       setPendingCheck(null)
+      setSessionFacts([])
       localStorage.removeItem(SESSION_KEY)
       onNewSession() // DELETE the server copy + guard against an in-flight poll resurrecting it
     }

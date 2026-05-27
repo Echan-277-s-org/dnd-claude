@@ -47,6 +47,8 @@ Structured data blocks: After the narrative — at the very END of EVERY respons
 
 3. Verdict block — ONLY when resolving a roll the player just reported. When the player's message reports a dice roll for a pending check, judge it against the DC and append a fenced block tagged \`verdict\` with keys: skill (string, UPPERCASE), dc (integer), roll (integer, echoed faithfully from the player), result (the EXACT string "PASS" or "FAIL", uppercase, nothing else). When the player reports a roll, always finalize the outcome in that same response — emit the \`verdict\` block and narrate the result, whether success or failure. Do not re-request a roll for the same action; the outcome is decided by the reported number. Echo the \`skill\` and \`dc\` values from the pending check in the player's message; do not substitute a different skill or DC.
 
+4. Facts block — ONLY when a durable numeric or transactional fact is established or updated. When the session establishes a specific price paid in credits, quantity of cargo or supplies, parsec distances, bounty amounts, debt tallies, named quantities, or other numeric/transactional facts that must persist across many turns, append a fenced block tagged \`facts\` containing a minified JSON array of \`{"k":"<short_snake_case_key>","v":"<value with unit>"}\` objects — for example \`[{"k":"bounty_reward","v":"5000 credits"},{"k":"fuel_cells","v":"3"}]\`. Use a stable, descriptive snake_case key so later updates to the same fact can merge (overwrite) it. Omit this block entirely when no such fact was established or changed in this response. Do NOT emit it every turn — only when genuinely new or updated numeric/transactional information appears.
+
 Worked example — a reply that requests a stealth check (note the trailing blocks after the prose):
 
 The corridor stretches into darkness, and you hear bootsteps echoing from the guardroom ahead. Slipping past unseen will take a steady nerve. Give me a **Stealth** check, DC 15.
@@ -229,9 +231,7 @@ export function extractEntities(messages, max = 50) {
   const stats = new Map() // key -> { term, order, count }
   let order = 0
 
-  const add = (raw) => {
-    const term = raw.trim().replace(/[,.;:!?]+$/, '').trim()
-    if (!term) return
+  const index = (term) => {
     if (!looksLikeEntity(term)) return
     const key = term.toLowerCase()
     const existing = stats.get(key)
@@ -240,6 +240,33 @@ export function extractEntities(messages, max = 50) {
     } else {
       stats.set(key, { term, order: order++, count: 1 })
     }
+  }
+
+  const add = (raw) => {
+    const term = raw.trim().replace(/[,.;:!?]+$/, '').trim()
+    if (!term) return
+
+    // Possessive/compound split (Fix #2). A bold span like
+    // "Garret Ironhand's Forge of Embers" is TWO entities: the possessor
+    // ("Garret Ironhand") and the possessed ("Forge of Embers"). Split on the
+    // first possessive 's / ’s and index each half INDEPENDENTLY so each can
+    // earn its own frequency count and digest slot. Done before the >4-word
+    // gate in looksLikeEntity (which would otherwise reject the whole 5-word
+    // span and lose both). Each half is still validated by looksLikeEntity, so
+    // the prose/imperative/stopword/title-case guards (steps 6/7/9) still fire
+    // per half — no false-positive hole. The "<Role>'s Name" label form is
+    // already rejected up-front by looksLikeEntity step 2b on the whole span.
+    // Kept behaviorally identical to context.js (engine-parity gate, §6).
+    const poss = term.match(/^(.+?)['’]s\s+(.+)$/)
+    if (poss && !/['’]s\s+name$/i.test(term)) {
+      const possessor = poss[1].trim()
+      const possessed = poss[2].trim()
+      if (possessor) index(possessor)
+      if (possessed) add(possessed) // recurse: handles chained possessives
+      return
+    }
+
+    index(term)
   }
 
   const isProperName = (s) => {
