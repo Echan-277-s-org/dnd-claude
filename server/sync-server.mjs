@@ -29,7 +29,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { randomUUID } from 'node:crypto'
 import { WebSocketServer } from 'ws'
-import { toMarkdown, fromMarkdown, serializeSession, applyPartyUpdate, buildPlayersForPrompt } from '../src/lib/session.js'
+import { toMarkdown, fromMarkdown, serializeSession, applyPartyUpdate, buildPlayersForPrompt, numCtxForModel } from '../src/lib/session.js'
 import { getGenre } from '../src/lib/genres.js'
 import { isActiveTurn } from '../src/lib/turnStateMachine.js'
 
@@ -80,8 +80,8 @@ function extractBlock(tag, text) {
 // ─── Fix #3: facts accumulator helpers (Contract B) ──────────────────────────
 // Mirror of the client-side helpers in Chat.jsx — kept in sync manually.
 // Merge a new facts array into an existing list (keyed by `k`).
-// Latest value wins; entries over the cap of 12 are evicted oldest-first.
-const SERVER_FACTS_CAP = 12
+// Latest value wins; entries over the cap of 20 are evicted oldest-first.
+const SERVER_FACTS_CAP = 20
 
 function mergeFacts(existing, incoming) {
   if (!Array.isArray(incoming)) return existing
@@ -981,6 +981,13 @@ export function createSyncServer({ sessionsDir = DEFAULT_DIR, roomGcMs = 30 * 60
             ws => ws.readyState === ws.OPEN,
           ).length
           const playerCount = Math.max(1, room.party?.length || openClientCount || 1)
+
+          // (3d) Validate the model against the allowlist (sec H).
+          const model = MODEL_RE.test(String(room.campaign?.model ?? ''))
+            ? room.campaign.model
+            : DEFAULT_MODEL
+          const numCtx = numCtxForModel(model)
+
           const apiMessages = engine.trimContext([
             ...baseMessages.map((m, i) => {
               if (m.role === 'dice') {
@@ -1016,12 +1023,7 @@ export function createSyncServer({ sessionsDir = DEFAULT_DIR, roomGcMs = 30 * 60
               : hasSender
                 ? { ...userMsg, content: prefixContent(conn.displayName, content) }
                 : userMsg,
-          ], { playerCount })
-
-          // (3d) Validate the model against the allowlist (sec H).
-          const model = MODEL_RE.test(String(room.campaign?.model ?? ''))
-            ? room.campaign.model
-            : DEFAULT_MODEL
+          ], { playerCount, numCtx, systemContent })
 
           // (3e) Ollama URL from the SERVER env ONLY — never any client field.
           const base = ollamaBaseUrl()
@@ -1035,7 +1037,7 @@ export function createSyncServer({ sessionsDir = DEFAULT_DIR, roomGcMs = 30 * 60
               stream: true,
               messages: [{ role: 'system', content: systemContent }, ...apiMessages],
               options: {
-                num_ctx: 8192,
+                num_ctx: numCtx,
                 num_predict: 900,
                 temperature: 0.8,
                 top_p: 0.9,

@@ -1,7 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import {
   SCHEMA_VERSION,
+  DEFAULT_NUM_CTX,
   getLanHost,
+  numCtxForModel,
   serializeSession,
   deserializeSession,
   campaignToSessionId,
@@ -1206,5 +1208,36 @@ describe('Phase 6 (G-C3) — single-player path: no characters → prompt unchan
     const back = deserializeSession(p)
     expect(back.characters).toEqual({})
     expect(back.party).toEqual([])
+  })
+})
+
+// ─── numCtxForModel + DEFAULT_NUM_CTX ────────────────────────────────────────
+// Continuity fix: per-model context-window sizes.  qwen2.5:32b → 8192 (VRAM
+// constrained); everything else → 32768 (DEFAULT_NUM_CTX).
+
+describe('numCtxForModel', () => {
+  it('DEFAULT_NUM_CTX is 32768', () => {
+    expect(DEFAULT_NUM_CTX).toBe(32768)
+  })
+
+  it('qwen2.5:32b → 8192 (VRAM-constrained override)', () => {
+    expect(numCtxForModel('qwen2.5:32b')).toBe(8192)
+  })
+
+  it('qwen2.5:14b → 32768 (default)', () => {
+    expect(numCtxForModel('qwen2.5:14b')).toBe(32768)
+  })
+
+  it('impish-qwen:14b → 32768 (default)', () => {
+    expect(numCtxForModel('impish-qwen:14b')).toBe(32768)
+  })
+
+  it('any unknown model string → 32768 (default)', () => {
+    expect(numCtxForModel('anything-else')).toBe(32768)
+    expect(numCtxForModel('llama3:8b')).toBe(32768)
+  })
+
+  it('undefined model → 32768 (default, defensive)', () => {
+    expect(numCtxForModel(undefined)).toBe(32768)
   })
 })

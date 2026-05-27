@@ -5,7 +5,7 @@ import CharacterPanel from './CharacterPanel'
 import PartyStrip from './PartyStrip'
 import DiceChip from './DiceChip'
 import { getGenre } from '../lib/genres'
-import { serializeSession, deserializeSession, getLanHost, toMarkdown, sessionFileName, markOrphanedDice, applyPartyUpdate, makeRoomCode, buildPlayersForPrompt } from '../lib/session'
+import { serializeSession, deserializeSession, getLanHost, toMarkdown, sessionFileName, markOrphanedDice, applyPartyUpdate, makeRoomCode, buildPlayersForPrompt, numCtxForModel } from '../lib/session'
 import { useSessionPersistence } from '../hooks/useSessionPersistence'
 import { useWebSocket } from '../hooks/useWebSocket'
 import { isActiveTurn } from '../lib/turnStateMachine.js'
@@ -48,9 +48,9 @@ function extractBlock(tag, text) {
 
 // ─── Facts accumulator helpers (Fix #3 — Contract B) ────────────────────────
 // Merge a new facts array into an existing facts map (keyed by `k`).
-// Latest value wins; entries over the cap of 12 are evicted oldest-first.
+// Latest value wins; entries over the cap of 20 are evicted oldest-first.
 // Returns a new array (insertion-order preserved, oldest → newest for eviction).
-const FACTS_CAP = 12
+const FACTS_CAP = 20
 
 function mergeFacts(existing, incoming) {
   if (!Array.isArray(incoming)) return existing
@@ -144,7 +144,7 @@ export default function Chat({
   const [pendingCheck, setPendingCheck] = useState(null)
 
   // facts — Fix #3 (Contract B): accumulated numeric/transactional facts from the
-  // DM's ```facts``` blocks. Merged by key (latest wins), capped at FACTS_CAP=12.
+  // DM's ```facts``` blocks. Merged by key (latest wins), capped at FACTS_CAP=20.
   // Persistence decision: facts are session-only (not persisted to the session
   // payload) — like pendingCheck, they are treated as derived/accumulated state
   // that the DM re-emits over time. This avoids any schema change to
@@ -508,6 +508,16 @@ export default function Chat({
     const playerCount = roomCode
       ? Math.max(1, party?.length || players?.length || 1)
       : 1
+    const entities = extractEntities(messages)
+    // Fix #3 (Contract B): inject facts digest immediately after the entities line.
+    // ONLY when sessionFacts is non-empty — empty ⇒ systemContent byte-identical to today.
+    const factsLine = factsDigestLine(sessionFacts)
+    const systemContent = entities.length
+      ? `${systemPrompt}\n\n---\nEstablished entities so far (stay consistent with these named NPCs, locations, and items): ${entities.join(', ')}.${factsLine ? '\n' + factsLine : ''}`
+      : (factsLine ? `${systemPrompt}\n\n---\n${factsLine}` : systemPrompt)
+
+    const numCtx = numCtxForModel(campaign.model || 'qwen2.5:14b')
+
     const apiMessages = trimContext(
       [
         ...messages.map((m, i) => {
@@ -520,16 +530,8 @@ export default function Chat({
         }),
         userMsg,
       ],
-      { playerCount },
+      { playerCount, numCtx, systemContent },
     )
-
-    const entities = extractEntities(messages)
-    // Fix #3 (Contract B): inject facts digest immediately after the entities line.
-    // ONLY when sessionFacts is non-empty — empty ⇒ systemContent byte-identical to today.
-    const factsLine = factsDigestLine(sessionFacts)
-    const systemContent = entities.length
-      ? `${systemPrompt}\n\n---\nEstablished entities so far (stay consistent with these named NPCs, locations, and items): ${entities.join(', ')}.${factsLine ? '\n' + factsLine : ''}`
-      : (factsLine ? `${systemPrompt}\n\n---\n${factsLine}` : systemPrompt)
 
     const assistantId = crypto.randomUUID()
     setMessages(prev => [...prev, userMsg, { role: 'assistant', content: '', id: assistantId }])
@@ -564,7 +566,7 @@ export default function Chat({
             ...apiMessages,
           ],
           options: {
-            num_ctx: 8192,
+            num_ctx: numCtx,
             num_predict: 900,
             temperature: 0.8,
             top_p: 0.9,

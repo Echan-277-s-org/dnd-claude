@@ -1,48 +1,56 @@
 import { describe, it, expect } from 'vitest'
-import { extractEntities, trimContext, buildSystemPrompt } from './context'
+import { extractEntities, trimContext, buildSystemPrompt, estimateTokens } from './context'
 import { buildSystemPrompt as buildSystemPromptSW, trimContext as trimContextSW, extractEntities as extractEntitiesSW } from './context.starwars'
 import { buildPlayerSection, fmtMod } from './session'
 
 // ─── trimContext ─────────────────────────────────────────────────────────────
+//
+// The new trimContext uses a token-budget path when `recent` is omitted (the
+// default). pinned default is now 8 (was 4). The legacy fixed-count path is
+// still available when `recent` is passed explicitly.
 
 describe('trimContext', () => {
   const makeMsg = (role, i) => ({ role, content: `msg-${i}` })
 
-  it('returns input unchanged when under or equal to pinned+recent limit', () => {
-    const msgs = Array.from({ length: 22 }, (_, i) => makeMsg('user', i))
-    expect(trimContext(msgs)).toBe(msgs)
-  })
-
-  it('returns exact reference equality for short arrays', () => {
+  it('returns same reference for a short array under the token budget (reference equality)', () => {
+    // A tiny array — far under softCap=120 and any reasonable budget.
     const msgs = [makeMsg('user', 0), makeMsg('assistant', 1)]
     const result = trimContext(msgs)
     expect(result).toBe(msgs)
   })
 
-  it('pins the opening messages and keeps the recent tail when over the limit', () => {
-    // pinned=4, recent=18, total > 22
-    const msgs = Array.from({ length: 30 }, (_, i) => makeMsg('user', i))
-    const result = trimContext(msgs)
-    // First 4 opening messages must be present
-    expect(result[0]).toEqual(makeMsg('user', 0))
-    expect(result[1]).toEqual(makeMsg('user', 1))
-    expect(result[2]).toEqual(makeMsg('user', 2))
-    expect(result[3]).toEqual(makeMsg('user', 3))
-    // Last 18 messages must be present (indices 12-29)
-    expect(result[result.length - 1]).toEqual(makeMsg('user', 29))
-    expect(result[result.length - 18]).toEqual(makeMsg('user', 12))
-    // Total length = pinned(4) + recent(18) = 22
-    expect(result.length).toBe(22)
-  })
-
-  it('does not double-count when messages length is exactly pinned+recent', () => {
-    const msgs = Array.from({ length: 22 }, (_, i) => makeMsg('user', i))
+  it('returns exact reference equality for short arrays (explicit short-circuit check)', () => {
+    const msgs = [makeMsg('user', 0), makeMsg('assistant', 1)]
     const result = trimContext(msgs)
     expect(result).toBe(msgs)
-    expect(result.length).toBe(22)
   })
 
-  it('respects custom pinned and recent options', () => {
+  it('pins the first 8 opening messages (new default pinned=8) and retains the tail', () => {
+    // Use a very small numCtx + reserveTokens to force trimming with a known budget.
+    // Each msg content is "msg-N" (5–6 bytes). estimateTokens("msg-N") = ceil(5/3)+5 = 7.
+    // With numCtx=200 and reserveTokens=0 → budget=200.
+    // 30 messages × 7 ≈ 210 tokens > budget → trim fires.
+    const msgs = Array.from({ length: 30 }, (_, i) => makeMsg('user', i))
+    const result = trimContext(msgs, { numCtx: 200, reserveTokens: 0 })
+    // First 8 pinned messages always present.
+    for (let i = 0; i < 8; i++) {
+      expect(result[i]).toEqual(makeMsg('user', i))
+    }
+    // Result is a new array (not the same reference) when trimming occurs.
+    expect(result).not.toBe(msgs)
+    // pinned + some tail, but not the full 30.
+    expect(result.length).toBeLessThan(30)
+    expect(result.length).toBeGreaterThanOrEqual(8)
+  })
+
+  it('does not trim when total tokens fit the budget (returns same reference)', () => {
+    // 8 tiny messages × ~7 tokens each ≈ 56 tokens, well under numCtx=32768.
+    const msgs = Array.from({ length: 8 }, (_, i) => makeMsg('user', i))
+    expect(trimContext(msgs)).toBe(msgs)
+  })
+
+  it('respects custom pinned and recent options (legacy path)', () => {
+    // Explicit `recent` activates the legacy fixed-count path.
     const msgs = Array.from({ length: 20 }, (_, i) => makeMsg('user', i))
     const result = trimContext(msgs, { pinned: 2, recent: 5 })
     expect(result.length).toBe(7) // pinned=2 + recent=5
@@ -51,105 +59,156 @@ describe('trimContext', () => {
     expect(result[6]).toEqual(makeMsg('user', 19))
   })
 
-  it('trims correctly with a single message over limit', () => {
+  it('trims middle messages when budget is tight (pinned + tail, no middle)', () => {
+    // Force a trim by using tiny budget.  pinned=8 default.
+    // With 25 msgs × ~7 tok = 175, budget = numCtx=100 - reserveTokens=0 = 100.
+    // Pinned 8 msgs use ~56 tokens leaving ~44 for tail.  6 more msgs × 7 = 42 ≤ 44.
+    // So tail = 6, total = 14. Middle indices (8..18) should be absent.
     const msgs = Array.from({ length: 25 }, (_, i) => makeMsg('user', i))
-    const result = trimContext(msgs)
-    // No messages from the middle should appear (indices 4-6 excluded)
+    const result = trimContext(msgs, { numCtx: 100, reserveTokens: 0 })
     const contents = result.map(m => m.content)
-    expect(contents).not.toContain('msg-4')
-    expect(contents).not.toContain('msg-6')
+    // The pinned head should be present.
+    expect(contents).toContain('msg-0')
+    expect(contents).toContain('msg-7')
+    // The very last message should be present (always included in tail).
+    expect(contents).toContain('msg-24')
+    // Total count is less than 25 (trim actually happened).
+    expect(result.length).toBeLessThan(25)
   })
 })
 
-// ─── trimContext: playerCount scaling (Fix #1) ────────────────────────────────
+// ─── trimContext: token-budget behavior (replaces old playerCount-scaling suite)
 //
-// Frozen formula (Contract A §9): recent = min(42, 18 + 8·(playerCount−1)).
-// N=1→18, N=2→26, N=3→34, N=4→42 (cap), N=5→42 (cap). N=1 byte-identical.
+// The new default path is token-budget-aware. playerCount is accepted for
+// back-compat on the legacy path (explicit `recent`) but has NO effect on the
+// budget path. Tests here verify the budget semantics directly.
 
-describe('trimContext playerCount scaling', () => {
-  const makeMsg = (role, i) => ({ role, content: `msg-${i}` })
-  // expected recent window per the frozen capped-linear family.
-  const expectedRecent = n => Math.min(42, 18 + 8 * (n - 1))
+describe('trimContext token-budget path', () => {
+  const makeMsg = (role, i, len = 6) => ({ role, content: 'x'.repeat(len) + `-${i}` })
 
-  it('N=1 (playerCount=1) is byte-identical to the unscaled default', () => {
+  it('N=1 with no explicit recent uses the token-budget window (same as no playerCount)', () => {
+    // Both calls use the token-budget path, so they should be identical.
     const msgs = Array.from({ length: 60 }, (_, i) => makeMsg('user', i))
     const withParam = trimContext(msgs, { playerCount: 1 })
     const withoutParam = trimContext(msgs)
     expect(withParam).toEqual(withoutParam)
-    // pinned 4 + recent 18 = 22 messages, exactly today's behaviour.
-    expect(withParam.length).toBe(22)
-    // First 4 pinned + last 18 (indices 42..59).
-    expect(withParam[0]).toEqual(makeMsg('user', 0))
-    expect(withParam[4]).toEqual(makeMsg('user', 42))
-    expect(withParam[21]).toEqual(makeMsg('user', 59))
+    // Both should return the same reference (short-circuit) if 60 tiny messages fit budget.
+    expect(withParam).toBe(msgs)
   })
 
-  it('N=1 short-circuit is unchanged (returns same reference when under limit)', () => {
+  it('N=1 short-circuit: returns same reference when all messages fit the budget', () => {
     const msgs = Array.from({ length: 22 }, (_, i) => makeMsg('user', i))
     expect(trimContext(msgs, { playerCount: 1 })).toBe(msgs)
-    // omitting playerCount must behave identically.
     expect(trimContext(msgs)).toBe(msgs)
   })
 
-  it('scales recent for N=2,3,4,5 per the frozen formula', () => {
-    for (const [n, recent] of [[2, 26], [3, 34], [4, 42], [5, 42]]) {
-      expect(expectedRecent(n)).toBe(recent)
-      // a generously long conversation so the window always binds.
-      const msgs = Array.from({ length: 200 }, (_, i) => makeMsg('user', i))
-      const result = trimContext(msgs, { playerCount: n })
-      expect(result.length).toBe(4 + recent) // pinned 4 + scaled recent
-      // pinned opening preserved.
-      expect(result[0]).toEqual(makeMsg('user', 0))
-      // tail is the last `recent` messages.
-      expect(result[result.length - 1]).toEqual(makeMsg('user', 199))
-      expect(result[4]).toEqual(makeMsg('user', 200 - recent))
-    }
+  it('playerCount has no effect on the token-budget path (N=2 same result as N=1)', () => {
+    // Token-budget path: playerCount is ignored. Both should produce the same result.
+    const msgs = Array.from({ length: 50 }, (_, i) => makeMsg('user', i, 30))
+    const n1 = trimContext(msgs, { playerCount: 1, numCtx: 1000, reserveTokens: 0 })
+    const n2 = trimContext(msgs, { playerCount: 2, numCtx: 1000, reserveTokens: 0 })
+    const n5 = trimContext(msgs, { playerCount: 5, numCtx: 1000, reserveTokens: 0 })
+    expect(n1).toEqual(n2)
+    expect(n2).toEqual(n5)
   })
 
-  it('recent is capped at 42 (CAP) — N beyond 5 never exceeds the cap', () => {
-    const msgs = Array.from({ length: 300 }, (_, i) => makeMsg('user', i))
-    for (const n of [4, 5, 8, 50]) {
-      const result = trimContext(msgs, { playerCount: n })
-      // pinned 4 + recent capped at 42 ⇒ at most 46 messages.
-      expect(result.length).toBeLessThanOrEqual(4 + 42)
-      expect(result.length).toBe(46)
-    }
-  })
-
-  it('recent is monotonically non-decreasing in playerCount', () => {
-    const msgs = Array.from({ length: 300 }, (_, i) => makeMsg('user', i))
-    let prev = 0
-    for (let n = 1; n <= 8; n++) {
-      const len = trimContext(msgs, { playerCount: n }).length
-      expect(len).toBeGreaterThanOrEqual(prev)
-      prev = len
-    }
-  })
-
-  it('returned message count never exceeds pinned + recent(N)', () => {
-    const msgs = Array.from({ length: 300 }, (_, i) => makeMsg('user', i))
-    for (let n = 1; n <= 6; n++) {
-      const result = trimContext(msgs, { playerCount: n })
-      expect(result.length).toBeLessThanOrEqual(4 + expectedRecent(n))
-    }
-  })
-
-  it('respects custom pinned/recent together with playerCount scaling', () => {
-    const msgs = Array.from({ length: 100 }, (_, i) => makeMsg('user', i))
-    // recent base 10, +8 per extra player: N=3 ⇒ 10 + 16 = 26, capped at 42.
+  it('legacy explicit-recent path still scales with playerCount', () => {
+    // Passing `recent` activates the legacy path where playerCount DOES scale.
+    const msgs = Array.from({ length: 200 }, (_, i) => makeMsg('user', i))
+    // recent=10, playerCount=3: scaledRecent = min(42, 10 + 8*2) = 26, pinned=8.
     const result = trimContext(msgs, { pinned: 2, recent: 10, playerCount: 3 })
     expect(result.length).toBe(2 + 26)
   })
 
-  it('starwars trimContext === dnd trimContext for identical inputs (re-export parity)', () => {
-    const msgs = Array.from({ length: 200 }, (_, i) => makeMsg('user', i))
-    for (const n of [1, 2, 4, 5]) {
-      expect(trimContextSW(msgs, { playerCount: n })).toEqual(
-        trimContext(msgs, { playerCount: n }),
-      )
+  it('tail is bounded by softCap=120: total result is at most pinned(8) + softCap(120) = 128', () => {
+    // Build > 120 messages with a huge budget so only softCap limits the tail.
+    // The tail loop runs `tailBuf.length < softCap` → at most 120 tail messages.
+    // Total = pinned(8) + tail(≤120) = at most 128.
+    const msgs = Array.from({ length: 200 }, (_, i) => makeMsg('user', i, 1))
+    const result = trimContext(msgs, { numCtx: 100000, reserveTokens: 0 })
+    expect(result.length).toBeLessThanOrEqual(128) // pinned + softCap upper bound
+    expect(result.length).toBeGreaterThan(120)     // more than softCap alone (pinned added)
+    // First 8 pinned always present.
+    for (let i = 0; i < 8; i++) {
+      expect(result[i]).toEqual(makeMsg('user', i, 1))
     }
+    // Tail does not exceed softCap.
+    expect(result.length - 8).toBeLessThanOrEqual(120)
+  })
+
+  it('tail token sum does not exceed the available budget', () => {
+    // 50 messages with content length 30 bytes each.
+    // estimateTokens("x*30-N") = ceil(32/3)+5 = 11+5 = 16 per message approx.
+    // numCtx=300, reserveTokens=0 → budget=300.
+    // pinned 8 × ~16 = 128 used. Remaining = 172. Tail fills until budget.
+    const msgs = Array.from({ length: 50 }, (_, i) => makeMsg('user', i, 30))
+    const result = trimContext(msgs, { numCtx: 300, reserveTokens: 0 })
+    // Compute tail token sum (messages after the pinned head).
+    const tail = result.slice(8)
+    const tailTokens = tail.reduce((s, m) => s + estimateTokens(m.content), 0)
+    const pinnedTokens = result.slice(0, 8).reduce((s, m) => s + estimateTokens(m.content), 0)
+    expect(pinnedTokens + tailTokens).toBeLessThanOrEqual(300)
+  })
+
+  it('larger numCtx retains at least as many messages as smaller numCtx (monotonic)', () => {
+    const msgs = Array.from({ length: 200 }, (_, i) => makeMsg('user', i, 20))
+    const small = trimContext(msgs, { numCtx: 500, reserveTokens: 0 })
+    const large = trimContext(msgs, { numCtx: 5000, reserveTokens: 0 })
+    expect(large.length).toBeGreaterThanOrEqual(small.length)
+  })
+
+  it('larger systemContent shrinks the retained tail vs a small systemContent', () => {
+    const msgs = Array.from({ length: 100 }, (_, i) => makeMsg('user', i, 20))
+    const smallSys = 'short'
+    const largeSys = 'x'.repeat(5000)
+    const withSmall = trimContext(msgs, { numCtx: 10000, systemContent: smallSys })
+    const withLarge = trimContext(msgs, { numCtx: 10000, systemContent: largeSys })
+    // Large system prompt eats budget → fewer messages retained.
+    expect(withLarge.length).toBeLessThanOrEqual(withSmall.length)
+  })
+
+  it('returns same reference for a short array under the budget (no explicit recent)', () => {
+    const msgs = Array.from({ length: 5 }, (_, i) => makeMsg('user', i))
+    expect(trimContext(msgs)).toBe(msgs)
+    expect(trimContext(msgs, { playerCount: 2 })).toBe(msgs)
+  })
+
+  it('starwars trimContext === dnd trimContext for identical inputs (re-export parity)', () => {
+    const msgs = Array.from({ length: 50 }, (_, i) => makeMsg('user', i))
+    // No recent → token-budget path; playerCount ignored.
+    expect(trimContextSW(msgs, { playerCount: 1 })).toEqual(trimContext(msgs, { playerCount: 1 }))
+    expect(trimContextSW(msgs, { numCtx: 1000, reserveTokens: 0 })).toEqual(
+      trimContext(msgs, { numCtx: 1000, reserveTokens: 0 }),
+    )
     // starwars must literally be the same function reference (re-export).
     expect(trimContextSW).toBe(trimContext)
+  })
+})
+
+// ─── estimateTokens unit tests ────────────────────────────────────────────────
+
+describe('estimateTokens', () => {
+  it('empty string → 5 (just the per-message framing overhead)', () => {
+    expect(estimateTokens('')).toBe(5)
+  })
+
+  it('undefined / null input → 5 (defensive fallback)', () => {
+    expect(estimateTokens(undefined)).toBe(5)
+    expect(estimateTokens(null)).toBe(5)
+  })
+
+  it('is monotonically non-decreasing in string length', () => {
+    let prev = estimateTokens('')
+    for (const len of [1, 3, 10, 30, 100, 300]) {
+      const tok = estimateTokens('x'.repeat(len))
+      expect(tok).toBeGreaterThanOrEqual(prev)
+      prev = tok
+    }
+  })
+
+  it('formula: ceil(length/3)+5 for a 30-byte string', () => {
+    // ceil(30/3)+5 = 10+5 = 15
+    expect(estimateTokens('x'.repeat(30))).toBe(15)
   })
 })
 

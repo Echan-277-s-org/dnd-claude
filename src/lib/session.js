@@ -102,6 +102,17 @@ export function getLanHost(port) {
   return port != null ? `${host}:${port}` : host
 }
 
+// ─── Per-model num_ctx (Ollama) — request options override the Modelfile ──────
+// On the RTX 4090 (24 GB VRAM) the 14B models run comfortably at 32K context,
+// but qwen2.5:32b at 32K overflows VRAM — so it stays at 8K. Shared by the
+// client (Chat.jsx) and the server DM proxy (sync-server.mjs) so both surfaces
+// send the same per-model value.
+const NUM_CTX_BY_MODEL = { 'qwen2.5:32b': 8192 }
+export const DEFAULT_NUM_CTX = 32768
+export function numCtxForModel(model) {
+  return NUM_CTX_BY_MODEL[model] ?? DEFAULT_NUM_CTX // impish-qwen:14b & qwen2.5:14b → 32768
+}
+
 function pickCampaign(campaign) {
   const c = campaign ?? {}
   const out = {}
