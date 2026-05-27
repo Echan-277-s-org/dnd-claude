@@ -29,7 +29,7 @@ import path from 'node:path'
 import WebSocket from 'ws'
 import http from 'node:http'
 import { createSyncServer, applySpotlightFairness, isMaximallyStarved, SPOTLIGHT_MAX_STREAK, anchorJoinedPCNames } from './sync-server.mjs'
-import { applyPartyUpdate } from '../src/lib/session.js'
+import { applyPartyUpdate, numCtxForModel } from '../src/lib/session.js'
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -618,8 +618,9 @@ describe('Phase 3 — exactly one Ollama call per action', () => {
     // CHANGE 5: user messages sent to Ollama are prefixed with "displayName: content".
     // The original raw content is still detectable as a substring of the prefixed form.
     expect(body.messages.some(m => m.role === 'user' && m.content.includes('I enter the tavern.'))).toBe(true)
+    // The fixture sets no model → server resolves DEFAULT_MODEL ('qwen2.5:14b') → 32768.
     expect(body.options).toMatchObject({
-      num_ctx: 8192, num_predict: 900, temperature: 0.8,
+      num_ctx: numCtxForModel('qwen2.5:14b'), num_predict: 900, temperature: 0.8,
       top_p: 0.9, top_k: 40, repeat_penalty: 1.15, repeat_last_n: 256,
     })
     ws.close()

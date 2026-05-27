@@ -343,9 +343,10 @@ describe('verdict-upgrade — PA-25..31', () => {
 
 // ─── Fix #3: facts block parser + mergeFacts + factsDigestLine ───────────────
 // Mirrors the module-private helpers from Chat.jsx and sync-server.mjs.
-// Contract B (§9): minified JSON array of {k,v} objects; merge-by-key; cap 12.
+// Contract B (§9): minified JSON array of {k,v} objects; merge-by-key; cap 20.
+// FACTS_CAP raised 12 → 20 in Chat.jsx:53 and sync-server.mjs:84.
 
-const FACTS_CAP = 12
+const FACTS_CAP = 20
 
 function mergeFacts(existing, incoming) {
   if (!Array.isArray(incoming)) return existing
@@ -434,7 +435,7 @@ describe('facts block — Contract B parser (FA-01..12)', () => {
   })
 })
 
-describe('mergeFacts — Contract B merge-by-key + cap (FA-08..12)', () => {
+describe('mergeFacts — Contract B merge-by-key + cap=20 (FA-08..12)', () => {
   // FA-08: new keys are appended
   it('FA-08 new key is added to the facts list', () => {
     const result = mergeFacts([], [{ k: 'blacksmith_price', v: '12 gold' }])
@@ -450,12 +451,12 @@ describe('mergeFacts — Contract B merge-by-key + cap (FA-08..12)', () => {
     expect(result[0]).toEqual({ k: 'blacksmith_price', v: '15 gold' })
   })
 
-  // FA-10: cap at 12 — oldest entries evicted when over the cap
-  it('FA-10 cap at 12: oldest entries evicted when over cap', () => {
-    const existing = Array.from({ length: 12 }, (_, i) => ({ k: `key_${i}`, v: `val_${i}` }))
+  // FA-10: cap at 20 — oldest entries evicted when over the cap
+  it('FA-10 cap at 20: oldest entries evicted when over cap', () => {
+    const existing = Array.from({ length: 20 }, (_, i) => ({ k: `key_${i}`, v: `val_${i}` }))
     const incoming = [{ k: 'new_key', v: 'new_val' }]
     const result = mergeFacts(existing, incoming)
-    expect(result).toHaveLength(12)
+    expect(result).toHaveLength(20)
     // oldest entry (key_0) should be evicted
     expect(result.find(e => e.k === 'key_0')).toBeUndefined()
     // newest should survive
