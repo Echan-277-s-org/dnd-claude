@@ -1,0 +1,1151 @@
+{
+  "run_id": "4p_qwen25",
+  "mode": "full",
+  "model": "qwen2.5:14b",
+  "max_rounds": 200,
+  "total_rounds": 44,
+  "total_turns": 174,
+  "stop_reason": "B_COLLAPSE",
+  "stop_round": 44,
+  "wall_time_seconds": 1648,
+  "cjk_leak": {
+    "model": "qwen2.5:14b",
+    "total_turns_affected": 0,
+    "total_turns_scanned": 174,
+    "leak_rate": 0,
+    "total_non_latin_chars": 0,
+    "rounds_affected": [],
+    "sample_substrings": [],
+    "by_model": {
+      "qwen2.5:14b": {
+        "turns_affected": 0,
+        "non_latin_chars": 0
+      }
+    },
+    "events": []
+  },
+  "spotlight_distribution": {
+    "Kael": 42,
+    "Lyra": 49,
+    "Bron": 43,
+    "Sora": 40
+  },
+  "max_starvation_gap": {
+    "Kael": 11,
+    "Lyra": 9,
+    "Bron": 9,
+    "Sora": 11
+  },
+  "spotlight_fairness": "OK: all 4 players received at least 1 spotlight over 174 turns",
+  "free_roam_turns": 1,
+  "category_accuracy": {
+    "A": 1,
+    "B": 0.45454545454545453,
+    "C": 0.9090909090909091
+  },
+  "category_counts": {
+    "passed": {
+      "A": 11,
+      "B": 20,
+      "C": 10
+    },
+    "total": {
+      "A": 11,
+      "B": 44,
+      "C": 11
+    }
+  },
+  "category_B_accuracy_by_spotlight_owner": {
+    "Kael": 0.4375,
+    "Lyra": 0.4375,
+    "Bron": null,
+    "Sora": 0.5
+  },
+  "drift_onset": {
+    "probe_id": "P4",
+    "anchor_id": "B1",
+    "spotlight_owner": "Kael",
+    "round": 16,
+    "expected": "Garret"
+  },
+  "rounds_to_B_collapse": 40,
+  "party_shrink_events": [],
+  "probe_results": {
+    "P1": {
+      "round": 4,
+      "passed": 6,
+      "total": 6,
+      "accuracy": 1,
+      "spotlight_owner_at_probe": "Kael",
+      "anchors": [
+        {
+          "id": "A1",
+          "expected": "Ravenmoor",
+          "category": "A",
+          "pass": true
+        },
+        {
+          "id": "B1",
+          "expected": "Garret",
+          "category": "B",
+          "pass": true
+        },
+        {
+          "id": "B2",
+          "expected": "Forge of Embers",
+          "category": "B",
+          "pass": true
+        },
+        {
+          "id": "B5",
+          "expected": "12 gold",
+          "category": "B",
+          "pass": true
+        },
+        {
+          "id": "B8",
+          "expected": "Ash Covenant",
+          "category": "B",
+          "pass": true
+        },
+        {
+          "id": "C1",
+          "expected": "Obsidian Stair",
+          "category": "C",
+          "pass": true
+        }
+      ]
+    },
+    "P2": {
+      "round": 8,
+      "passed": 6,
+      "total": 6,
+      "accuracy": 1,
+      "spotlight_owner_at_probe": "Lyra",
+      "anchors": [
+        {
+          "id": "A1",
+          "expected": "Ravenmoor",
+          "category": "A",
+          "pass": true
+        },
+        {
+          "id": "B1",
+          "expected": "Garret",
+          "category": "B",
+          "pass": true
+        },
+        {
+          "id": "B2",
+          "expected": "Forge of Embers",
+          "category": "B",
+          "pass": true
+        },
+        {
+          "id": "B5",
+          "expected": "12 gold",
+          "category": "B",
+          "pass": true
+        },
+        {
+          "id": "B8",
+          "expected": "Ash Covenant",
+          "category": "B",
+          "pass": true
+        },
+        {
+          "id": "C2",
+          "expected": "Weeping Idol",
+          "category": "C",
+          "pass": true
+        }
+      ]
+    },
+    "P3": {
+      "round": 12,
+      "passed": 6,
+      "total": 6,
+      "accuracy": 1,
+      "spotlight_owner_at_probe": "Sora",
+      "anchors": [
+        {
+          "id": "A1",
+          "expected": "Ravenmoor",
+          "category": "A",
+          "pass": true
+        },
+        {
+          "id": "B1",
+          "expected": "Garret",
+          "category": "B",
+          "pass": true
+        },
+        {
+          "id": "B2",
+          "expected": "Forge of Embers",
+          "category": "B",
+          "pass": true
+        },
+        {
+          "id": "B5",
+          "expected": "12 gold",
+          "category": "B",
+          "pass": true
+        },
+        {
+          "id": "B8",
+          "expected": "Ash Covenant",
+          "category": "B",
+          "pass": true
+        },
+        {
+          "id": "C3",
+          "expected": "Silver Door",
+          "category": "C",
+          "pass": true
+        }
+      ]
+    },
+    "P4": {
+      "round": 16,
+      "passed": 3,
+      "total": 6,
+      "accuracy": 0.5,
+      "spotlight_owner_at_probe": "Kael",
+      "anchors": [
+        {
+          "id": "A1",
+          "expected": "Ravenmoor",
+          "category": "A",
+          "pass": true
+        },
+        {
+          "id": "B1",
+          "expected": "Garret",
+          "category": "B",
+          "pass": false
+        },
+        {
+          "id": "B2",
+          "expected": "Forge of Embers",
+          "category": "B",
+          "pass": false
+        },
+        {
+          "id": "B5",
+          "expected": "12 gold",
+          "category": "B",
+          "pass": false
+        },
+        {
+          "id": "B8",
+          "expected": "Ash Covenant",
+          "category": "B",
+          "pass": true
+        },
+        {
+          "id": "C4",
+          "expected": "Shattered Gate",
+          "category": "C",
+          "pass": true
+        }
+      ]
+    },
+    "P5": {
+      "round": 20,
+      "passed": 3,
+      "total": 6,
+      "accuracy": 0.5,
+      "spotlight_owner_at_probe": "Lyra",
+      "anchors": [
+        {
+          "id": "A1",
+          "expected": "Ravenmoor",
+          "category": "A",
+          "pass": true
+        },
+        {
+          "id": "B1",
+          "expected": "Garret",
+          "category": "B",
+          "pass": false
+        },
+        {
+          "id": "B2",
+          "expected": "Forge of Embers",
+          "category": "B",
+          "pass": false
+        },
+        {
+          "id": "B5",
+          "expected": "12 gold",
+          "category": "B",
+          "pass": false
+        },
+        {
+          "id": "B8",
+          "expected": "Ash Covenant",
+          "category": "B",
+          "pass": true
+        },
+        {
+          "id": "C5",
+          "expected": "Ember Bridge",
+          "category": "C",
+          "pass": true
+        }
+      ]
+    },
+    "P6": {
+      "round": 24,
+      "passed": 3,
+      "total": 6,
+      "accuracy": 0.5,
+      "spotlight_owner_at_probe": "Sora",
+      "anchors": [
+        {
+          "id": "A1",
+          "expected": "Ravenmoor",
+          "category": "A",
+          "pass": true
+        },
+        {
+          "id": "B1",
+          "expected": "Garret",
+          "category": "B",
+          "pass": false
+        },
+        {
+          "id": "B2",
+          "expected": "Forge of Embers",
+          "category": "B",
+          "pass": false
+        },
+        {
+          "id": "B5",
+          "expected": "12 gold",
+          "category": "B",
+          "pass": false
+        },
+        {
+          "id": "B8",
+          "expected": "Ash Covenant",
+          "category": "B",
+          "pass": true
+        },
+        {
+          "id": "C6",
+          "expected": "Hollow Throne",
+          "category": "C",
+          "pass": true
+        }
+      ]
+    },
+    "P7": {
+      "round": 28,
+      "passed": 3,
+      "total": 6,
+      "accuracy": 0.5,
+      "spotlight_owner_at_probe": "Kael",
+      "anchors": [
+        {
+          "id": "A1",
+          "expected": "Ravenmoor",
+          "category": "A",
+          "pass": true
+        },
+        {
+          "id": "B1",
+          "expected": "Garret",
+          "category": "B",
+          "pass": false
+        },
+        {
+          "id": "B2",
+          "expected": "Forge of Embers",
+          "category": "B",
+          "pass": false
+        },
+        {
+          "id": "B5",
+          "expected": "12 gold",
+          "category": "B",
+          "pass": false
+        },
+        {
+          "id": "B8",
+          "expected": "Ash Covenant",
+          "category": "B",
+          "pass": true
+        },
+        {
+          "id": "C7",
+          "expected": "Crumbled Spire",
+          "category": "C",
+          "pass": true
+        }
+      ]
+    },
+    "P8": {
+      "round": 32,
+      "passed": 3,
+      "total": 6,
+      "accuracy": 0.5,
+      "spotlight_owner_at_probe": "Lyra",
+      "anchors": [
+        {
+          "id": "A1",
+          "expected": "Ravenmoor",
+          "category": "A",
+          "pass": true
+        },
+        {
+          "id": "B1",
+          "expected": "Garret",
+          "category": "B",
+          "pass": false
+        },
+        {
+          "id": "B2",
+          "expected": "Forge of Embers",
+          "category": "B",
+          "pass": false
+        },
+        {
+          "id": "B5",
+          "expected": "12 gold",
+          "category": "B",
+          "pass": false
+        },
+        {
+          "id": "B8",
+          "expected": "Ash Covenant",
+          "category": "B",
+          "pass": true
+        },
+        {
+          "id": "C8",
+          "expected": "Frosted Passage",
+          "category": "C",
+          "pass": true
+        }
+      ]
+    },
+    "P9": {
+      "round": 36,
+      "passed": 3,
+      "total": 6,
+      "accuracy": 0.5,
+      "spotlight_owner_at_probe": "Sora",
+      "anchors": [
+        {
+          "id": "A1",
+          "expected": "Ravenmoor",
+          "category": "A",
+          "pass": true
+        },
+        {
+          "id": "B1",
+          "expected": "Garret",
+          "category": "B",
+          "pass": false
+        },
+        {
+          "id": "B2",
+          "expected": "Forge of Embers",
+          "category": "B",
+          "pass": false
+        },
+        {
+          "id": "B5",
+          "expected": "12 gold",
+          "category": "B",
+          "pass": false
+        },
+        {
+          "id": "B8",
+          "expected": "Ash Covenant",
+          "category": "B",
+          "pass": true
+        },
+        {
+          "id": "C9",
+          "expected": "Rusted Chain",
+          "category": "C",
+          "pass": true
+        }
+      ]
+    },
+    "P10": {
+      "round": 40,
+      "passed": 3,
+      "total": 6,
+      "accuracy": 0.5,
+      "spotlight_owner_at_probe": "Kael",
+      "anchors": [
+        {
+          "id": "A1",
+          "expected": "Ravenmoor",
+          "category": "A",
+          "pass": true
+        },
+        {
+          "id": "B1",
+          "expected": "Garret",
+          "category": "B",
+          "pass": false
+        },
+        {
+          "id": "B2",
+          "expected": "Forge of Embers",
+          "category": "B",
+          "pass": false
+        },
+        {
+          "id": "B5",
+          "expected": "12 gold",
+          "category": "B",
+          "pass": false
+        },
+        {
+          "id": "B8",
+          "expected": "Ash Covenant",
+          "category": "B",
+          "pass": true
+        },
+        {
+          "id": "C10",
+          "expected": "Sunken Vault",
+          "category": "C",
+          "pass": true
+        }
+      ]
+    },
+    "P11": {
+      "round": 44,
+      "passed": 2,
+      "total": 6,
+      "accuracy": 0.3333333333333333,
+      "spotlight_owner_at_probe": "Lyra",
+      "anchors": [
+        {
+          "id": "A1",
+          "expected": "Ravenmoor",
+          "category": "A",
+          "pass": true
+        },
+        {
+          "id": "B1",
+          "expected": "Garret",
+          "category": "B",
+          "pass": false
+        },
+        {
+          "id": "B2",
+          "expected": "Forge of Embers",
+          "category": "B",
+          "pass": false
+        },
+        {
+          "id": "B5",
+          "expected": "12 gold",
+          "category": "B",
+          "pass": false
+        },
+        {
+          "id": "B8",
+          "expected": "Ash Covenant",
+          "category": "B",
+          "pass": true
+        },
+        {
+          "id": "C11",
+          "expected": "Blazing Seal",
+          "category": "C",
+          "pass": false
+        }
+      ]
+    }
+  },
+  "performance": {
+    "mean_tok_per_sec": 80.13,
+    "p25_tok_per_sec": 78.49,
+    "p75_tok_per_sec": 79.16,
+    "p95_tok_per_sec": 89.82,
+    "sample_count": 153
+  },
+  "cpu_offload_detected": false,
+  "cpu_offload_first_turn": null,
+  "persist_bytes_series": [
+    {
+      "round": 1,
+      "bytes": 10118
+    },
+    {
+      "round": 2,
+      "bytes": 21028
+    },
+    {
+      "round": 3,
+      "bytes": 31341
+    },
+    {
+      "round": 4,
+      "bytes": 38723
+    },
+    {
+      "round": 5,
+      "bytes": 45530
+    },
+    {
+      "round": 6,
+      "bytes": 52656
+    },
+    {
+      "round": 7,
+      "bytes": 61772
+    },
+    {
+      "round": 8,
+      "bytes": 68297
+    },
+    {
+      "round": 9,
+      "bytes": 76283
+    },
+    {
+      "round": 10,
+      "bytes": 82937
+    },
+    {
+      "round": 11,
+      "bytes": 89495
+    },
+    {
+      "round": 12,
+      "bytes": 96092
+    },
+    {
+      "round": 13,
+      "bytes": 103288
+    },
+    {
+      "round": 14,
+      "bytes": 110903
+    },
+    {
+      "round": 15,
+      "bytes": 118901
+    },
+    {
+      "round": 16,
+      "bytes": 126070
+    },
+    {
+      "round": 17,
+      "bytes": 134857
+    },
+    {
+      "round": 18,
+      "bytes": 147052
+    },
+    {
+      "round": 19,
+      "bytes": 161626
+    },
+    {
+      "round": 20,
+      "bytes": 176291
+    },
+    {
+      "round": 21,
+      "bytes": 193112
+    },
+    {
+      "round": 22,
+      "bytes": 210786
+    },
+    {
+      "round": 23,
+      "bytes": 229003
+    },
+    {
+      "round": 24,
+      "bytes": 246053
+    },
+    {
+      "round": 25,
+      "bytes": 263589
+    },
+    {
+      "round": 26,
+      "bytes": 278813
+    },
+    {
+      "round": 27,
+      "bytes": 291351
+    },
+    {
+      "round": 28,
+      "bytes": 302249
+    },
+    {
+      "round": 29,
+      "bytes": 313663
+    },
+    {
+      "round": 30,
+      "bytes": 325164
+    },
+    {
+      "round": 31,
+      "bytes": 336986
+    },
+    {
+      "round": 32,
+      "bytes": 349156
+    },
+    {
+      "round": 33,
+      "bytes": 361337
+    },
+    {
+      "round": 34,
+      "bytes": 373677
+    },
+    {
+      "round": 35,
+      "bytes": 385878
+    },
+    {
+      "round": 36,
+      "bytes": 399000
+    },
+    {
+      "round": 37,
+      "bytes": 415409
+    },
+    {
+      "round": 38,
+      "bytes": 435188
+    },
+    {
+      "round": 39,
+      "bytes": 452900
+    },
+    {
+      "round": 40,
+      "bytes": 470744
+    },
+    {
+      "round": 41,
+      "bytes": 490380
+    },
+    {
+      "round": 42,
+      "bytes": 503982
+    },
+    {
+      "round": 43,
+      "bytes": 515421
+    }
+  ],
+  "turns_to_localStorage_cap": 1652,
+  "room_bytes_series": [
+    {
+      "round": 1,
+      "count": 8,
+      "bytes": 8601
+    },
+    {
+      "round": 2,
+      "count": 16,
+      "bytes": 19512
+    },
+    {
+      "round": 3,
+      "count": 24,
+      "bytes": 29821
+    },
+    {
+      "round": 4,
+      "count": 32,
+      "bytes": 37203
+    },
+    {
+      "round": 5,
+      "count": 40,
+      "bytes": 44010
+    },
+    {
+      "round": 6,
+      "count": 48,
+      "bytes": 51136
+    },
+    {
+      "round": 7,
+      "count": 56,
+      "bytes": 60252
+    },
+    {
+      "round": 8,
+      "count": 64,
+      "bytes": 66777
+    },
+    {
+      "round": 9,
+      "count": 72,
+      "bytes": 74763
+    },
+    {
+      "round": 10,
+      "count": 80,
+      "bytes": 81417
+    },
+    {
+      "round": 11,
+      "count": 88,
+      "bytes": 87975
+    },
+    {
+      "round": 12,
+      "count": 96,
+      "bytes": 94572
+    },
+    {
+      "round": 13,
+      "count": 104,
+      "bytes": 101768
+    },
+    {
+      "round": 14,
+      "count": 112,
+      "bytes": 109383
+    },
+    {
+      "round": 15,
+      "count": 120,
+      "bytes": 117381
+    },
+    {
+      "round": 16,
+      "count": 128,
+      "bytes": 124550
+    },
+    {
+      "round": 17,
+      "count": 136,
+      "bytes": 133337
+    },
+    {
+      "round": 18,
+      "count": 144,
+      "bytes": 145532
+    },
+    {
+      "round": 19,
+      "count": 152,
+      "bytes": 160106
+    },
+    {
+      "round": 20,
+      "count": 160,
+      "bytes": 174771
+    },
+    {
+      "round": 21,
+      "count": 168,
+      "bytes": 191592
+    },
+    {
+      "round": 22,
+      "count": 176,
+      "bytes": 209266
+    },
+    {
+      "round": 23,
+      "count": 184,
+      "bytes": 227483
+    },
+    {
+      "round": 24,
+      "count": 192,
+      "bytes": 244533
+    },
+    {
+      "round": 25,
+      "count": 200,
+      "bytes": 262068
+    },
+    {
+      "round": 26,
+      "count": 208,
+      "bytes": 277292
+    },
+    {
+      "round": 27,
+      "count": 216,
+      "bytes": 289830
+    },
+    {
+      "round": 28,
+      "count": 224,
+      "bytes": 300728
+    },
+    {
+      "round": 29,
+      "count": 232,
+      "bytes": 312142
+    },
+    {
+      "round": 30,
+      "count": 240,
+      "bytes": 323643
+    },
+    {
+      "round": 31,
+      "count": 248,
+      "bytes": 335465
+    },
+    {
+      "round": 32,
+      "count": 256,
+      "bytes": 347635
+    },
+    {
+      "round": 33,
+      "count": 264,
+      "bytes": 359816
+    },
+    {
+      "round": 34,
+      "count": 272,
+      "bytes": 372156
+    },
+    {
+      "round": 35,
+      "count": 280,
+      "bytes": 384357
+    },
+    {
+      "round": 36,
+      "count": 288,
+      "bytes": 397479
+    },
+    {
+      "round": 37,
+      "count": 296,
+      "bytes": 413888
+    },
+    {
+      "round": 38,
+      "count": 304,
+      "bytes": 433667
+    },
+    {
+      "round": 39,
+      "count": 312,
+      "bytes": 451379
+    },
+    {
+      "round": 40,
+      "count": 320,
+      "bytes": 469223
+    },
+    {
+      "round": 41,
+      "count": 328,
+      "bytes": 488859
+    },
+    {
+      "round": 42,
+      "count": 336,
+      "bytes": 502461
+    },
+    {
+      "round": 43,
+      "count": 344,
+      "bytes": 513900
+    }
+  ],
+  "server_heap_series": [
+    {
+      "round": 1,
+      "bytes": 12520832
+    },
+    {
+      "round": 2,
+      "bytes": 13549056
+    },
+    {
+      "round": 3,
+      "bytes": 14348528
+    },
+    {
+      "round": 4,
+      "bytes": 14907544
+    },
+    {
+      "round": 5,
+      "bytes": 16474912
+    },
+    {
+      "round": 6,
+      "bytes": 16665800
+    },
+    {
+      "round": 7,
+      "bytes": 17713848
+    },
+    {
+      "round": 8,
+      "bytes": 18554024
+    },
+    {
+      "round": 9,
+      "bytes": 18982400
+    },
+    {
+      "round": 10,
+      "bytes": 14955976
+    },
+    {
+      "round": 11,
+      "bytes": 15570968
+    },
+    {
+      "round": 12,
+      "bytes": 16535944
+    },
+    {
+      "round": 13,
+      "bytes": 16841136
+    },
+    {
+      "round": 14,
+      "bytes": 17728728
+    },
+    {
+      "round": 15,
+      "bytes": 18749888
+    },
+    {
+      "round": 16,
+      "bytes": 19358968
+    },
+    {
+      "round": 17,
+      "bytes": 19705168
+    },
+    {
+      "round": 18,
+      "bytes": 16561536
+    },
+    {
+      "round": 19,
+      "bytes": 19911128
+    },
+    {
+      "round": 20,
+      "bytes": 17214400
+    },
+    {
+      "round": 21,
+      "bytes": 21184528
+    },
+    {
+      "round": 22,
+      "bytes": 16633720
+    },
+    {
+      "round": 23,
+      "bytes": 14664064
+    },
+    {
+      "round": 24,
+      "bytes": 19639872
+    },
+    {
+      "round": 25,
+      "bytes": 17639304
+    },
+    {
+      "round": 26,
+      "bytes": 16643392
+    },
+    {
+      "round": 27,
+      "bytes": 15368528
+    },
+    {
+      "round": 28,
+      "bytes": 20643032
+    },
+    {
+      "round": 29,
+      "bytes": 19450552
+    },
+    {
+      "round": 30,
+      "bytes": 18140440
+    },
+    {
+      "round": 31,
+      "bytes": 16830128
+    },
+    {
+      "round": 32,
+      "bytes": 16118472
+    },
+    {
+      "round": 33,
+      "bytes": 22049408
+    },
+    {
+      "round": 34,
+      "bytes": 20689816
+    },
+    {
+      "round": 35,
+      "bytes": 19969624
+    },
+    {
+      "round": 36,
+      "bytes": 20255696
+    },
+    {
+      "round": 37,
+      "bytes": 20595128
+    },
+    {
+      "round": 38,
+      "bytes": 21076112
+    },
+    {
+      "round": 39,
+      "bytes": 21462096
+    },
+    {
+      "round": 40,
+      "bytes": 22365224
+    },
+    {
+      "round": 41,
+      "bytes": 17230752
+    },
+    {
+      "round": 42,
+      "bytes": 18575408
+    },
+    {
+      "round": 43,
+      "bytes": 20772184
+    }
+  ],
+  "R_continuity": 40,
+  "R_localstorage": 413,
+  "R_server": 7954,
+  "R_hardfail": null,
+  "limiting_factor": "R_continuity",
+  "headline_rounds": 40
+}
