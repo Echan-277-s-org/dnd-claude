@@ -127,7 +127,8 @@ export default function Chat({
   const [input, setInput] = useState('')
   const [isLoading, setIsLoading] = useState(false)
   const [showDice, setShowDice] = useState(false)
-  const [showHistory, setShowHistory] = useState(false)
+  // Party panel (HistoryPanel: party sub-section + entities + log) opens by default.
+  const [showHistory, setShowHistory] = useState(true)
   const [showCharacter, setShowCharacter] = useState(false)
   const [entities, setEntities] = useState(() =>
     stored?.messages ? extractEntities(stored.messages) : []

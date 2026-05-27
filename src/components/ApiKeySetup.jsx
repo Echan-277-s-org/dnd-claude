@@ -105,11 +105,13 @@ function CharacterPreview({ character, label }) {
 }
 
 export default function CampaignSetup({ onSetup, onJoin, onGenreChange, onRestoreSession, urlRoomCode }) {
+  // genre + model are remembered tool preferences (kept across boots).
   const [genreId, setGenreId] = useState(() => localStorage.getItem('dnd_genre') || 'dnd')
-  const [name, setName] = useState(() => localStorage.getItem('dnd_campaign_name') || '')
-  const [details, setDetails] = useState(() => localStorage.getItem('dnd_campaign_details') || '')
   const [model, setModel] = useState(() => localStorage.getItem('dnd_model') || 'qwen2.5:14b')
-  const [context, setContext] = useState(() => localStorage.getItem('dnd_campaign_context') || '')
+  // Campaign-specific fields always start empty — no default campaign is pre-loaded.
+  const [name, setName] = useState('')
+  const [details, setDetails] = useState('')
+  const [context, setContext] = useState('')
   const [contextFileName, setContextFileName] = useState('')
 
   // SP/MP toggle: 'single' | 'multi'
