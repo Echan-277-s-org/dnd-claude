@@ -682,6 +682,10 @@ export function createSyncServer({ sessionsDir = DEFAULT_DIR, roomGcMs = 30 * 60
           let buffer = ''
           const nextSeq = (room.turnSequence ?? 0) + 1
 
+          // [STRESS_METRICS] Test-only instrumentation — captured only when
+          // STRESS_METRICS=1. Zero impact on production broadcasts when unset.
+          let _smEvalCount = 0, _smEvalDuration = 0, _smPromptEvalCount = 0, _smTotalDuration = 0
+
           while (true) {
             const { done, value } = await reader.read()
             if (done) break
@@ -700,6 +704,14 @@ export function createSyncServer({ sessionsDir = DEFAULT_DIR, roomGcMs = 30 * 60
                     roomCode: room.roomCode,
                     payload: { delta, assistantId, turnSequence: nextSeq },
                   })
+                }
+                // [STRESS_METRICS] Capture Ollama performance fields from the
+                // done:true line. Additive only; never changes the delta broadcasts.
+                if (event.done && process.env.STRESS_METRICS === '1') {
+                  _smEvalCount       = event.eval_count        ?? 0
+                  _smEvalDuration    = event.eval_duration     ?? 0
+                  _smPromptEvalCount = event.prompt_eval_count ?? 0
+                  _smTotalDuration   = event.total_duration    ?? 0
                 }
               } catch {
                 // incomplete JSON chunk — skip (matches Chat.jsx)
@@ -783,7 +795,21 @@ export function createSyncServer({ sessionsDir = DEFAULT_DIR, roomGcMs = 30 * 60
           broadcast(room, {
             type: 'dm:done',
             roomCode: room.roomCode,
-            payload: { fullText, turnSequence: room.turnSequence },
+            // [STRESS_METRICS] When STRESS_METRICS=1, attach Ollama perf fields
+            // captured from the done:true NDJSON line. When unset this spread is
+            // an empty object, so the payload is byte-identical to production.
+            payload: {
+              fullText,
+              turnSequence: room.turnSequence,
+              ...(process.env.STRESS_METRICS === '1' ? {
+                metrics: {
+                  eval_count:        _smEvalCount,
+                  eval_duration:     _smEvalDuration,
+                  prompt_eval_count: _smPromptEvalCount,
+                  total_duration:    _smTotalDuration,
+                },
+              } : {}),
+            },
           })
           broadcast(room, {
             type: 'session:update',
@@ -794,6 +820,10 @@ export function createSyncServer({ sessionsDir = DEFAULT_DIR, roomGcMs = 30 * 60
               phase: room.phase,
               turnSequence: room.turnSequence,
               savedAt: savedAt ?? new Date().toISOString(),
+              // [STRESS_METRICS] Optional heap proxy — additive, flag-gated.
+              ...(process.env.STRESS_METRICS === '1' ? {
+                heapUsedBytes: process.memoryUsage().heapUsed,
+              } : {}),
             },
           })
         } catch (err) {

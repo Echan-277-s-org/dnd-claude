@@ -1,0 +1,91 @@
+{
+  "experiment": "EX-2",
+  "description": "server-memory model (pure, no GPU)",
+  "room_messages": {
+    "bytes_per_turn": 807.5,
+    "bytes_per_round": 3230.2,
+    "r_squared": 1,
+    "linearity_verdict": "LINEAR",
+    "samples": [
+      {
+        "turns": 100,
+        "rounds": 25,
+        "message_count": 200,
+        "messages_bytes": 80175
+      },
+      {
+        "turns": 200,
+        "rounds": 50,
+        "message_count": 400,
+        "messages_bytes": 160675
+      },
+      {
+        "turns": 400,
+        "rounds": 100,
+        "message_count": 800,
+        "messages_bytes": 321675
+      },
+      {
+        "turns": 800,
+        "rounds": 200,
+        "message_count": 1600,
+        "messages_bytes": 643675
+      },
+      {
+        "turns": 1000,
+        "rounds": 250,
+        "message_count": 2000,
+        "messages_bytes": 804677
+      },
+      {
+        "turns": 2000,
+        "rounds": 500,
+        "message_count": 4000,
+        "messages_bytes": 1612677
+      },
+      {
+        "turns": 3000,
+        "rounds": 750,
+        "message_count": 6000,
+        "messages_bytes": 2420677
+      },
+      {
+        "turns": 4000,
+        "rounds": 1000,
+        "message_count": 8000,
+        "messages_bytes": 3228677
+      },
+      {
+        "turns": 5000,
+        "rounds": 1250,
+        "message_count": 10000,
+        "messages_bytes": 4036677
+      }
+    ]
+  },
+  "apply_party_update": {
+    "id_stability": true,
+    "iterations_tested": 10000,
+    "verdict": "NO_ACCUMULATION"
+  },
+  "with_room_lock": {
+    "iterations": 1000,
+    "completed": 1000,
+    "queue_state": "settled-ok",
+    "verdict": "NO_LEAK"
+  },
+  "http_with_lock": {
+    "distinct_ids": 500,
+    "locks_remaining_after_settle": 0,
+    "verdict": "NO_LEAK"
+  },
+  "rooms_map": {
+    "verdict": "NO_LEAK",
+    "note": "GC timer cleans orphaned rooms after roomGcMs (30min default). Code audit."
+  },
+  "last_dice_event": {
+    "verdict": "NO_LEAK",
+    "note": "Single slot cleared each verdict/dice turn. Code audit."
+  },
+  "overall_leak_verdict": "NO_LEAK"
+}

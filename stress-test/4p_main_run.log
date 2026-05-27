@@ -1,0 +1,129 @@
+CLI args: mode=full rounds=60 run_id=4p_main port=3001 manage-server=true
+
+Spawning sync server: node H:\Claude\dnd-claude\server\sync-server.mjs
+Waiting for port 3001...
+[server] dnd-claude sync server listening on http://0.0.0.0:3001
+Port 3001 ready.
+
+
+========================================================================
+4P ENDURANCE HARNESS — 4p_main
+Mode: full  maxRounds: 60  port: 3001
+JSONL: H:\Claude\dnd-claude\stress-test\stress-test-4p-4p_main.jsonl
+Summary: H:\Claude\dnd-claude\stress-test\stress-test-summary-4p-4p_main.json
+========================================================================
+
+sessionId: 3c7dde78-d18e-4e95-9f17-f49b87073e2c
+roomCode:  dnd-3c7dde78
+
+Opening 4 WebSocket connections...
+  Kael: connected
+  Lyra: connected
+  Bron: connected
+  Sora: connected
+
+Joining all 4 clients...
+  Kael: received session:state (turnSeq=0)
+  Lyra: received session:state (turnSeq=0)
+  Bron: received session:state (turnSeq=0)
+  Sora: received session:state (turnSeq=0)
+
+All 4 clients joined. Starting beats (follow-the-spotlight model)...
+
+  Baseline ollama processor: "100% GPU"
+  R1T1(Kael) tok/s=90.2  wall=4930ms  spotlight=Kael  persist=3KB  msgs=2
+  R1T2(Kael) tok/s=88.0  wall=3856ms  spotlight=Lyra  persist=5KB  msgs=4
+  R1T3(Lyra) tok/s=86.6  wall=3403ms  spotlight=Lyra  persist=7KB  msgs=6
+  R1T4(Lyra) tok/s=85.8  wall=4807ms  spotlight=Sora  persist=8KB  msgs=8
+  R2T1(Sora) tok/s=86.1  wall=3465ms  spotlight=Sora  persist=10KB  msgs=10
+  R2T2(Sora) tok/s=85.4  wall=3908ms  spotlight=Sora  persist=12KB  msgs=12
+  R2T3(Sora) tok/s=84.8  wall=6050ms  spotlight=Sora  persist=15KB  msgs=14
+  R2T4(Sora) tok/s=85.4  wall=4233ms  spotlight=Sora  persist=17KB  msgs=16
+  R3T1(Sora) tok/s=84.6  wall=4524ms  spotlight=Sora  persist=19KB  msgs=18
+  R3T2(Sora) tok/s=83.7  wall=4263ms  spotlight=Sora  persist=21KB  msgs=20
+  R3T3(Sora) tok/s=83.5  wall=4122ms  spotlight=Sora  persist=23KB  msgs=22
+  R3T4(Sora) tok/s=82.4  wall=5036ms  spotlight=Lyra  persist=24KB  msgs=24
+  R4T1(Lyra) tok/s=82.7  wall=4018ms  spotlight=Lyra  persist=26KB  msgs=26
+  R4T2(Lyra/PROBE) [P1] Score: 6/6  PASS:[A1,B1,B2,B5,B8,C1]  FAIL:[]  spotlight=Lyra
+  R4T3(Lyra) tok/s=83.3  wall=4184ms  spotlight=Lyra  persist=29KB  msgs=30
+  R4T4(Lyra) tok/s=83.4  wall=4216ms  spotlight=Lyra  persist=31KB  msgs=32
+  R5T1(Lyra) tok/s=83.5  wall=3895ms  spotlight=Lyra  persist=33KB  msgs=34
+  R5T2(Lyra) tok/s=84.6  wall=3808ms  spotlight=Lyra  persist=34KB  msgs=36
+  R5T3(Lyra) tok/s=84.3  wall=3738ms  spotlight=Lyra  persist=36KB  msgs=38
+  R5T4(Lyra) tok/s=83.9  wall=4488ms  spotlight=Lyra  persist=38KB  msgs=40
+  R6T1(Lyra) tok/s=84.5  wall=3252ms  spotlight=Lyra  persist=39KB  msgs=42
+  R6T2(Lyra) tok/s=84.2  wall=3508ms  spotlight=Lyra  persist=41KB  msgs=44
+  R6T3(Lyra/DICE) wall=5539ms  spotlight=Lyra  party=Kael,Lyra,Bron,Sora
+  R6T4(Lyra) tok/s=84.3  wall=3452ms  spotlight=Lyra  persist=44KB  msgs=48
+  R7T1(Lyra) tok/s=84.6  wall=3096ms  spotlight=Lyra  persist=46KB  msgs=50
+  R7T2(Lyra) tok/s=84.7  wall=4002ms  spotlight=Lyra  persist=48KB  msgs=52
+  R7T3(Lyra) tok/s=84.2  wall=4901ms  spotlight=Lyra  persist=49KB  msgs=54
+  R7T4(Lyra) tok/s=84.6  wall=4098ms  spotlight=Lyra  persist=51KB  msgs=56
+  R8T1(Lyra) tok/s=84.2  wall=3732ms  spotlight=Lyra  persist=53KB  msgs=58
+  R8T2(Lyra/PROBE) [P2] Score: 3/6  PASS:[A1,B8,C2]  FAIL:[B1,B2,B5]  spotlight=Kael
+  R8T3(Kael) tok/s=73.8  wall=6036ms  spotlight=Kael  persist=57KB  msgs=62
+  R8T4(Kael) tok/s=79.5  wall=4067ms  spotlight=Kael  persist=58KB  msgs=64
+  R9T1(Kael) tok/s=81.5  wall=4755ms  spotlight=Kael  persist=60KB  msgs=66
+  R9T2(Kael) tok/s=78.2  wall=5226ms  spotlight=Kael  persist=62KB  msgs=68
+  R9T3(Kael) tok/s=84.3  wall=6676ms  spotlight=Lyra  persist=64KB  msgs=70
+  R9T4(Lyra) tok/s=78.6  wall=4591ms  spotlight=Lyra  persist=66KB  msgs=72
+  R10T1(Lyra) tok/s=74.5  wall=4418ms  spotlight=Lyra  persist=68KB  msgs=74
+  R10T2(Lyra) tok/s=76.4  wall=2564ms  spotlight=Lyra  persist=69KB  msgs=76
+  R10T3(Lyra/DICE) wall=3249ms  spotlight=Lyra  party=Kael,Lyra,Bron,Sora
+  R10T4(Lyra) tok/s=72.8  wall=3316ms  spotlight=Lyra  persist=71KB  msgs=80
+  R11T1(Lyra) tok/s=88.0  wall=5906ms  spotlight=Kael  persist=73KB  msgs=82
+  R11T2(Kael) tok/s=85.5  wall=6027ms  spotlight=Lyra  persist=75KB  msgs=84
+  R11T3(Lyra) tok/s=84.2  wall=5557ms  spotlight=Lyra  persist=77KB  msgs=86
+  R11T4(Lyra) tok/s=81.3  wall=4942ms  spotlight=Lyra  persist=80KB  msgs=88
+  R12T1(Lyra) tok/s=78.4  wall=3960ms  spotlight=Lyra  persist=81KB  msgs=90
+  R12T2(Lyra/PROBE) [P3] Score: 2/6  PASS:[A1,B8]  FAIL:[B1,B2,B5,C3]  spotlight=Lyra
+  R12T3(Lyra) tok/s=75.7  wall=5386ms  spotlight=Lyra  persist=85KB  msgs=94
+  R12T4(Lyra) tok/s=79.2  wall=6168ms  spotlight=Lyra  persist=86KB  msgs=96
+  R13T1 PARTY_SHRINK: missing=[Kael]
+  R13T1(Lyra) tok/s=83.2  wall=5559ms  spotlight=Lyra  persist=88KB  msgs=98
+  R13T2(Lyra) tok/s=75.9  wall=5767ms  spotlight=Lyra  persist=89KB  msgs=100
+  R13T3(Lyra) tok/s=73.8  wall=5850ms  spotlight=Bron  persist=91KB  msgs=102
+  R13T4(Bron) tok/s=90.6  wall=5791ms  spotlight=Bron  persist=92KB  msgs=104
+  R14T1(Bron) tok/s=78.2  wall=4678ms  spotlight=Bron  persist=94KB  msgs=106
+  R14T2(Bron) tok/s=77.3  wall=4445ms  spotlight=Lyra  persist=95KB  msgs=108
+  R14T3(Lyra/DICE) wall=4040ms  spotlight=Lyra  party=Kael,Bron,Sora,Lyra
+  R14T4(Lyra) tok/s=77.9  wall=4883ms  spotlight=Sora  persist=98KB  msgs=112
+  R15T1(Sora) tok/s=89.4  wall=3169ms  spotlight=Sora  persist=99KB  msgs=114
+  R15T2(Sora) tok/s=76.2  wall=3387ms  spotlight=Sora  persist=101KB  msgs=116
+  R15T3(Sora) tok/s=88.0  wall=3472ms  spotlight=Sora  persist=102KB  msgs=118
+  R15T4(Sora) tok/s=79.1  wall=3234ms  spotlight=Sora  persist=104KB  msgs=120
+  R16T1(Sora) tok/s=81.8  wall=4816ms  spotlight=Kael  persist=105KB  msgs=122
+  R16T2(Kael/PROBE) [P4] Score: 3/6  PASS:[A1,B8,C4]  FAIL:[B1,B2,B5]  spotlight=Kael
+  R16T3(Kael) tok/s=78.6  wall=3426ms  spotlight=Kael  persist=108KB  msgs=126
+  R16T4(Kael) tok/s=76.4  wall=3798ms  spotlight=Kael  persist=109KB  msgs=128
+  R17T1(Kael) tok/s=77.8  wall=3524ms  spotlight=Kael  persist=111KB  msgs=130
+  R17T2(Kael) tok/s=84.1  wall=5151ms  spotlight=Sora  persist=112KB  msgs=132
+  R17T3(Sora) tok/s=80.4  wall=5306ms  spotlight=Bron  persist=114KB  msgs=134
+  R17T4(Bron) tok/s=84.1  wall=4597ms  spotlight=Bron  persist=115KB  msgs=136
+  R18T1(Bron) tok/s=78.9  wall=7639ms  spotlight=Kael  persist=116KB  msgs=138
+  R18T2(Kael) tok/s=95.5  wall=3305ms  spotlight=Kael  persist=118KB  msgs=140
+  R18T3(Kael/DICE) wall=2851ms  spotlight=Kael  party=Kael,Bron,Sora,Lyra
+  R18T4(Kael) tok/s=82.7  wall=6007ms  spotlight=Sora  persist=121KB  msgs=144
+  R19T1(Sora) tok/s=85.4  wall=4696ms  spotlight=Kael  persist=122KB  msgs=146
+  R19T2(Kael) tok/s=89.6  wall=3583ms  spotlight=Kael  persist=123KB  msgs=148
+  R19T3(Kael) tok/s=81.9  wall=4573ms  spotlight=Bron  persist=125KB  msgs=150
+  R19T4(Bron) tok/s=81.7  wall=4363ms  spotlight=Bron  persist=126KB  msgs=152
+  R20T1(Bron) tok/s=86.7  wall=4749ms  spotlight=Kael  persist=127KB  msgs=154
+  *** B_COLLAPSE: category_B_accuracy=0.400 sustained ≥2 probes ***
+  R20T2(Kael/PROBE) [P5] Score: 3/6  PASS:[A1,B8,C5]  FAIL:[B1,B2,B5]  spotlight=Sora
+
+========================================================================
+RUN COMPLETE: 4p_main
+Rounds: 20  Turns: 78  Wall: 399s
+Stop reason: B_COLLAPSE
+Category accuracy: A=1.000  B=0.400  C=0.800
+Spotlight distribution: Kael=18  Lyra=37  Bron=7  Sora=16
+Spotlight fairness: OK: all 4 players received at least 1 spotlight over 78 turns
+Max starvation gap: Kael=28  Lyra=23  Bron=50  Sora=44
+Free-roam turns (anomalous): 0
+tok/s mean=82.5  p25=78.9  p75=84.7
+R_continuity=16  R_localstorage=745  R_server=9638  R_hardfail=null
+Limiting factor: R_continuity  Headline: 16 rounds
+Summary: H:\Claude\dnd-claude\stress-test\stress-test-summary-4p-4p_main.json
+========================================================================
+

@@ -1,0 +1,41 @@
+{
+  "experiment": "EX-3",
+  "description": "resilience (stub Ollama, no GPU)",
+  "stub_port": 3011,
+  "sync_ports": [
+    3012,
+    3013
+  ],
+  "ex3a_timeout_recovery": {
+    "dm_done_error_emitted": true,
+    "phase_reset_to_resting": true,
+    "phase_after": "free-roam",
+    "turn_seq_not_incremented": true,
+    "seq_before": 1,
+    "seq_after": 1,
+    "room_unblocked": true,
+    "recovery_phase": "free-roam",
+    "verdict": "PASS"
+  },
+  "ex3b_forged_verdict": {
+    "actual_roll": 11,
+    "forged_roll": 17,
+    "verdict_after_forgery": null,
+    "forged_rejected": true,
+    "positive_roll": 16,
+    "positive_verdict": "PASS",
+    "correct_applied": true,
+    "verdict": "PASS"
+  },
+  "ex3c_burst_gates": {
+    "dm_busy_count": 0,
+    "rate_limited_count": 2,
+    "total_burst_rejections": 2,
+    "action1_completed": true,
+    "room_phase_after_burst": "free-roam",
+    "room_consistent": true,
+    "rate_limited_gate_fires": true,
+    "post_rate_limited_recovery": true,
+    "verdict": "PASS"
+  }
+}

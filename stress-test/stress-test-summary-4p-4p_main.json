@@ -1,0 +1,560 @@
+{
+  "run_id": "4p_main",
+  "mode": "full",
+  "max_rounds": 60,
+  "total_rounds": 20,
+  "total_turns": 78,
+  "stop_reason": "B_COLLAPSE",
+  "stop_round": 20,
+  "wall_time_seconds": 399,
+  "spotlight_distribution": {
+    "Kael": 18,
+    "Lyra": 37,
+    "Bron": 7,
+    "Sora": 16
+  },
+  "max_starvation_gap": {
+    "Kael": 28,
+    "Lyra": 23,
+    "Bron": 50,
+    "Sora": 44
+  },
+  "spotlight_fairness": "OK: all 4 players received at least 1 spotlight over 78 turns",
+  "free_roam_turns": 0,
+  "category_accuracy": {
+    "A": 1,
+    "B": 0.4,
+    "C": 0.8
+  },
+  "category_counts": {
+    "passed": {
+      "A": 5,
+      "B": 8,
+      "C": 4
+    },
+    "total": {
+      "A": 5,
+      "B": 20,
+      "C": 5
+    }
+  },
+  "category_B_accuracy_by_spotlight_owner": {
+    "Kael": 0.25,
+    "Lyra": 0.625,
+    "Bron": null,
+    "Sora": 0.25
+  },
+  "drift_onset": {
+    "probe_id": "P2",
+    "anchor_id": "B1",
+    "spotlight_owner": "Kael",
+    "round": 8,
+    "expected": "Garret"
+  },
+  "rounds_to_B_collapse": 16,
+  "party_shrink_events": [
+    {
+      "round": 13,
+      "turn": 1,
+      "missing": [
+        "Kael"
+      ]
+    }
+  ],
+  "probe_results": {
+    "P1": {
+      "round": 4,
+      "passed": 6,
+      "total": 6,
+      "accuracy": 1,
+      "spotlight_owner_at_probe": "Lyra",
+      "anchors": [
+        {
+          "id": "A1",
+          "expected": "Ravenmoor",
+          "category": "A",
+          "pass": true
+        },
+        {
+          "id": "B1",
+          "expected": "Garret",
+          "category": "B",
+          "pass": true
+        },
+        {
+          "id": "B2",
+          "expected": "Forge of Embers",
+          "category": "B",
+          "pass": true
+        },
+        {
+          "id": "B5",
+          "expected": "12 gold",
+          "category": "B",
+          "pass": true
+        },
+        {
+          "id": "B8",
+          "expected": "Ash Covenant",
+          "category": "B",
+          "pass": true
+        },
+        {
+          "id": "C1",
+          "expected": "Obsidian Stair",
+          "category": "C",
+          "pass": true
+        }
+      ]
+    },
+    "P2": {
+      "round": 8,
+      "passed": 3,
+      "total": 6,
+      "accuracy": 0.5,
+      "spotlight_owner_at_probe": "Kael",
+      "anchors": [
+        {
+          "id": "A1",
+          "expected": "Ravenmoor",
+          "category": "A",
+          "pass": true
+        },
+        {
+          "id": "B1",
+          "expected": "Garret",
+          "category": "B",
+          "pass": false
+        },
+        {
+          "id": "B2",
+          "expected": "Forge of Embers",
+          "category": "B",
+          "pass": false
+        },
+        {
+          "id": "B5",
+          "expected": "12 gold",
+          "category": "B",
+          "pass": false
+        },
+        {
+          "id": "B8",
+          "expected": "Ash Covenant",
+          "category": "B",
+          "pass": true
+        },
+        {
+          "id": "C2",
+          "expected": "Weeping Idol",
+          "category": "C",
+          "pass": true
+        }
+      ]
+    },
+    "P3": {
+      "round": 12,
+      "passed": 2,
+      "total": 6,
+      "accuracy": 0.3333333333333333,
+      "spotlight_owner_at_probe": "Lyra",
+      "anchors": [
+        {
+          "id": "A1",
+          "expected": "Ravenmoor",
+          "category": "A",
+          "pass": true
+        },
+        {
+          "id": "B1",
+          "expected": "Garret",
+          "category": "B",
+          "pass": false
+        },
+        {
+          "id": "B2",
+          "expected": "Forge of Embers",
+          "category": "B",
+          "pass": false
+        },
+        {
+          "id": "B5",
+          "expected": "12 gold",
+          "category": "B",
+          "pass": false
+        },
+        {
+          "id": "B8",
+          "expected": "Ash Covenant",
+          "category": "B",
+          "pass": true
+        },
+        {
+          "id": "C3",
+          "expected": "Silver Door",
+          "category": "C",
+          "pass": false
+        }
+      ]
+    },
+    "P4": {
+      "round": 16,
+      "passed": 3,
+      "total": 6,
+      "accuracy": 0.5,
+      "spotlight_owner_at_probe": "Kael",
+      "anchors": [
+        {
+          "id": "A1",
+          "expected": "Ravenmoor",
+          "category": "A",
+          "pass": true
+        },
+        {
+          "id": "B1",
+          "expected": "Garret",
+          "category": "B",
+          "pass": false
+        },
+        {
+          "id": "B2",
+          "expected": "Forge of Embers",
+          "category": "B",
+          "pass": false
+        },
+        {
+          "id": "B5",
+          "expected": "12 gold",
+          "category": "B",
+          "pass": false
+        },
+        {
+          "id": "B8",
+          "expected": "Ash Covenant",
+          "category": "B",
+          "pass": true
+        },
+        {
+          "id": "C4",
+          "expected": "Shattered Gate",
+          "category": "C",
+          "pass": true
+        }
+      ]
+    },
+    "P5": {
+      "round": 20,
+      "passed": 3,
+      "total": 6,
+      "accuracy": 0.5,
+      "spotlight_owner_at_probe": "Sora",
+      "anchors": [
+        {
+          "id": "A1",
+          "expected": "Ravenmoor",
+          "category": "A",
+          "pass": true
+        },
+        {
+          "id": "B1",
+          "expected": "Garret",
+          "category": "B",
+          "pass": false
+        },
+        {
+          "id": "B2",
+          "expected": "Forge of Embers",
+          "category": "B",
+          "pass": false
+        },
+        {
+          "id": "B5",
+          "expected": "12 gold",
+          "category": "B",
+          "pass": false
+        },
+        {
+          "id": "B8",
+          "expected": "Ash Covenant",
+          "category": "B",
+          "pass": true
+        },
+        {
+          "id": "C5",
+          "expected": "Ember Bridge",
+          "category": "C",
+          "pass": true
+        }
+      ]
+    }
+  },
+  "performance": {
+    "mean_tok_per_sec": 82.53,
+    "p25_tok_per_sec": 78.9,
+    "p75_tok_per_sec": 84.75,
+    "p95_tok_per_sec": 89.36,
+    "sample_count": 69
+  },
+  "cpu_offload_detected": false,
+  "cpu_offload_first_turn": null,
+  "persist_bytes_series": [
+    {
+      "round": 1,
+      "bytes": 8535
+    },
+    {
+      "round": 2,
+      "bytes": 17224
+    },
+    {
+      "round": 3,
+      "bytes": 24801
+    },
+    {
+      "round": 4,
+      "bytes": 31758
+    },
+    {
+      "round": 5,
+      "bytes": 38405
+    },
+    {
+      "round": 6,
+      "bytes": 45202
+    },
+    {
+      "round": 7,
+      "bytes": 52600
+    },
+    {
+      "round": 8,
+      "bytes": 59770
+    },
+    {
+      "round": 9,
+      "bytes": 67790
+    },
+    {
+      "round": 10,
+      "bytes": 72963
+    },
+    {
+      "round": 11,
+      "bytes": 81446
+    },
+    {
+      "round": 12,
+      "bytes": 88449
+    },
+    {
+      "round": 13,
+      "bytes": 94714
+    },
+    {
+      "round": 14,
+      "bytes": 100402
+    },
+    {
+      "round": 15,
+      "bytes": 106097
+    },
+    {
+      "round": 16,
+      "bytes": 111965
+    },
+    {
+      "round": 17,
+      "bytes": 117746
+    },
+    {
+      "round": 18,
+      "bytes": 123432
+    },
+    {
+      "round": 19,
+      "bytes": 129063
+    }
+  ],
+  "turns_to_localStorage_cap": 2980,
+  "room_bytes_series": [
+    {
+      "round": 1,
+      "count": 8,
+      "bytes": 7016
+    },
+    {
+      "round": 2,
+      "count": 16,
+      "bytes": 15705
+    },
+    {
+      "round": 3,
+      "count": 24,
+      "bytes": 23282
+    },
+    {
+      "round": 4,
+      "count": 32,
+      "bytes": 30239
+    },
+    {
+      "round": 5,
+      "count": 40,
+      "bytes": 36887
+    },
+    {
+      "round": 6,
+      "count": 48,
+      "bytes": 43683
+    },
+    {
+      "round": 7,
+      "count": 56,
+      "bytes": 51081
+    },
+    {
+      "round": 8,
+      "count": 64,
+      "bytes": 58250
+    },
+    {
+      "round": 9,
+      "count": 72,
+      "bytes": 66272
+    },
+    {
+      "round": 10,
+      "count": 80,
+      "bytes": 71445
+    },
+    {
+      "round": 11,
+      "count": 88,
+      "bytes": 79902
+    },
+    {
+      "round": 12,
+      "count": 96,
+      "bytes": 86906
+    },
+    {
+      "round": 13,
+      "count": 104,
+      "bytes": 93170
+    },
+    {
+      "round": 14,
+      "count": 112,
+      "bytes": 98858
+    },
+    {
+      "round": 15,
+      "count": 120,
+      "bytes": 104553
+    },
+    {
+      "round": 16,
+      "count": 128,
+      "bytes": 110420
+    },
+    {
+      "round": 17,
+      "count": 136,
+      "bytes": 116202
+    },
+    {
+      "round": 18,
+      "count": 144,
+      "bytes": 121887
+    },
+    {
+      "round": 19,
+      "count": 152,
+      "bytes": 127519
+    }
+  ],
+  "server_heap_series": [
+    {
+      "round": 1,
+      "bytes": 13271304
+    },
+    {
+      "round": 2,
+      "bytes": 13585720
+    },
+    {
+      "round": 3,
+      "bytes": 14026064
+    },
+    {
+      "round": 4,
+      "bytes": 14799848
+    },
+    {
+      "round": 5,
+      "bytes": 15692352
+    },
+    {
+      "round": 6,
+      "bytes": 16029152
+    },
+    {
+      "round": 7,
+      "bytes": 16782032
+    },
+    {
+      "round": 8,
+      "bytes": 17359416
+    },
+    {
+      "round": 9,
+      "bytes": 17820768
+    },
+    {
+      "round": 10,
+      "bytes": 18876152
+    },
+    {
+      "round": 11,
+      "bytes": 19136328
+    },
+    {
+      "round": 12,
+      "bytes": 14240400
+    },
+    {
+      "round": 13,
+      "bytes": 15263296
+    },
+    {
+      "round": 14,
+      "bytes": 15254240
+    },
+    {
+      "round": 15,
+      "bytes": 15487936
+    },
+    {
+      "round": 16,
+      "bytes": 16171288
+    },
+    {
+      "round": 17,
+      "bytes": 15293856
+    },
+    {
+      "round": 18,
+      "bytes": 17189208
+    },
+    {
+      "round": 19,
+      "bytes": 16152712
+    }
+  ],
+  "R_continuity": 16,
+  "R_localstorage": 745,
+  "R_server": 9638,
+  "R_hardfail": null,
+  "limiting_factor": "R_continuity",
+  "headline_rounds": 16
+}
