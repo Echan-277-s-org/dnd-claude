@@ -1,0 +1,135 @@
+{
+  "experiment": "EX-1",
+  "description": "localStorage cliff (pure, no server)",
+  "budget_bytes": 5000000,
+  "baseline_bytes": 1313,
+  "bytes_per_turn": 1019.6,
+  "bytes_per_round": 4078.5,
+  "bytes_per_message": 509.8,
+  "r_squared": 1,
+  "turns_to_cliff": 4903,
+  "rounds_to_cliff": 1226,
+  "linearity_verdict": "LINEAR",
+  "samples": [
+    {
+      "turns": 10,
+      "rounds": 3,
+      "bytes": 11641,
+      "messages": 20
+    },
+    {
+      "turns": 20,
+      "rounds": 5,
+      "bytes": 21851,
+      "messages": 40
+    },
+    {
+      "turns": 40,
+      "rounds": 10,
+      "bytes": 42206,
+      "messages": 80
+    },
+    {
+      "turns": 80,
+      "rounds": 20,
+      "bytes": 82999,
+      "messages": 160
+    },
+    {
+      "turns": 120,
+      "rounds": 30,
+      "bytes": 123733,
+      "messages": 240
+    },
+    {
+      "turns": 160,
+      "rounds": 40,
+      "bytes": 164476,
+      "messages": 320
+    },
+    {
+      "turns": 200,
+      "rounds": 50,
+      "bytes": 205226,
+      "messages": 400
+    },
+    {
+      "turns": 240,
+      "rounds": 60,
+      "bytes": 246053,
+      "messages": 480
+    },
+    {
+      "turns": 280,
+      "rounds": 70,
+      "bytes": 286814,
+      "messages": 560
+    },
+    {
+      "turns": 320,
+      "rounds": 80,
+      "bytes": 327540,
+      "messages": 640
+    },
+    {
+      "turns": 360,
+      "rounds": 90,
+      "bytes": 368366,
+      "messages": 720
+    },
+    {
+      "turns": 400,
+      "rounds": 100,
+      "bytes": 409119,
+      "messages": 800
+    },
+    {
+      "turns": 500,
+      "rounds": 125,
+      "bytes": 511070,
+      "messages": 1000
+    },
+    {
+      "turns": 600,
+      "rounds": 150,
+      "bytes": 612934,
+      "messages": 1200
+    },
+    {
+      "turns": 700,
+      "rounds": 175,
+      "bytes": 714905,
+      "messages": 1400
+    },
+    {
+      "turns": 800,
+      "rounds": 200,
+      "bytes": 816841,
+      "messages": 1600
+    },
+    {
+      "turns": 1000,
+      "rounds": 250,
+      "bytes": 1020644,
+      "messages": 2000
+    },
+    {
+      "turns": 1200,
+      "rounds": 300,
+      "bytes": 1224745,
+      "messages": 2400
+    },
+    {
+      "turns": 1500,
+      "rounds": 375,
+      "bytes": 1530806,
+      "messages": 3000
+    },
+    {
+      "turns": 2000,
+      "rounds": 500,
+      "bytes": 2040893,
+      "messages": 4000
+    }
+  ]
+}

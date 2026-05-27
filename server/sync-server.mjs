@@ -56,9 +56,9 @@ const DIE_RE = /^d\d{1,3}$/i
 // ─── Phase 3: structured-block parser (server copy of Chat.jsx L18-42) ─────────
 // The architecture sanctions a verbatim server copy of the small parser so the
 // DM proxy applies party/check/verdict blocks identically to the client.
-// NOTE: DM_BLOCK_TAGS is the three LLM-owned tags (party/check/verdict). The
+// NOTE: DM_BLOCK_TAGS is the LLM-owned tags (party/check/verdict/facts). The
 // inbound sanitizer below uses the wider BLOCK_TAGS set (includes 'session').
-const DM_BLOCK_TAGS = ['party', 'check', 'verdict']
+const DM_BLOCK_TAGS = ['party', 'check', 'verdict', 'facts']
 const DM_STRIP_RE = new RegExp('```(?:' + DM_BLOCK_TAGS.join('|') + ')[\\s\\S]*?```', 'g')
 
 function stripStructuredBlocks(text) {
@@ -75,6 +75,358 @@ function extractBlock(tag, text) {
   } catch {
     return null // malformed JSON → ignore, keep last-known state
   }
+}
+
+// ─── Fix #3: facts accumulator helpers (Contract B) ──────────────────────────
+// Mirror of the client-side helpers in Chat.jsx — kept in sync manually.
+// Merge a new facts array into an existing list (keyed by `k`).
+// Latest value wins; entries over the cap of 12 are evicted oldest-first.
+const SERVER_FACTS_CAP = 12
+
+function mergeFacts(existing, incoming) {
+  if (!Array.isArray(incoming)) return existing
+  const entries = [...existing]
+  for (const item of incoming) {
+    if (!item || typeof item.k !== 'string' || typeof item.v !== 'string') continue
+    const k = item.k.trim()
+    const v = item.v.trim()
+    if (!k) continue
+    const idx = entries.findIndex(e => e.k === k)
+    if (idx !== -1) {
+      entries[idx] = { k, v }
+    } else {
+      entries.push({ k, v })
+    }
+  }
+  return entries.length > SERVER_FACTS_CAP ? entries.slice(entries.length - SERVER_FACTS_CAP) : entries
+}
+
+function factsDigestLine(facts) {
+  if (!facts || facts.length === 0) return ''
+  return 'Established facts: ' + facts.map(e => `${e.k}=${e.v}`).join('; ') + '.'
+}
+
+// ─── Fix #5: Anchor joined-PC names against DM confabulation ─────────────────
+//
+// Problem (measured, round 13 of 4p_main): the DM emitted a party block renaming
+// the joined PC "Kael" to "Aelis" (PARTY_SHRINK event_flag). The confabulation
+// mechanism is identical to the one that erased "Garret Ironhand's Forge of
+// Embers" — the DM produces a plausible-sounding replacement without realising
+// the name belongs to a real player.
+//
+// Root cause: applyPartyUpdate resolves identity by name-match (normalized
+// lowercased string). When the DM renames "Kael" → "Aelis" the name-match
+// finds NO existing entry, so a brand-new party row is generated (new UUID,
+// resetting per-member identity) and the "Kael" row silently disappears.
+// This breaks:
+//   (a) immersion: the player sees their character renamed mid-session,
+//   (b) ID stability (EX-2b): the name-match loses the existing UUID, and
+//   (c) the spotlight tracker: "Kael" is gone from room.party and the fairness
+//       guard can no longer route isActive back to that player.
+//
+// Fix: after applyPartyUpdate produces the new party array, validate it against
+// the canonical joined-PC roster (ground truth = room.characters keys, which are
+// the exact displayNames every player submitted at join time and which the server
+// stores in sanitizeCharacter — never touched by the DM). For each joined PC name
+// that is absent from the new party but was present in the old party at the same
+// index, restore the canonical name on that position's row (keeping all other
+// DM-emitted fields: hpPct, isActive, conditions, role).
+//
+// Canonical roster source — room.characters:
+//   • Keyed by the exact displayName submitted at join (before normalization).
+//   • Populated for every player who ever joined; not modifiable by the DM.
+//   • More stable than room.clients (which drops entries on rejoin/cleanup).
+//   • Covers disconnected-but-not-yet-rejoined players (their character persists).
+//
+// Rename-detection rule (same-membership, same-index, joined-PC disappears):
+//   For each joined PC name missing from the new party:
+//     1. Find its old index in the previous party (room.party before this turn).
+//     2. If the new party has an entry at that same index whose name is NOT a
+//        joined PC name — that entry is the confabulated rename placeholder.
+//     3. Restore the canonical PC name on that entry; preserve all other DM fields.
+//
+// Invariants:
+//   • N=1 / no joined roster: guard is a no-op — behavior byte-identical to today.
+//   • Legitimate NPC/companion rows (name not in the joined roster) are untouched.
+//   • Party membership count is unchanged (no entries added or removed).
+//   • applyPartyUpdate's UUID-by-name-match already ran; after correction the
+//     corrected name IS the canonical name so the ID assigned in the NEXT turn
+//     will match correctly again (ID stability restored from this turn forward).
+//   • Phase derivation (isActive → combat) and applySpotlightFairness both operate
+//     on the already-corrected party.
+//
+/**
+ * After applyPartyUpdate has run, correct any DM-confabulated renames of joined
+ * PCs back to their canonical displayName.
+ *
+ * The function mutates `newParty` in place and returns it.  No-op when:
+ *   - room.characters is empty (no joined roster → single-player / N=1).
+ *   - No joined PC name is missing from newParty.
+ *   - The same-index slot in newParty is also a joined PC name (legitimate swap).
+ *
+ * @param {Array}  newParty  — result of applyPartyUpdate(partyRaw, room.party)
+ * @param {Array}  oldParty  — room.party BEFORE this turn (snapshot, not mutated)
+ * @param {object} characters — room.characters (Map<displayName, character>)
+ * @returns {Array} newParty (same reference, mutated in place)
+ */
+export function anchorJoinedPCNames(newParty, oldParty, characters) {
+  // ── 0. Guard: no roster ⇒ single-player / unregistered room — no-op. ────────
+  if (!characters || typeof characters !== 'object' || Array.isArray(characters)) return newParty
+  if (!Array.isArray(newParty) || !Array.isArray(oldParty)) return newParty
+
+  // Build the canonical joined-PC set (normalized key → original casing).
+  const rosterEntries = Object.keys(characters)
+  if (rosterEntries.length === 0) return newParty // no joined players → no-op
+
+  const rosterLower = new Map()
+  for (const name of rosterEntries) {
+    rosterLower.set(name.trim().toLowerCase(), name.trim())
+  }
+
+  // ── 1. Find which joined PCs are missing from newParty. ──────────────────────
+  const newPartyNamesLower = new Set(
+    newParty.map(m => String(m?.name ?? '').trim().toLowerCase())
+  )
+  const missingPCs = [] // { canonicalName, normalizedKey, oldIndex }
+  for (const [normalizedKey, canonicalName] of rosterLower) {
+    if (newPartyNamesLower.has(normalizedKey)) continue // still present — fine
+    // Missing PC: find its old index.
+    const oldIndex = oldParty.findIndex(
+      m => String(m?.name ?? '').trim().toLowerCase() === normalizedKey
+    )
+    if (oldIndex === -1) continue // wasn't in the old party either → not a rename
+    missingPCs.push({ canonicalName, normalizedKey, oldIndex })
+  }
+
+  if (missingPCs.length === 0) return newParty // nothing missing → no-op
+
+  // ── 2. For each missing PC, correct the same-index slot if it is a non-PC name.
+  for (const { canonicalName, normalizedKey, oldIndex } of missingPCs) {
+    // The confabulated entry would be at the same position in newParty.
+    if (oldIndex >= newParty.length) continue // party shrank past this index — skip
+    const slot = newParty[oldIndex]
+    if (!slot) continue
+    const slotNameLower = String(slot.name ?? '').trim().toLowerCase()
+    // Only correct if the slot holds a name that is NOT a joined PC name.
+    // If the slot is already a different joined PC, don't overwrite them.
+    if (rosterLower.has(slotNameLower)) continue // legitimate same-slot PC — skip
+    // Restore the canonical name; all other DM-emitted fields are kept as-is.
+    newParty[oldIndex] = { ...slot, name: canonicalName }
+    // Remove from the set so the phase/fairness guard sees the correct name.
+    newPartyNamesLower.delete(slotNameLower)
+    newPartyNamesLower.add(normalizedKey)
+  }
+
+  return newParty
+}
+
+// ─── Fix #4: Spotlight fairness / starvation guard ────────────────────────────
+//
+// Problem (measured): in a 4-player session the DM parked isActive on Lyra 37/78
+// turns (47%); Bron had a max starvation gap of 50 turns and was locked out of
+// combat-phase turns entirely. Root cause: the combat turn gate lets ONLY the
+// isActive player act, so when the DM doesn't rotate isActive, three players are
+// blocked indefinitely.
+//
+// Policy (deterministic, server-side):
+//
+//   K = SPOTLIGHT_MAX_STREAK = 3
+//     Maximum number of consecutive DM turns a single player may hold isActive.
+//     Rationale: 3 gives enough room for a multi-step combat sequence (3 DM
+//     responses, e.g. attack → reaction → resolve) without locking others out.
+//     At N=4, K=3 bounds the worst-case starvation gap at K*N = 12 turns —
+//     well below the observed 50-turn gap.
+//
+//   Starvation threshold = K * max(party.length, 1)
+//     If a joined player has not acted in this many consecutive DM turns they are
+//     considered maximally starved.  Dynamic: scales with the live party size so
+//     it is proportional for N=2 (threshold=6) through N=5 (threshold=15).
+//
+// Two-site implementation:
+//
+//   (a) Combat turn gate (~L474): before returning NOT_YOUR_TURN, check whether
+//       the requesting player is maximally starved AND has a joined connection.
+//       If so, allow the action to proceed — the starvation overrides the lock.
+//       Normal case (non-starved, non-active player): returns NOT_YOUR_TURN as
+//       before. Single-player: N=1, threshold=3, gap never exceeds 3 in practice.
+//
+//   (b) Party-apply region (~L816): after applyPartyUpdate (which applies the DM's
+//       party block), call applySpotlightFairness(room, actingPlayerName).
+//       That function:
+//         1. Records the acting player's turn participation in room.spotlight.
+//         2. Checks whether the new isActive player has exceeded K consecutive turns.
+//         3. If monopolization detected AND at least one joined player is more starved,
+//            rotate room.party's isActive to the most-starved joined player.
+//       When N=1 or the guard does not trigger, party state is unchanged (no-op).
+//
+// Broadcast / wire shape: the corrected room.party is sent in the existing
+// session:update broadcast (no new fields, no wire changes). STRESS_METRICS-
+// unset payloads remain byte-identical to pre-change when the guard does not
+// fire (no monopolization, normal balanced play).
+
+export const SPOTLIGHT_MAX_STREAK = 3
+
+/**
+ * Return the normalized (lowercased, trimmed) display names of all joined
+ * players who currently have an OPEN connection in `room`.
+ *
+ * @param {object} room
+ * @returns {Set<string>}
+ */
+function joinedPlayerNamesLower(room) {
+  const names = new Set()
+  for (const [ws, info] of room.clients) {
+    if (ws.readyState === ws.OPEN && info.displayName) {
+      names.add(info.displayName.trim().toLowerCase())
+    }
+  }
+  return names
+}
+
+/**
+ * Return the display name (original casing) of the current isActive party member,
+ * or null when no member is active.
+ *
+ * @param {Array} party
+ * @returns {string|null}
+ */
+function activePartyMemberName(party) {
+  if (!Array.isArray(party)) return null
+  return party.find(m => m.isActive)?.name ?? null
+}
+
+/**
+ * Apply the spotlight fairness guard after the DM's party block has been applied.
+ *
+ * Updates room.spotlight and room.activePlayerStreak, and may rotate isActive in
+ * room.party to a more-starved joined player when monopolization is detected.
+ *
+ * No-op when:
+ *   - N=1 (single player, no rotation candidates).
+ *   - Balanced play (streak ≤ K and no player is maximally starved by the current active).
+ *   - No joined player is more-starved than the current active player.
+ *
+ * @param {object} room          — mutated in place (room.party, room.spotlight,
+ *                                 room.activePlayerStreak)
+ * @param {string|null} actingPlayerName  — displayName of the player whose action
+ *                                          just triggered the DM (may be null)
+ */
+export function applySpotlightFairness(room, actingPlayerName) {
+  const currentSeq = room.turnSequence ?? 0
+  const joined = joinedPlayerNamesLower(room)
+  const partySize = Math.max(1, room.party?.length ?? 0)
+
+  // ── 1. Record the acting player's participation. ──────────────────────────
+  if (actingPlayerName) {
+    const key = actingPlayerName.trim().toLowerCase()
+    if (!room.spotlight) room.spotlight = new Map()
+    const entry = room.spotlight.get(key) ?? { turnCount: 0, lastActedTurnSeq: 0 }
+    entry.turnCount += 1
+    entry.lastActedTurnSeq = currentSeq
+    room.spotlight.set(key, entry)
+  }
+
+  // ── 2. Identify the current isActive member and update the streak. ────────
+  const activeName = activePartyMemberName(room.party ?? [])
+  if (!activeName) {
+    // No active player → free-roam; reset streak.
+    if (room.activePlayerStreak) room.activePlayerStreak = { name: null, count: 0 }
+    return
+  }
+
+  const activeKey = activeName.trim().toLowerCase()
+  if (!room.activePlayerStreak) room.activePlayerStreak = { name: null, count: 0 }
+
+  if (room.activePlayerStreak.name === activeKey) {
+    room.activePlayerStreak.count += 1
+  } else {
+    room.activePlayerStreak = { name: activeKey, count: 1 }
+  }
+
+  // ── 3. Check for monopolization (streak > K). ─────────────────────────────
+  // Only rotate when N > 1 (guard is a no-op for single-player rooms).
+  if (joined.size <= 1) return
+
+  const thresholdGap = SPOTLIGHT_MAX_STREAK * partySize
+  const streakExceeded = room.activePlayerStreak.count > SPOTLIGHT_MAX_STREAK
+
+  if (!streakExceeded) {
+    // No monopolization — check whether any joined player is maximally starved
+    // by the CURRENT active player holding focus.  If not, nothing to do.
+    // We still do the starvation rotation check to handle cases where the DM
+    // emits the same active player but a different party member has been starved
+    // past the threshold by the active streak not yet crossing K+1.
+    const someoneMaximallyStarved = Array.from(joined).some(nameKey => {
+      if (nameKey === activeKey) return false
+      const entry = room.spotlight?.get(nameKey)
+      const gap = currentSeq - (entry?.lastActedTurnSeq ?? 0)
+      return gap > thresholdGap
+    })
+    if (!someoneMaximallyStarved) return
+  }
+
+  // ── 4. Find the most-starved joined player (excluding the current active). ─
+  let mostStarvedName = null
+  let maxGap = -1
+
+  for (const nameKey of joined) {
+    if (nameKey === activeKey) continue
+    const entry = room.spotlight?.get(nameKey)
+    const gap = currentSeq - (entry?.lastActedTurnSeq ?? 0)
+    if (gap > maxGap) {
+      maxGap = gap
+      mostStarvedName = nameKey
+    }
+  }
+
+  if (!mostStarvedName) return
+
+  // ── 5. Rotate isActive to the most-starved joined player. ─────────────────
+  // Find the party member whose name matches the most-starved key (case-insensitive).
+  // If no party member matches that name, fall back: set no one isActive (free-roam).
+  const targetEntry = room.party.find(
+    m => String(m.name ?? '').trim().toLowerCase() === mostStarvedName
+  )
+
+  room.party = room.party.map(m => ({
+    ...m,
+    isActive: targetEntry
+      ? String(m.name ?? '').trim().toLowerCase() === mostStarvedName
+      : false,
+  }))
+
+  // Reset streak to 1 for the newly spotlit player (they just became active).
+  room.activePlayerStreak = { name: mostStarvedName, count: 1 }
+}
+
+/**
+ * Return true when `playerName` (the displayName of an action sender) is maximally
+ * starved and should be allowed to bypass the combat turn gate.
+ *
+ * Conditions:
+ *   - The player has a joined (OPEN) connection in the room.
+ *   - Their starvation gap (currentTurnSeq − lastActedTurnSeq) exceeds the
+ *     dynamic threshold (K * partySize).
+ *   - The room has more than one joined player (single-player is always unaffected).
+ *
+ * @param {string} playerName
+ * @param {object} room
+ * @returns {boolean}
+ */
+export function isMaximallyStarved(playerName, room) {
+  if (!playerName) return false
+  const joined = joinedPlayerNamesLower(room)
+  if (joined.size <= 1) return false // single-player: guard is a no-op
+
+  const key = playerName.trim().toLowerCase()
+  if (!joined.has(key)) return false // not currently joined
+
+  const partySize = Math.max(1, room.party?.length ?? 0)
+  const thresholdGap = SPOTLIGHT_MAX_STREAK * partySize
+  const currentSeq = room.turnSequence ?? 0
+  const entry = room.spotlight?.get(key)
+  const gap = currentSeq - (entry?.lastActedTurnSeq ?? 0)
+  return gap > thresholdGap
 }
 
 // Resolve the Ollama base URL from the SERVER environment ONLY (sec H). Never
@@ -451,8 +803,18 @@ export function createSyncServer({ sessionsDir = DEFAULT_DIR, roomGcMs = 30 * 60
       if (room.phase === 'combat') {
         const connectionDisplayName = room.clients.get(ws)?.displayName ?? ''
         if (!isActiveTurn(connectionDisplayName, room.party ?? [])) {
-          ws.send(JSON.stringify({ type: 'error', payload: { code: 'NOT_YOUR_TURN' } }))
-          return
+          // Fix #4: starvation override — a maximally-starved joined player may act
+          // even when not currently isActive. This breaks indefinite combat lockout
+          // caused by the DM parking isActive on one player for > K * partySize turns.
+          // Normal case (non-starved, non-active player): returns NOT_YOUR_TURN as
+          // before.  Single-player (N=1): isMaximallyStarved always returns false, so
+          // behaviour is unchanged.
+          if (!isMaximallyStarved(connectionDisplayName, room)) {
+            ws.send(JSON.stringify({ type: 'error', payload: { code: 'NOT_YOUR_TURN' } }))
+            return
+          }
+          // Starved player is allowed through — the party-apply region will rotate
+          // isActive toward them when the DM's response is processed.
         }
       }
 
@@ -578,9 +940,12 @@ export function createSyncServer({ sessionsDir = DEFAULT_DIR, roomGcMs = 30 * 60
           })
           const baseMessages = room.messages ?? []
           const entities = engine.extractEntities(baseMessages)
+          // Fix #3 (Contract B): inject facts digest immediately after the entities line.
+          // ONLY when room.facts is non-empty — empty ⇒ systemContent byte-identical to today.
+          const factsLine = factsDigestLine(room.facts ?? [])
           const systemContent = entities.length
-            ? `${systemPrompt}\n\n---\nEstablished entities so far (stay consistent with these named NPCs, locations, and items): ${entities.join(', ')}.`
-            : systemPrompt
+            ? `${systemPrompt}\n\n---\nEstablished entities so far (stay consistent with these named NPCs, locations, and items): ${entities.join(', ')}.${factsLine ? '\n' + factsLine : ''}`
+            : (factsLine ? `${systemPrompt}\n\n---\n${factsLine}` : systemPrompt)
 
           // Most-recent dice index so pendingCheck folds into the right dice line in the
           // historical baseMessages.  When the CURRENT action is itself a dice action, the
@@ -606,6 +971,16 @@ export function createSyncServer({ sessionsDir = DEFAULT_DIR, roomGcMs = 30 * 60
           const prefixContent = (senderName, rawContent) =>
             senderName ? `${senderName}: ${rawContent}` : rawContent
 
+          // Fix #1: scale the recent window with the room's player count so each
+          // of N humans keeps roughly single-player history parity (Contract A §9).
+          // Prefer the roster size (room.party); before the DM emits a party block
+          // it can be empty, so fall back to the count of currently-OPEN connections
+          // (room.clients keeps disconnected entries for presence history, so we
+          // filter to OPEN to avoid over-counting). Defaults to 1 ⇒ N=1 invariant.
+          const openClientCount = Array.from(room.clients.keys()).filter(
+            ws => ws.readyState === ws.OPEN,
+          ).length
+          const playerCount = Math.max(1, room.party?.length || openClientCount || 1)
           const apiMessages = engine.trimContext([
             ...baseMessages.map((m, i) => {
               if (m.role === 'dice') {
@@ -641,7 +1016,7 @@ export function createSyncServer({ sessionsDir = DEFAULT_DIR, roomGcMs = 30 * 60
               : hasSender
                 ? { ...userMsg, content: prefixContent(conn.displayName, content) }
                 : userMsg,
-          ])
+          ], { playerCount })
 
           // (3d) Validate the model against the allowlist (sec H).
           const model = MODEL_RE.test(String(room.campaign?.model ?? ''))
@@ -682,6 +1057,10 @@ export function createSyncServer({ sessionsDir = DEFAULT_DIR, roomGcMs = 30 * 60
           let buffer = ''
           const nextSeq = (room.turnSequence ?? 0) + 1
 
+          // [STRESS_METRICS] Test-only instrumentation — captured only when
+          // STRESS_METRICS=1. Zero impact on production broadcasts when unset.
+          let _smEvalCount = 0, _smEvalDuration = 0, _smPromptEvalCount = 0, _smTotalDuration = 0
+
           while (true) {
             const { done, value } = await reader.read()
             if (done) break
@@ -700,6 +1079,14 @@ export function createSyncServer({ sessionsDir = DEFAULT_DIR, roomGcMs = 30 * 60
                     roomCode: room.roomCode,
                     payload: { delta, assistantId, turnSequence: nextSeq },
                   })
+                }
+                // [STRESS_METRICS] Capture Ollama performance fields from the
+                // done:true line. Additive only; never changes the delta broadcasts.
+                if (event.done && process.env.STRESS_METRICS === '1') {
+                  _smEvalCount       = event.eval_count        ?? 0
+                  _smEvalDuration    = event.eval_duration     ?? 0
+                  _smPromptEvalCount = event.prompt_eval_count ?? 0
+                  _smTotalDuration   = event.total_duration    ?? 0
                 }
               } catch {
                 // incomplete JSON chunk — skip (matches Chat.jsx)
@@ -762,7 +1149,33 @@ export function createSyncServer({ sessionsDir = DEFAULT_DIR, roomGcMs = 30 * 60
           // party — apply when present and non-empty.
           const partyRaw = extractBlock('party', fullText)
           if (Array.isArray(partyRaw) && partyRaw.length > 0) {
-            room.party = applyPartyUpdate(partyRaw, room.party ?? [])
+            // Snapshot the old party BEFORE applyPartyUpdate so anchorJoinedPCNames
+            // can compare old vs new positions to detect same-slot renames.
+            const partyBeforeUpdate = room.party ?? []
+            room.party = applyPartyUpdate(partyRaw, partyBeforeUpdate)
+
+            // Fix #5: anchor joined-PC names against DM confabulation.
+            // Runs AFTER applyPartyUpdate (which resolves IDs by name-match) so the
+            // raw DM block is already normalized, and BEFORE applySpotlightFairness
+            // so the fairness guard operates on the already-corrected party.
+            // No-op when room.characters is empty (N=1 / unregistered) — behavior
+            // is byte-identical to pre-change for single-player sessions.
+            anchorJoinedPCNames(room.party, partyBeforeUpdate, room.characters ?? {})
+          }
+
+          // Fix #4: apply spotlight fairness guard AFTER the DM's party block has
+          // been absorbed (and Fix #5 has corrected any confabulated PC renames)
+          // but BEFORE the phase is derived from the new isActive.
+          // This may rotate room.party's isActive to a more-starved joined player
+          // when monopolization is detected (streak > K).  No-op for N=1 or when
+          // balanced play makes the guard not trigger.
+          applySpotlightFairness(room, conn?.displayName ?? null)
+
+          // facts — Fix #3 (Contract B): merge into room.facts accumulator.
+          // Defensive: malformed / non-array / absent → keep last-known, no throw.
+          const factsRaw = extractBlock('facts', fullText)
+          if (Array.isArray(factsRaw)) {
+            room.facts = mergeFacts(room.facts ?? [], factsRaw)
           }
 
           // Phase from the new party state (any isActive → combat, else free-roam).
@@ -783,7 +1196,21 @@ export function createSyncServer({ sessionsDir = DEFAULT_DIR, roomGcMs = 30 * 60
           broadcast(room, {
             type: 'dm:done',
             roomCode: room.roomCode,
-            payload: { fullText, turnSequence: room.turnSequence },
+            // [STRESS_METRICS] When STRESS_METRICS=1, attach Ollama perf fields
+            // captured from the done:true NDJSON line. When unset this spread is
+            // an empty object, so the payload is byte-identical to production.
+            payload: {
+              fullText,
+              turnSequence: room.turnSequence,
+              ...(process.env.STRESS_METRICS === '1' ? {
+                metrics: {
+                  eval_count:        _smEvalCount,
+                  eval_duration:     _smEvalDuration,
+                  prompt_eval_count: _smPromptEvalCount,
+                  total_duration:    _smTotalDuration,
+                },
+              } : {}),
+            },
           })
           broadcast(room, {
             type: 'session:update',
@@ -794,6 +1221,10 @@ export function createSyncServer({ sessionsDir = DEFAULT_DIR, roomGcMs = 30 * 60
               phase: room.phase,
               turnSequence: room.turnSequence,
               savedAt: savedAt ?? new Date().toISOString(),
+              // [STRESS_METRICS] Optional heap proxy — additive, flag-gated.
+              ...(process.env.STRESS_METRICS === '1' ? {
+                heapUsedBytes: process.memoryUsage().heapUsed,
+              } : {}),
             },
           })
         } catch (err) {
@@ -1018,6 +1449,12 @@ export function createSyncServer({ sessionsDir = DEFAULT_DIR, roomGcMs = 30 * 60
           dmBusy: false,                   // Phase 3: synchronous single-trigger gate
           lastDiceEvent: null,             // Phase 3: forged-verdict.roll guard
           gcTimer: null,                   // Phase 6: orphaned-room GC timer
+          facts: [],                       // Fix #3: accumulated numeric/transactional facts
+          // Fix #4: spotlight fairness state.
+          //   spotlight: Map<normalizedName, { turnCount, lastActedTurnSeq }>
+          //   activePlayerStreak: { name: normalizedName|null, count: number }
+          spotlight: new Map(),            // Fix #4: per-player turn participation tracker
+          activePlayerStreak: { name: null, count: 0 }, // Fix #4: consecutive-active streak
         })
       }
       const room = rooms.get(sessionId)

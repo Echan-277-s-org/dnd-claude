@@ -341,6 +341,187 @@ describe('verdict-upgrade — PA-25..31', () => {
   })
 })
 
+// ─── Fix #3: facts block parser + mergeFacts + factsDigestLine ───────────────
+// Mirrors the module-private helpers from Chat.jsx and sync-server.mjs.
+// Contract B (§9): minified JSON array of {k,v} objects; merge-by-key; cap 12.
+
+const FACTS_CAP = 12
+
+function mergeFacts(existing, incoming) {
+  if (!Array.isArray(incoming)) return existing
+  const entries = [...existing]
+  for (const item of incoming) {
+    if (!item || typeof item.k !== 'string' || typeof item.v !== 'string') continue
+    const k = item.k.trim()
+    const v = item.v.trim()
+    if (!k) continue
+    const idx = entries.findIndex(e => e.k === k)
+    if (idx !== -1) {
+      entries[idx] = { k, v }
+    } else {
+      entries.push({ k, v })
+    }
+  }
+  return entries.length > FACTS_CAP ? entries.slice(entries.length - FACTS_CAP) : entries
+}
+
+function factsDigestLine(facts) {
+  if (!facts || facts.length === 0) return ''
+  return 'Established facts: ' + facts.map(e => `${e.k}=${e.v}`).join('; ') + '.'
+}
+
+describe('facts block — Contract B parser (FA-01..12)', () => {
+  // FA-01: well-formed facts block extracts to parsed array
+  it('FA-01 well-formed facts block → parsed array', () => {
+    const text = '```facts\n[{"k":"blacksmith_price","v":"12 gold"}]\n```'
+    const result = extractBlock('facts', text)
+    expect(result).toEqual([{ k: 'blacksmith_price', v: '12 gold' }])
+  })
+
+  // FA-02: minified JSON (no whitespace around values) parses correctly
+  it('FA-02 minified facts JSON parses correctly', () => {
+    const text = '```facts\n[{"k":"blacksmith_price","v":"12 gold"},{"k":"torch_count","v":"6"}]\n```'
+    const result = extractBlock('facts', text)
+    expect(Array.isArray(result)).toBe(true)
+    expect(result).toHaveLength(2)
+    expect(result[0]).toEqual({ k: 'blacksmith_price', v: '12 gold' })
+    expect(result[1]).toEqual({ k: 'torch_count', v: '6' })
+  })
+
+  // FA-03: malformed JSON → null (no throw, keep last-known)
+  it('FA-03 malformed JSON → null, no throw', () => {
+    const text = '```facts\n{not valid json\n```'
+    expect(() => extractBlock('facts', text)).not.toThrow()
+    expect(extractBlock('facts', text)).toBeNull()
+  })
+
+  // FA-04: missing/absent facts block → null (no throw)
+  it('FA-04 absent facts block → null, no throw', () => {
+    const text = 'No facts block here.'
+    expect(() => extractBlock('facts', text)).not.toThrow()
+    expect(extractBlock('facts', text)).toBeNull()
+  })
+
+  // FA-05: partial-stream unclosed fence → null (no throw)
+  it('FA-05 partial-stream unclosed fence → null, no throw', () => {
+    const text = '```facts\n[{"k":"blacksmith_price"'
+    expect(() => extractBlock('facts', text)).not.toThrow()
+    expect(extractBlock('facts', text)).toBeNull()
+  })
+
+  // FA-06: non-array JSON (e.g. an object) → returns that object (parser is generic;
+  // the caller guards with Array.isArray before merging, so this is safe)
+  it('FA-06 non-array JSON → parsed object (caller must guard with Array.isArray)', () => {
+    const text = '```facts\n{"k":"bad","v":"value"}\n```'
+    const result = extractBlock('facts', text)
+    // extractBlock is generic — it returns whatever parses. The caller guards.
+    expect(result).toEqual({ k: 'bad', v: 'value' })
+    expect(Array.isArray(result)).toBe(false)
+  })
+
+  // FA-07: stripStructuredBlocks removes a facts fence (Contract B: stripped from display)
+  it('FA-07 stripStructuredBlocks removes a facts fence', () => {
+    // We need to check against the UPDATED BLOCK_TAGS that includes 'facts'.
+    const TAGS = ['party', 'check', 'verdict', 'facts']
+    const RE = new RegExp('```(?:' + TAGS.join('|') + ')[\\s\\S]*?```', 'g')
+    const strip = t => t.replace(RE, '').trimEnd()
+
+    const text = 'The blacksmith charges you.\n```facts\n[{"k":"blacksmith_price","v":"12 gold"}]\n```'
+    const result = strip(text)
+    expect(result).not.toContain('```facts')
+    expect(result).not.toContain('blacksmith_price')
+    expect(result).toContain('The blacksmith charges you.')
+  })
+})
+
+describe('mergeFacts — Contract B merge-by-key + cap (FA-08..12)', () => {
+  // FA-08: new keys are appended
+  it('FA-08 new key is added to the facts list', () => {
+    const result = mergeFacts([], [{ k: 'blacksmith_price', v: '12 gold' }])
+    expect(result).toEqual([{ k: 'blacksmith_price', v: '12 gold' }])
+  })
+
+  // FA-09: merge-by-key — latest value wins, key count stays the same
+  it('FA-09 merge-by-key: latest value wins, no duplicate keys', () => {
+    const existing = [{ k: 'blacksmith_price', v: '12 gold' }]
+    const incoming = [{ k: 'blacksmith_price', v: '15 gold' }]
+    const result = mergeFacts(existing, incoming)
+    expect(result).toHaveLength(1)
+    expect(result[0]).toEqual({ k: 'blacksmith_price', v: '15 gold' })
+  })
+
+  // FA-10: cap at 12 — oldest entries evicted when over the cap
+  it('FA-10 cap at 12: oldest entries evicted when over cap', () => {
+    const existing = Array.from({ length: 12 }, (_, i) => ({ k: `key_${i}`, v: `val_${i}` }))
+    const incoming = [{ k: 'new_key', v: 'new_val' }]
+    const result = mergeFacts(existing, incoming)
+    expect(result).toHaveLength(12)
+    // oldest entry (key_0) should be evicted
+    expect(result.find(e => e.k === 'key_0')).toBeUndefined()
+    // newest should survive
+    expect(result.find(e => e.k === 'new_key')).toEqual({ k: 'new_key', v: 'new_val' })
+  })
+
+  // FA-11: malformed items (missing k or v) are silently skipped
+  it('FA-11 items with missing k or v are silently skipped', () => {
+    const result = mergeFacts([], [
+      { k: 'valid', v: 'value' },
+      { v: 'no_key' },           // missing k
+      { k: 'no_val' },           // missing v
+      null,                       // null entry
+      'bad',                      // string
+    ])
+    expect(result).toHaveLength(1)
+    expect(result[0]).toEqual({ k: 'valid', v: 'value' })
+  })
+
+  // FA-12: non-array incoming → return existing unchanged (no throw)
+  it('FA-12 non-array incoming → existing unchanged, no throw', () => {
+    const existing = [{ k: 'blacksmith_price', v: '12 gold' }]
+    expect(() => mergeFacts(existing, null)).not.toThrow()
+    expect(mergeFacts(existing, null)).toEqual(existing)
+    expect(() => mergeFacts(existing, { k: 'x', v: 'y' })).not.toThrow()
+    expect(mergeFacts(existing, { k: 'x', v: 'y' })).toEqual(existing)
+  })
+})
+
+describe('factsDigestLine — Contract B digest format (FA-13..15)', () => {
+  // FA-13: non-empty facts → correct format
+  it('FA-13 non-empty facts → "Established facts: k=v; k=v." format', () => {
+    const facts = [
+      { k: 'blacksmith_price', v: '12 gold' },
+      { k: 'torch_count', v: '6' },
+    ]
+    const line = factsDigestLine(facts)
+    expect(line).toBe('Established facts: blacksmith_price=12 gold; torch_count=6.')
+  })
+
+  // FA-14: empty facts → empty string (systemContent byte-identical to today)
+  it('FA-14 empty facts → empty string (no digest injection)', () => {
+    expect(factsDigestLine([])).toBe('')
+    expect(factsDigestLine(null)).toBe('')
+    expect(factsDigestLine(undefined)).toBe('')
+  })
+
+  // FA-15: the "12 gold / blacksmith_price" scenario — facts survives in digest path
+  it('FA-15 blacksmith_price=12 gold scenario: fact retained and injected in digest', () => {
+    // Simulate: DM emits a facts block → mergeFacts → factsDigestLine → systemContent
+    const dmFacts = [{ k: 'blacksmith_price', v: '12 gold' }]
+    const accumulated = mergeFacts([], dmFacts)
+    const line = factsDigestLine(accumulated)
+    expect(line).toContain('blacksmith_price=12 gold')
+    // Simulate injection into systemContent alongside entities
+    const systemPrompt = 'You are a DM.'
+    const entities = ['Garret Ironhand', 'Forge of Embers']
+    const systemContent = entities.length
+      ? `${systemPrompt}\n\n---\nEstablished entities so far (stay consistent with these named NPCs, locations, and items): ${entities.join(', ')}.${line ? '\n' + line : ''}`
+      : (line ? `${systemPrompt}\n\n---\n${line}` : systemPrompt)
+    expect(systemContent).toContain('blacksmith_price=12 gold')
+    expect(systemContent).toContain('Garret Ironhand')
+    expect(systemContent).toContain('Forge of Embers')
+  })
+})
+
 // ─── Phase D — pendingCheck dice-to-LLM transform ────────────────────────────
 // Tests PD-15..17: the string that ends up in apiMessages for a dice roll
 // with and without a pendingCheck.
