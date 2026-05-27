@@ -80,7 +80,7 @@ function extractBlock(tag, text) {
 // ─── Fix #3: facts accumulator helpers (Contract B) ──────────────────────────
 // Mirror of the client-side helpers in Chat.jsx — kept in sync manually.
 // Merge a new facts array into an existing list (keyed by `k`).
-// Latest value wins; entries over the cap of 12 are evicted oldest-first.
+// Latest value wins; entries over the cap of 20 are evicted oldest-first.
 const SERVER_FACTS_CAP = 20
 
 function mergeFacts(existing, incoming) {

@@ -48,7 +48,7 @@ function extractBlock(tag, text) {
 
 // ─── Facts accumulator helpers (Fix #3 — Contract B) ────────────────────────
 // Merge a new facts array into an existing facts map (keyed by `k`).
-// Latest value wins; entries over the cap of 12 are evicted oldest-first.
+// Latest value wins; entries over the cap of 20 are evicted oldest-first.
 // Returns a new array (insertion-order preserved, oldest → newest for eviction).
 const FACTS_CAP = 20
 
@@ -144,7 +144,7 @@ export default function Chat({
   const [pendingCheck, setPendingCheck] = useState(null)
 
   // facts — Fix #3 (Contract B): accumulated numeric/transactional facts from the
-  // DM's ```facts``` blocks. Merged by key (latest wins), capped at FACTS_CAP=12.
+  // DM's ```facts``` blocks. Merged by key (latest wins), capped at FACTS_CAP=20.
   // Persistence decision: facts are session-only (not persisted to the session
   // payload) — like pendingCheck, they are treated as derived/accumulated state
   // that the DM re-emits over time. This avoids any schema change to
