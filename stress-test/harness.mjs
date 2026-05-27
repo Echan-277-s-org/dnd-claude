@@ -383,28 +383,17 @@ async function runHarness({ mode, num_ctx, run_id, smokeOnly = false }) {
     const userMsg = { role: 'user', content: entry.text };
     const fullForTrim = [...mappedMessages, userMsg];
 
-    // 3. Check trim boundary. Defaults now pinned=4, recent=18 (trim fires when
-    //    length > 22). Mirror the shared-module defaults exactly.
-    const PINNED = 4;
-    const RECENT = 18;
+    // 3. Log trim boundary (token-budget window; actual tail size determined by
+    //    trimContext internally from numCtx and systemContent reserve).
     const preTrimLen = fullForTrim.length;
-    const willTrim = preTrimLen > PINNED + RECENT;
+    trimBoundaryLog.push({
+      turn: displayTurn,
+      total_before_trim: preTrimLen,
+    });
 
-    if (willTrim) {
-      // Log which indices are being dropped
-      const droppedStart = PINNED;
-      const droppedEnd = fullForTrim.length - RECENT;
-      if (droppedEnd > droppedStart) {
-        trimBoundaryLog.push({
-          turn: displayTurn,
-          total_before_trim: preTrimLen,
-          dropped_indices: `${droppedStart}..${droppedEnd - 1}`,
-        });
-      }
-    }
-
-    // 4. Apply trimContext (defaults pinned=4, recent=18 — same as Chat.jsx).
-    const trimmedApiMessages = trimContext(fullForTrim);
+    // 4. Apply trimContext with per-run num_ctx so the harness exercises the same
+    //    token-budget window as the live app (pinned=8, reserve dynamic from systemContent).
+    const trimmedApiMessages = trimContext(fullForTrim, { numCtx: num_ctx });
 
     // 5. Extract entities from the PRE-TRIM full raw message log (not mappedMessages).
     //    Default max=50 — same as Chat.jsx call site.

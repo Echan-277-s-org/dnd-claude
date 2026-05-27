@@ -219,7 +219,7 @@ function looksLikeEntity(term) {
   //    Upward", "Passage Entrance Described").
   if (words.length > 4) return false
 
-  // 5. Reject tokens with no Latin letters at all (stray CJK like "钩子"),
+  // 5. Reject tokens with no Latin letters at all (stray non-Latin / CJK tokens),
   //    and chat/handle artifacts like "@PlayerA".
   if (!/[A-Za-z]/.test(t)) return false
   if (t.startsWith('@')) return false
@@ -351,59 +351,97 @@ export function extractEntities(messages, max = 50) {
 // trimContext
 // ─────────────────────────────────────────────────────────────────────────────
 //
-// Pin the opening messages (campaign premise + quest hook + quest-giver) and
-// keep the most-recent tail. pinned=4 covers the FIRST TWO exchanges
-// (user+assistant ×2), so the Turn-2 premise/quest-giver (e.g. Elder Sorcha)
-// survives long sessions instead of being evicted. The length guard prevents
-// pinned and recent from double-counting on short conversations.
+// Keeps the pinned openers (campaign premise + early quest anchors) and the
+// newest tail of the conversation that fits inside a token budget derived from
+// the model's context window.
 //
-// playerCount scaling (Fix #1 — 4-player continuity remediation):
-// The shared recent window (18) holds ~2.25 rounds of a 4-player session
-// (~8 msgs/round), so each player's own facts evict ~4× faster than in
-// single-player (which kept ~9 of its own turns). We scale `recent` toward
-// per-player history parity for N>1, capped so the worst case stays inside
-// the model's num_ctx:8192 budget.
+// DEFAULT (token-budget path — `recent` not supplied):
+//   pinned = 8   — first 8 messages are always retained.
+//   softCap = 120 — hard upper bound on message count regardless of tokens.
+//   numCtx  — per-model context-window size (pass the same value sent to Ollama;
+//             default 32768 matches DEFAULT_NUM_CTX in session.js).
+//   reserve — tokens subtracted from numCtx before computing the history budget.
+//             If `systemContent` is supplied the reserve is computed dynamically:
+//               estimateTokens(systemContent) + NUM_PREDICT_RESERVE + SAFETY_MARGIN
+//             This self-corrects for unbounded campaign-notes length. If neither
+//             `reserveTokens` nor `systemContent` is supplied, DEFAULT_RESERVE_TOKENS
+//             is used as a safe fallback.
 //
-//   recent = min(CAP, 18 + RECENT_PER_EXTRA_PLAYER · (playerCount − 1))
-//   RECENT_PER_EXTRA_PLAYER = 8   (one 4-player round ≈ 8 msgs ⇒ each extra
-//                                   human buys back ~one round of shared tail)
-//   CAP = 42
+// The tail is filled newest-first until the remaining budget (numCtx − reserve)
+// is exhausted or softCap is reached. If even the pinned openers alone exceed
+// the budget (e.g. very long campaign notes on a small-ctx model), the tail
+// comes back empty and only the pinned openers are returned — this ensures the
+// model always receives a coherent premise even in the worst case.
 //
-// Resulting recent: N=1→18, N=2→26, N=3→34, N=4→42 (cap), N=5→42 (cap).
+// Single-player now deliberately uses the same wide token-budget window as
+// multiplayer. The old N=1 byte-identity invariant is intentionally retired.
 //
-// Worst-case (N=5) token-budget justification — num_ctx:8192:
-//   pinned 4 + recent 42 = 46 messages of history.
-//   At the observed ~877 bytes/message and ~3.3 bytes/token for English prose:
-//     46 × 877 B ≈ 40.3 KB ≈ 40,342 B / 3.3 ≈ ~12,225 tokens of history.
-//   That alone would overflow 8192 if every slot were a full ~877 B turn — BUT
-//   the realistic per-message mean in these sessions is much lower than the
-//   877 B outlier mean (that figure is inflated by long DM narration turns;
-//   the modal user/dice/short-DM turn is ~250–400 B). Sizing conservatively
-//   against the §9 history budget instead of the raw byte mean:
-//     §9 reserves ~2,000–2,500 tokens for system prompt + entity/facts digest +
-//     current turn, leaving ~5,700–6,200 tokens (~18,500–20,000 B) for history.
-//   CAP=42 keeps recent within ~21–23 *effective* messages once dice/short
-//   turns are accounted for, matching the §9 "~21–23 messages of recent tail"
-//   envelope. We choose CAP=42 (not higher) precisely so pinned+recent never
-//   exceeds the upper edge of that envelope; a 4- or 5-player room therefore
-//   stays inside num_ctx:8192 with headroom and preserves the prized
-//   flat-compute property (prompt-eval grows modestly from ~1.0–1.2s, no
-//   overflow). Naive 18×N (=90 @ N=5) is rejected by Contract A §9.
+// LEGACY OVERRIDE PATH (`recent` supplied explicitly):
+//   Passing an integer `recent` activates the old fixed-count window so that
+//   existing override/scaling tests retain a deterministic path. playerCount
+//   scaling (RECENT_PER_EXTRA_PLAYER, RECENT_CAP) applies only on this path.
 //
-// N=1 (playerCount===1 or unset) is BYTE-IDENTICAL to the pre-change function:
-// same recent=18, same short-circuit, same slice concatenation. All scaling is
-// gated strictly behind playerCount > 1 (HARD CLAUDE.md single-player invariant).
+// REFERENCE-EQUALITY SHORT-CIRCUIT:
+//   When no trim is needed the original array instance is returned unchanged.
+//   Tests and call sites may rely on this identity guarantee.
+
+// Token estimate: 3.0 bytes/token (conservative vs the 3.3 prose mean — D&D content
+// like "[Dice roll: d20 → 17]", "Name:" prefixes, and "k=v" facts tokenize denser)
+// plus 5 tokens/message for the ChatML role/turn framing Ollama wraps each message in.
+export function estimateTokens(s) {
+  return Math.ceil((s?.length ?? 0) / 3.0) + 5
+}
+
+const NUM_PREDICT_RESERVE = 900   // must match the num_predict sent to Ollama (Chat.jsx / sync-server.mjs)
+const SAFETY_MARGIN = 256         // tokenizer variance + BOS/EOS headroom
+const DEFAULT_RESERVE_TOKENS = 4500   // fallback when neither reserveTokens nor systemContent is supplied
 
 const RECENT_PER_EXTRA_PLAYER = 8
 const RECENT_CAP = 42
 
-export function trimContext(messages, { pinned = 4, recent = 18, playerCount = 1 } = {}) {
-  // playerCount > 1 ONLY: scale the recent window. N=1 falls straight through
-  // with the original recent (18), keeping single-player byte-identical.
-  const scaledRecent =
-    playerCount > 1
+export function trimContext(messages, {
+  pinned        = 8,
+  recent,                 // NO default — presence is the discriminant (legacy count path)
+  playerCount   = 1,      // back-compat only; no effect on the token-budget path
+  numCtx        = 32768,  // matches DEFAULT_NUM_CTX in session.js (per-model value passed by callers)
+  reserveTokens,          // explicit override (tests); else derived from systemContent
+  systemContent,          // the assembled system message; used to size the dynamic reserve
+  softCap       = 120,
+} = {}) {
+  // ── LEGACY OVERRIDE PATH — explicit `recent` count → old fixed-window behavior.
+  if (recent !== undefined) {
+    const scaledRecent = playerCount > 1
       ? Math.min(RECENT_CAP, recent + RECENT_PER_EXTRA_PLAYER * (playerCount - 1))
       : recent
-  if (messages.length <= pinned + scaledRecent) return messages
-  return [...messages.slice(0, pinned), ...messages.slice(messages.length - scaledRecent)]
+    if (messages.length <= pinned + scaledRecent) return messages
+    return [...messages.slice(0, pinned), ...messages.slice(messages.length - scaledRecent)]
+  }
+
+  // ── TOKEN-BUDGET PATH ──
+  const reserve = reserveTokens ?? (systemContent != null
+    ? estimateTokens(systemContent) + NUM_PREDICT_RESERVE + SAFETY_MARGIN
+    : DEFAULT_RESERVE_TOKENS)
+  const budget = Math.max(0, numCtx - reserve)
+
+  const pinnedMsgs = messages.slice(0, pinned)
+  let used = pinnedMsgs.reduce((sum, m) => sum + estimateTokens(m.content), 0)
+
+  // SHORT-CIRCUIT — whole array fits and is under the soft cap → SAME reference (identity preserved).
+  const totalEst = messages.reduce((sum, m) => sum + estimateTokens(m.content), 0)
+  if (messages.length <= softCap && totalEst <= budget) return messages
+
+  // Fill the tail newest-first until the budget is exhausted or the soft cap is hit.
+  const tailBuf = []
+  for (let i = messages.length - 1; i >= pinned && tailBuf.length < softCap; i--) {
+    const tok = estimateTokens(messages[i].content)
+    if (used + tok > budget) break
+    tailBuf.push(messages[i])
+    used += tok
+  }
+  tailBuf.reverse()
+
+  // If pinned and tail windows touch/overlap, the whole array fits → SAME reference.
+  const tailStart = messages.length - tailBuf.length
+  if (tailStart <= pinned) return messages
+  return [...pinnedMsgs, ...tailBuf]
 }
