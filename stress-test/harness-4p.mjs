@@ -63,11 +63,13 @@
  *   --rounds=N                 (default: 60; smoke forces 1)
  *   --run_id=ID                (default: "4p_smoke" | "4p_main")
  *   --port=N                   (default: 3001)
+ *   --model=NAME               Ollama model → campaign.model (default: qwen2.5:14b)
  *   --manage-server            spawn server/sync-server.mjs as child; tear down on exit
  *
  * Artifacts (run_id=4p_main):
- *   stress-test/stress-test-4p-4p_main.jsonl
- *   stress-test/stress-test-summary-4p-4p_main.json
+ *   stress-test/stress-test-4p-4p_main.jsonl          per-turn records (+ cjk_leak field, ~200-char snippet)
+ *   stress-test/fulltext-4p-4p_main.jsonl             FULL DM text per turn (post-hoc hallucination/CJK scan)
+ *   stress-test/stress-test-summary-4p-4p_main.json   run summary (incl. cjk_leak HEADLINE aggregate)
  */
 
 import { execSync, spawn } from 'child_process'
@@ -92,15 +94,20 @@ const WebSocket = require('ws')
 
 // ─── Constants ───────────────────────────────────────────────────────────────────
 
-const MODEL = 'qwen2.5:14b'
+const DEFAULT_MODEL = 'qwen2.5:14b'
 const LS_BUDGET = 5_000_000  // 5 MB conservative localStorage ceiling
 
-// Fixed campaign (mirrors harness.mjs CAMPAIGN)
-const CAMPAIGN = {
-  name: 'The Shattered Vale',
-  genre: 'dnd',
-  details: 'A dark fantasy campaign set in a crumbling empire. The party seeks the lost Sunstone artifact.',
-  model: MODEL,
+// Fixed campaign (mirrors harness.mjs CAMPAIGN). `model` is filled at runtime from
+// the --model CLI flag (default DEFAULT_MODEL) so the run can target an alternate
+// Ollama model (e.g. impish-qwen:14b) without editing this file. The server's
+// MODEL_RE allowlist (sync-server.mjs ~L49) validates whatever value is fed here.
+function buildCampaign(model) {
+  return {
+    name: 'The Shattered Vale',
+    genre: 'dnd',
+    details: 'A dark fantasy campaign set in a crumbling empire. The party seeks the lost Sunstone artifact.',
+    model: model || DEFAULT_MODEL,
+  }
 }
 
 // Fixed roster per §1.1
@@ -472,6 +479,77 @@ async function collectUntil(client, predicate, timeoutMs = 120000) {
   }
 }
 
+// ─── CJK / non-Latin script leak detection (HEADLINE metric) ─────────────────────
+// Leakage is a known qwen failure mode (the codebase even carries stray CJK like
+// "钩子" in context.js) and is most likely in the impish RP finetune. For every DM
+// turn we scan the full DM text for CJK and other non-Latin script blocks.
+//
+// CJK_RE (required minimum): CJK Unified Ideographs + Hiragana/Katakana + Hangul.
+//   U+3400–U+4DBF  CJK Unified Ideographs Extension A   (㐀-䶿)
+//   U+4E00–U+9FFF  CJK Unified Ideographs                (一-鿿)
+//   U+3040–U+30FF  Hiragana + Katakana                   (぀-ヿ)
+//   U+AC00–U+D7AF  Hangul Syllables                       (가-힯)
+// NON_LATIN_RE (wider net): also flags other non-ASCII script blocks beyond Latin/
+//   common punctuation — Cyrillic, Greek, Arabic, Hebrew, Devanagari, Thai, plus the
+//   full CJK/Hangul/Kana/Bopomofo/CJK-symbol/Halfwidth ranges. This catches scripts
+//   the headline CJK regex misses while ignoring ordinary accented Latin, smart
+//   quotes, em-dashes, and emoji-free typography that legitimately appear in prose.
+const CJK_RE = /[㐀-䶿一-鿿぀-ヿ가-힯]/
+const CJK_RE_G = /[㐀-䶿一-鿿぀-ヿ가-힯]/g
+const NON_LATIN_RE_G = /[Ͱ-ϿЀ-ӿ԰-֏֐-׿؀-ۿऀ-ॿ฀-๿　-〿぀-ヿ㄀-ㄯ㐀-䶿一-鿿가-힯豈-﫿＀-￯]/g
+
+/**
+ * Scan DM fullText for CJK / non-Latin script leakage.
+ * @returns {null | { count, cjk_count, non_latin_count, sample, scripts }}
+ *   null when clean; otherwise the total match count, a short context sample
+ *   substring (with surrounding characters), and a coarse script label list.
+ */
+function detectNonLatinLeak(fullText) {
+  const text = String(fullText ?? '')
+  if (!text) return null
+
+  const cjkMatches = text.match(CJK_RE_G) ?? []
+  const nonLatinMatches = text.match(NON_LATIN_RE_G) ?? []
+
+  // Union count of leaked codepoints (non-Latin ⊇ CJK, so non-Latin is the total).
+  const total = nonLatinMatches.length
+  if (total === 0) return null
+
+  // Build a short context sample around the FIRST leaked char (±20 chars), so the
+  // analyst sees the surrounding prose. Collapse whitespace for compact logging.
+  const firstIdx = text.search(NON_LATIN_RE_G)
+  const ctxStart = Math.max(0, firstIdx - 20)
+  const ctxEnd = Math.min(text.length, firstIdx + 20)
+  const sample = text.slice(ctxStart, ctxEnd).replace(/\s+/g, ' ').trim()
+
+  // Coarse script classification for the matched codepoints (for the summary).
+  const scripts = new Set()
+  for (const ch of nonLatinMatches) {
+    const cp = ch.codePointAt(0)
+    if ((cp >= 0x3400 && cp <= 0x4DBF) || (cp >= 0x4E00 && cp <= 0x9FFF) || (cp >= 0xF900 && cp <= 0xFAFF)) scripts.add('CJK')
+    else if (cp >= 0x3040 && cp <= 0x30FF) scripts.add('Kana')
+    else if (cp >= 0xAC00 && cp <= 0xD7AF) scripts.add('Hangul')
+    else if (cp >= 0x3100 && cp <= 0x312F) scripts.add('Bopomofo')
+    else if (cp >= 0x0400 && cp <= 0x04FF) scripts.add('Cyrillic')
+    else if (cp >= 0x0370 && cp <= 0x03FF) scripts.add('Greek')
+    else if (cp >= 0x0530 && cp <= 0x058F) scripts.add('Armenian')
+    else if (cp >= 0x0590 && cp <= 0x05FF) scripts.add('Hebrew')
+    else if (cp >= 0x0600 && cp <= 0x06FF) scripts.add('Arabic')
+    else if (cp >= 0x0900 && cp <= 0x097F) scripts.add('Devanagari')
+    else if (cp >= 0x0E00 && cp <= 0x0E7F) scripts.add('Thai')
+    else if ((cp >= 0x3000 && cp <= 0x303F) || (cp >= 0xFF00 && cp <= 0xFFEF)) scripts.add('CJK-punct')
+    else scripts.add('Other')
+  }
+
+  return {
+    count: total,
+    cjk_count: cjkMatches.length,
+    non_latin_count: total,
+    sample,
+    scripts: Array.from(scripts),
+  }
+}
+
 // ─── Scoring ─────────────────────────────────────────────────────────────────────
 
 function scoreAnchors(anchors, fullText) {
@@ -503,21 +581,28 @@ function linearFit(xs, ys) {
 
 // ─── Main run function ────────────────────────────────────────────────────────────
 
-async function runHarness4P({ mode, maxRounds, runId, port, manageServer }) {
+async function runHarness4P({ mode, maxRounds, runId, port, manageServer, model }) {
+  const CAMPAIGN = buildCampaign(model)
+  const MODEL = CAMPAIGN.model
   const jsonlPath = path.join(STRESS_DIR, `stress-test-4p-${runId}.jsonl`)
   const summaryPath = path.join(STRESS_DIR, `stress-test-summary-4p-${runId}.json`)
+  // Full-text capture (one JSON object per DM turn) for post-hoc hallucination / CJK
+  // analysis. Keeps the per-turn `response_snippet` in the main JSONL unchanged.
+  const fulltextPath = path.join(STRESS_DIR, `fulltext-4p-${runId}.jsonl`)
   const wsUrl = `ws://127.0.0.1:${port}/ws`
   const httpBase = `http://127.0.0.1:${port}`
 
   console.log(`\n${'='.repeat(72)}`)
   console.log(`4P ENDURANCE HARNESS — ${runId}`)
-  console.log(`Mode: ${mode}  maxRounds: ${maxRounds}  port: ${port}`)
+  console.log(`Mode: ${mode}  maxRounds: ${maxRounds}  port: ${port}  model: ${MODEL}`)
   console.log(`JSONL: ${jsonlPath}`)
+  console.log(`Fulltext: ${fulltextPath}`)
   console.log(`Summary: ${summaryPath}`)
   console.log(`${'='.repeat(72)}\n`)
 
-  // Truncate JSONL file at run start (do not append to previous run's output)
+  // Truncate JSONL + fulltext files at run start (do not append to previous run's output)
   writeFileSync(jsonlPath, '', 'utf8')
+  writeFileSync(fulltextPath, '', 'utf8')
 
   // Mint one stable sessionId for the entire run
   const sessionId = randomUUID()
@@ -575,6 +660,14 @@ async function runHarness4P({ mode, maxRounds, runId, port, manageServer }) {
   // R_* ceiling values
   let R_continuity = null
   let R_hardfail = null
+
+  // ─── CJK / non-Latin leak tracking (HEADLINE metric) ──────────────────────────
+  // Per-turn detections aggregated into the run summary. cjkLeakEvents holds one
+  // entry per affected DM turn; cjkLeakRounds is the de-duplicated set of rounds.
+  const cjkLeakEvents = []            // [{ round, turn_in_round, turn_index, player, spotlight_owner, count, cjk_count, scripts, sample }]
+  const cjkLeakRounds = new Set()
+  let cjkLeakTurnCount = 0            // total DM turns with any non-Latin leak
+  let cjkLeakTotalChars = 0          // total leaked codepoints across the run
 
   // ─── Build beat queue ────────────────────────────────────────────────────────
   const allBeats = buildBeatQueue(maxRounds)
@@ -859,6 +952,25 @@ async function runHarness4P({ mode, maxRounds, runId, port, manageServer }) {
       const persistBytes = computePersistBytes(campaignWithId, sessionId, finalSessionUpdate?.payload)
       const persistBytesVal = persistBytes ?? 0
 
+      // ─── CJK / non-Latin leak scan (HEADLINE metric) — dice turn DM text ───────
+      const diceFullText = dmDoneMsg?.payload?.fullText ?? ''
+      const diceEventFlags = []
+      const diceLeak = detectNonLatinLeak(diceFullText)
+      if (diceLeak) {
+        diceEventFlags.push('CJK_LEAK')
+        recordCjkLeak(diceLeak, round, turnInRound, scheduledPlayer, spotOwner)
+        console.warn(`  ${label} *** CJK_LEAK: ${diceLeak.count} non-Latin chars [${diceLeak.scripts.join(',')}] sample="${diceLeak.sample}" ***`)
+      }
+
+      // ─── Full-text capture (post-hoc analysis file) ───────────────────────────
+      appendFulltextLine(fulltextPath, {
+        run_id: runId, model: MODEL,
+        round, turn: turnInRound, turn_index: turnIndex,
+        player: scheduledPlayer, actor: spotOwner, action_type: 'dice',
+        cjk_leak: diceLeak ? diceLeak.count : 0,
+        fullText: diceFullText,
+      })
+
       appendJsonlLine(jsonlPath, {
         run_id: runId,
         round, turn_in_round: turnInRound, turn_index: turnIndex,
@@ -879,8 +991,9 @@ async function runHarness4P({ mode, maxRounds, runId, port, manageServer }) {
         room_messages_bytes: roomMsgBytes,
         persist_bytes: persistBytesVal,
         server_heap_bytes: finalSessionUpdate?.payload?.heapUsedBytes ?? null,
-        response_snippet: (dmDoneMsg?.payload?.fullText ?? '').slice(0, 200),
-        event_flags: [],
+        response_snippet: diceFullText.slice(0, 200),
+        cjk_leak: diceLeak ?? null,
+        event_flags: diceEventFlags,
       })
 
       checkPhaseAndParty(party, finalSessionUpdate?.payload?.phase, round, turnInRound, scheduledPlayer)
@@ -1153,6 +1266,25 @@ async function runHarness4P({ mode, maxRounds, runId, port, manageServer }) {
     checkPhaseAndParty(party, phaseAfter, round, turnInRound, scheduledPlayer, eventFlags)
     checkPersistBytesLimit(persistBytesVal, round)
 
+    // ─── CJK / non-Latin leak scan (HEADLINE metric) — user/probe turn DM text ──
+    const leak = detectNonLatinLeak(fullText)
+    if (leak) {
+      eventFlags.push('CJK_LEAK')
+      recordCjkLeak(leak, round, turnInRound, scheduledPlayer, spotOwner)
+      console.warn(`  ${label} *** CJK_LEAK: ${leak.count} non-Latin chars [${leak.scripts.join(',')}] sample="${leak.sample}" ***`)
+    }
+
+    // ─── Full-text capture (post-hoc analysis file) ───────────────────────────
+    appendFulltextLine(fulltextPath, {
+      run_id: runId, model: MODEL,
+      round, turn: turnInRound, turn_index: turnIndex,
+      player: scheduledPlayer, actor: spotOwner,
+      action_type: isProbe ? 'probe' : 'user',
+      is_probe: isProbe, probe_id: probeId,
+      cjk_leak: leak ? leak.count : 0,
+      fullText,
+    })
+
     // Write JSONL line
     appendJsonlLine(jsonlPath, {
       run_id: runId,
@@ -1178,6 +1310,7 @@ async function runHarness4P({ mode, maxRounds, runId, port, manageServer }) {
       persist_bytes: persistBytesVal,
       server_heap_bytes: serverHeapBytes,
       response_snippet: fullText.slice(0, 200),
+      cjk_leak: leak ?? null,
       event_flags: eventFlags,
     })
 
@@ -1280,15 +1413,44 @@ async function runHarness4P({ mode, maxRounds, runId, port, manageServer }) {
   const lastRound = roundIndex
   const totalTurns = turnIndex
 
+  // ─── CJK / non-Latin leak aggregation (HEADLINE metric) ───────────────────────
+  const cjkLeakRoundsSorted = Array.from(cjkLeakRounds).sort((a, b) => a - b)
+  // Up to 10 representative sample substrings (de-duplicated) for the summary.
+  const cjkLeakSamples = []
+  const seenSamples = new Set()
+  for (const ev of cjkLeakEvents) {
+    if (ev.sample && !seenSamples.has(ev.sample)) {
+      seenSamples.add(ev.sample)
+      cjkLeakSamples.push(ev.sample)
+      if (cjkLeakSamples.length >= 10) break
+    }
+  }
+  const cjkLeak = {
+    model: MODEL,
+    total_turns_affected: cjkLeakTurnCount,
+    total_turns_scanned: totalTurns,
+    leak_rate: totalTurns > 0 ? Math.round((cjkLeakTurnCount / totalTurns) * 1000) / 1000 : 0,
+    total_non_latin_chars: cjkLeakTotalChars,
+    rounds_affected: cjkLeakRoundsSorted,
+    sample_substrings: cjkLeakSamples,
+    // Per-model total keyed by the run's model so multiple summaries can be merged.
+    by_model: { [MODEL]: { turns_affected: cjkLeakTurnCount, non_latin_chars: cjkLeakTotalChars } },
+    events: cjkLeakEvents,
+  }
+
   const summary = {
     run_id: runId,
     mode,
+    model: MODEL,
     max_rounds: maxRounds,
     total_rounds: lastRound,
     total_turns: totalTurns,
     stop_reason: stopReason ?? 'completed',
     stop_round: stopRound,
     wall_time_seconds: wallTimeSec,
+
+    // CJK / non-Latin leak (HEADLINE metric)
+    cjk_leak: cjkLeak,
 
     // Spotlight fairness (new primary metric)
     spotlight_distribution: { ...spotlightCount },
@@ -1337,8 +1499,13 @@ async function runHarness4P({ mode, maxRounds, runId, port, manageServer }) {
 
   console.log('\n' + '='.repeat(72))
   console.log(`RUN COMPLETE: ${runId}`)
+  console.log(`Model: ${MODEL}`)
   console.log(`Rounds: ${lastRound}  Turns: ${totalTurns}  Wall: ${wallTimeSec}s`)
   console.log(`Stop reason: ${summary.stop_reason}`)
+  console.log(`*** CJK/non-Latin leak: ${cjkLeakTurnCount}/${totalTurns} turns affected (${cjkLeak.leak_rate}), ${cjkLeakTotalChars} chars, rounds=[${cjkLeakRoundsSorted.join(',')}] ***`)
+  if (cjkLeakSamples.length > 0) {
+    console.log(`    leak samples: ${cjkLeakSamples.slice(0, 3).map(s => `"${s}"`).join('  ')}`)
+  }
   console.log(`Category accuracy: A=${catAccuracy.A?.toFixed(3) ?? 'N/A'}  B=${catAccuracy.B?.toFixed(3) ?? 'N/A'}  C=${catAccuracy.C?.toFixed(3) ?? 'N/A'}`)
   console.log(`Spotlight distribution: ${Object.entries(spotlightCount).map(([k,v]) => `${k}=${v}`).join('  ')}`)
   console.log(`Spotlight fairness: ${spotlightFairness}`)
@@ -1390,6 +1557,23 @@ async function runHarness4P({ mode, maxRounds, runId, port, manageServer }) {
   function appendEventFlag(flag, round, turnInRound, player) {
     // Used only for dice turns outside the JSONL line builder
     console.warn(`  R${round}T${turnInRound}(${player}) EVENT: ${flag}`)
+  }
+
+  // ─── Record a CJK / non-Latin leak detection into the run-level accumulators ──
+  function recordCjkLeak(leak, round, turnInRound, player, spotlightOwner) {
+    cjkLeakTurnCount++
+    cjkLeakRounds.add(round)
+    cjkLeakTotalChars += leak.count
+    // Cap stored per-turn events to keep the summary bounded on long runs; the
+    // counts/rounds aggregate always reflects every detection.
+    if (cjkLeakEvents.length < 200) {
+      cjkLeakEvents.push({
+        round, turn_in_round: turnInRound, turn_index: turnIndex,
+        player, spotlight_owner: spotlightOwner,
+        count: leak.count, cjk_count: leak.cjk_count,
+        scripts: leak.scripts, sample: leak.sample,
+      })
+    }
   }
 
   function checkPhaseAndParty(party, phase, round, turnInRound, player, flags = []) {
@@ -1452,21 +1636,27 @@ function appendJsonlLine(jsonlPath, obj) {
   appendFileSync(jsonlPath, JSON.stringify(obj) + '\n', 'utf8')
 }
 
+// Append one full-DM-text record (one JSON object per line) for post-hoc analysis.
+function appendFulltextLine(fulltextPath, obj) {
+  appendFileSync(fulltextPath, JSON.stringify(obj) + '\n', 'utf8')
+}
+
 // ─── Smoke validation gate ────────────────────────────────────────────────────────
 
-async function runSmoke({ port, manageServer }) {
+async function runSmoke({ port, manageServer, model, runId = '4p_smoke' }) {
   console.log('\n=== SMOKE TEST (4 beats + 1 probe, follow-the-spotlight) ===\n')
 
-  const runId = '4p_smoke'
   const { summary, smokeGates } = await runHarness4P({
     mode: 'smoke',
     maxRounds: 1,
     runId,
     port,
     manageServer,
+    model,
   })
 
   const jsonlPath = path.join(STRESS_DIR, `stress-test-4p-${runId}.jsonl`)
+  const fulltextPath = path.join(STRESS_DIR, `fulltext-4p-${runId}.jsonl`)
 
   // Read back JSONL
   let lines = []
@@ -1519,10 +1709,41 @@ async function runSmoke({ port, manageServer }) {
   console.log(`         spotlight_distribution: ${JSON.stringify(spotDist)}`)
   console.log(`         spotlight_fairness: ${summary.spotlight_fairness ?? 'N/A'}`)
 
-  const allPass = gate1 && gate2 && gate3 && gate4 && gate5 && gate6 && gate7 && gate8
+  // Gate 9: full-text capture file written with one record per DM turn
+  let fulltextLines = []
+  try {
+    fulltextLines = readFileSync(fulltextPath, 'utf8').trim().split('\n').filter(Boolean).map(l => JSON.parse(l))
+  } catch { /* empty */ }
+  // Expect one fulltext record per JSONL turn line, each carrying a fullText string.
+  const gate9 = fulltextLines.length === lines.length
+    && fulltextLines.length > 0
+    && fulltextLines.every(r => typeof r.fullText === 'string' && r.round != null && r.turn != null)
+  console.log(`Gate 9 — fulltext file written (1 record/turn): ${gate9 ? 'PASS' : 'FAIL'}  (${fulltextLines.length} records vs ${lines.length} turns) — ${fulltextPath}`)
+
+  // Gate 10: CJK / non-Latin detection wiring executes end-to-end.
+  // We do NOT require an actual leak on smoke (zero leaks is the healthy outcome);
+  // we require the metric to be PRESENT and the detector to be self-consistent:
+  //   - summary.cjk_leak aggregate exists with the run's model + scanned-turn count
+  //   - every JSONL line carries a `cjk_leak` field (null when clean)
+  //   - the detector itself flags a known CJK string (proves the regex fires)
+  const cjkAgg = summary.cjk_leak
+  const cjkFieldPresent = lines.length > 0 && lines.every(l => 'cjk_leak' in l)
+  const cjkSelfTest = detectNonLatinLeak('The DM said 钩子 here.')  // must detect "钩子"
+  const cjkSelfTestOk = cjkSelfTest != null && cjkSelfTest.cjk_count >= 2 && cjkSelfTest.scripts.includes('CJK')
+  const cjkAggOk = cjkAgg != null
+    && cjkAgg.model === summary.model
+    && cjkAgg.total_turns_scanned === summary.total_turns
+    && Array.isArray(cjkAgg.rounds_affected)
+    && typeof cjkAgg.leak_rate === 'number'
+  const gate10 = cjkFieldPresent && cjkSelfTestOk && cjkAggOk
+  console.log(`Gate 10 — CJK/non-Latin detection wired & self-test fires: ${gate10 ? 'PASS' : 'FAIL'}`)
+  console.log(`          self-test on "钩子" → ${JSON.stringify(cjkSelfTest)}`)
+  console.log(`          run cjk_leak aggregate → turns_affected=${cjkAgg?.total_turns_affected ?? 'N/A'}/${cjkAgg?.total_turns_scanned ?? 'N/A'} rounds=[${(cjkAgg?.rounds_affected ?? []).join(',')}] model=${cjkAgg?.model ?? 'N/A'}`)
+
+  const allPass = gate1 && gate2 && gate3 && gate4 && gate5 && gate6 && gate7 && gate8 && gate9 && gate10
 
   console.log(`\nSMOKE RESULT: ${allPass
-    ? '*** ALL 8 GATES PASSED — smoke complete ***'
+    ? '*** ALL 10 GATES PASSED — smoke complete ***'
     : '*** SMOKE FAILED — see failures above ***'}`)
 
   if (!allPass) {
@@ -1537,6 +1758,12 @@ async function runSmoke({ port, manageServer }) {
     if (!gate8) {
       if (!gate8a) console.log('  FAIL Gate 8a: some action lines missing spotlight_owner')
       if (!gate8b) console.log('  FAIL Gate 8b: spotlight_distribution absent from summary')
+    }
+    if (!gate9) console.log(`  FAIL Gate 9: fulltext file missing/mismatched (${fulltextLines.length} records vs ${lines.length} turns)`)
+    if (!gate10) {
+      if (!cjkFieldPresent) console.log('  FAIL Gate 10: some JSONL lines missing cjk_leak field')
+      if (!cjkSelfTestOk) console.log('  FAIL Gate 10: CJK detector self-test did not fire on "钩子"')
+      if (!cjkAggOk) console.log('  FAIL Gate 10: summary.cjk_leak aggregate missing/malformed')
     }
   }
 
@@ -1560,8 +1787,11 @@ async function main() {
   const runId        = args.run_id ?? (mode === 'smoke' ? '4p_smoke' : '4p_main')
   const port         = parseInt(args.port ?? '3001', 10)
   const manageServer = args['manage-server'] === true || args['manage-server'] === 'true'
+  // --model selects the Ollama model fed into campaign.model (default qwen2.5:14b).
+  // Existing invocations without --model are byte-identical to before.
+  const model        = (typeof args.model === 'string' && args.model) ? args.model : DEFAULT_MODEL
 
-  console.log(`CLI args: mode=${mode} rounds=${rounds} run_id=${runId} port=${port} manage-server=${manageServer}`)
+  console.log(`CLI args: mode=${mode} rounds=${rounds} run_id=${runId} port=${port} manage-server=${manageServer} model=${model}`)
 
   let serverChild = null
 
@@ -1613,14 +1843,14 @@ async function main() {
   const effectiveMaxRounds = mode === 'smoke' ? 1 : rounds
 
   if (mode === 'smoke') {
-    const passed = await runSmoke({ port, manageServer })
+    const passed = await runSmoke({ port, manageServer, model, runId })
     if (serverChild) {
       serverChild.kill('SIGTERM')
       await new Promise(r => setTimeout(r, 1000))
     }
     process.exit(passed ? 0 : 1)
   } else if (mode === 'full') {
-    await runHarness4P({ mode: 'full', maxRounds: effectiveMaxRounds, runId, port, manageServer })
+    await runHarness4P({ mode: 'full', maxRounds: effectiveMaxRounds, runId, port, manageServer, model })
     if (serverChild) {
       serverChild.kill('SIGTERM')
       await new Promise(r => setTimeout(r, 1000))

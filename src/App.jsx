@@ -116,13 +116,11 @@ export default function App() {
   // the entire multiplayer branch is dormant — byte-for-byte identical to before.
   const [urlRoomCode] = useState(() => readRoomParam())
 
-  const [ready, setReady] = useState(() => {
-    // Do NOT auto-ready when a ?room= join is pending — the user must go through
-    // the join form (enter display name). Single-player auto-ready still applies
-    // when no ?room= is present.
-    if (readRoomParam()) return false
-    return !!localStorage.getItem('dnd_setup_done')
-  })
+  // The app ALWAYS opens on the setup screen on every boot — no auto-resume of the
+  // last session. A campaign only loads via a freshly created campaign, a loaded
+  // .md restore, or a ?room= join (which still routes through the join form because
+  // that path keys off urlRoomCode, not `ready`).
+  const [ready, setReady] = useState(false)
   const [campaign, setCampaign] = useState(() => ({
     genre: localStorage.getItem('dnd_genre') || 'dnd',
     name: localStorage.getItem('dnd_campaign_name') || '',
@@ -149,19 +147,23 @@ export default function App() {
   }, [ready, campaign.genre, draftGenre])
 
   function handleSetup({ genre, name, details, model, context, displayName: dn, character: wizardOutput }) {
-    localStorage.setItem('dnd_setup_done', '1')
     localStorage.setItem('dnd_genre', genre)
     localStorage.setItem('dnd_campaign_name', name)
     localStorage.setItem('dnd_campaign_details', details)
     localStorage.setItem('dnd_model', model)
     localStorage.setItem('dnd_campaign_context', context)
-    const sessionId = loadSessionId() // mint-or-reuse; stable across settings edits
+    // Clean slate: mint a FRESH sessionId and persist it so the sync server can't
+    // re-pull the prior session under the old id. Drop the persisted session payload
+    // for the same reason.
+    const sessionId = crypto.randomUUID()
+    localStorage.setItem('dnd_session_id', sessionId)
+    localStorage.removeItem('dnd_session')
     const rc = makeRoomCode(sessionId)
     setCampaign({ genre, name, details, model, context, sessionId })
 
     // Phase 5 & 6: if the wizard produced output, build the full character and seed
-    // the party display cache. Otherwise fall through to existing loadCharacter() /
-    // loadParty() fallback behaviour (no localStorage key changes for the skip path).
+    // the party display cache. Otherwise reset identity to the defaults so a freshly
+    // created campaign never inherits the previous character/party.
     if (wizardOutput) {
       const builtChar = buildCharacter(wizardOutput, genre)
       localStorage.setItem('dnd_character', JSON.stringify(builtChar))
@@ -175,6 +177,11 @@ export default function App() {
       localStorage.setItem('dnd_party', JSON.stringify(partyEntry))
       setCharacter(builtChar)
       setParty(partyEntry)
+    } else {
+      localStorage.removeItem('dnd_character')
+      localStorage.removeItem('dnd_party')
+      setCharacter(DEFAULT_CHARACTER)
+      setParty(DEFAULT_PARTY)
     }
 
     // Phase 4: if the host supplied a display name, enter multiplayer mode.
@@ -209,7 +216,6 @@ export default function App() {
       context: localStorage.getItem('dnd_campaign_context') || '',
       sessionId,
     }
-    localStorage.setItem('dnd_setup_done', '1')
     localStorage.setItem('dnd_session_id', sessionId)
     setCampaign(restored)
     setRoomCode(rc)
@@ -239,7 +245,6 @@ export default function App() {
       context: c.context || '',
       sessionId,
     }
-    localStorage.setItem('dnd_setup_done', '1')
     localStorage.setItem('dnd_genre', restored.genre)
     localStorage.setItem('dnd_campaign_name', restored.name)
     localStorage.setItem('dnd_campaign_details', restored.details)
@@ -265,7 +270,6 @@ export default function App() {
   }
 
   function handleReset() {
-    localStorage.removeItem('dnd_setup_done')
     setRoomCode(null)
     setDisplayName(null)
     setReady(false)

@@ -14,6 +14,7 @@ import {
   deleteSyncSession,
   markOrphanedDice,
   extractCharacterFromPayload,
+  characterToMarkdown,
   applyPartyUpdate,
   buildPlayersForPrompt,
   buildPlayerSection,
@@ -179,6 +180,103 @@ describe('toMarkdown / fromMarkdown', () => {
     expect(md).toContain('No narration yet')
     expect(md).toContain('No messages yet')
     expect(fromMarkdown(md)).toEqual(p)
+  })
+})
+
+// ─── req 5 — characterToMarkdown round-trip (single-character export) ─────────
+// CharacterPanel's "Export Character" downloads characterToMarkdown(char). The
+// wizard re-imports that .md through the SAME path:
+//   fromMarkdown(md) → deserializeSession (inside fromMarkdown) → extractCharacterFromPayload
+// By design only the STATIC subset round-trips — name/race/charClass/abilities/
+// ac/hpMax — NOT hpCurrent/conditions/initiative/speed (those are live state and
+// not part of the import contract).
+
+describe('req 5 — characterToMarkdown ↔ wizard import round-trip', () => {
+  const STATIC_SUBSET = ['name', 'race', 'charClass', 'abilities', 'ac', 'hpMax']
+
+  // A full in-game character (the shape CharacterPanel renders / exports).
+  const FULL_CHARACTER = {
+    name: 'Thorin',
+    race: 'Dwarf',
+    charClass: 'Fighter',
+    hpCurrent: 17,        // live state — must NOT survive the round-trip contract
+    hpMax: 32,
+    ac: 18,
+    initiative: 3,        // live state — not in the import contract
+    speed: 25,            // live state — not in the import contract
+    abilities: { STR: 16, DEX: 12, CON: 14, INT: 10, WIS: 12, CHA: 8 },
+    conditions: ['Poisoned'], // live state — not in the import contract
+  }
+
+  function expectedSubset(char) {
+    return {
+      name: char.name,
+      race: char.race,
+      charClass: char.charClass,
+      abilities: char.abilities,
+      ac: char.ac,
+      hpMax: char.hpMax,
+    }
+  }
+
+  it('recovers the static subset via fromMarkdown → extractCharacterFromPayload (displayName = name → precedence 1)', () => {
+    const md = characterToMarkdown(FULL_CHARACTER)
+    // The exact path the wizard's .md import uses.
+    const payload = fromMarkdown(md)
+    expect(payload).not.toBeNull()
+    const recovered = extractCharacterFromPayload(payload, FULL_CHARACTER.name)
+    expect(recovered).not.toBeNull()
+    // Round-trips on the static subset only.
+    for (const key of STATIC_SUBSET) {
+      expect(recovered).toHaveProperty(key)
+    }
+    expect(recovered).toEqual(expectedSubset(FULL_CHARACTER))
+  })
+
+  it('recovers the same subset when displayName does NOT match (precedence 2 — sole entry)', () => {
+    const md = characterToMarkdown(FULL_CHARACTER)
+    const payload = fromMarkdown(md)
+    // A non-matching displayName falls through to the first/sole characters entry.
+    const recovered = extractCharacterFromPayload(payload, 'SomeOtherPlayer')
+    expect(recovered).toEqual(expectedSubset(FULL_CHARACTER))
+  })
+
+  it('does NOT round-trip live state (hpCurrent / conditions / initiative / speed)', () => {
+    const md = characterToMarkdown(FULL_CHARACTER)
+    const recovered = extractCharacterFromPayload(fromMarkdown(md), FULL_CHARACTER.name)
+    // The synced subset is the import contract — live state is intentionally absent.
+    expect(recovered).not.toHaveProperty('hpCurrent')
+    expect(recovered).not.toHaveProperty('conditions')
+    expect(recovered).not.toHaveProperty('initiative')
+    expect(recovered).not.toHaveProperty('speed')
+  })
+
+  it('round-trips a name with spaces and an apostrophe', () => {
+    const fancy = {
+      ...FULL_CHARACTER,
+      name: "Tharivol Q'tar the Bold",
+      race: 'High Elf',
+      charClass: 'Wizard',
+      abilities: { STR: 8, DEX: 14, CON: 12, INT: 17, WIS: 13, CHA: 11 },
+      ac: 13,
+      hpMax: 22,
+    }
+    const md = characterToMarkdown(fancy)
+    const payload = fromMarkdown(md)
+    expect(payload).not.toBeNull()
+    // characters map is keyed by the (spaced/apostrophe) name; precedence-1 match.
+    const recovered = extractCharacterFromPayload(payload, fancy.name)
+    expect(recovered).toEqual(expectedSubset(fancy))
+    // And precedence-2 (no displayName match) still resolves the sole entry.
+    expect(extractCharacterFromPayload(payload, null)).toEqual(expectedSubset(fancy))
+  })
+
+  it('passing the raw markdown string straight to extractCharacterFromPayload also recovers it', () => {
+    // extractCharacterFromPayload accepts a markdown string (it calls fromMarkdown
+    // internally) — this mirrors the wizard handing the file text directly.
+    const md = characterToMarkdown(FULL_CHARACTER)
+    const recovered = extractCharacterFromPayload(md, FULL_CHARACTER.name)
+    expect(recovered).toEqual(expectedSubset(FULL_CHARACTER))
   })
 })
 

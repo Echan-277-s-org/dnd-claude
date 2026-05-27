@@ -214,6 +214,61 @@ export function extractCharacterFromPayload(input, displayName) {
   }
 }
 
+// ─── Single-character export (.md) ───────────────────────────────────────────
+// Serialize ONE player character to a self-contained, LLM-loadable Markdown file
+// that ROUND-TRIPS with extractCharacterFromPayload: it wraps the character in a
+// minimal session payload (party row + characters map) and runs it through the
+// canonical toMarkdown, so the resulting ```session block carries the character
+// under `characters[<name>]`. Re-importing the file via the wizard's ".md" path
+// (extractCharacterFromPayload → fromMarkdown → deserializeSession) recovers the
+// SAME SyncedCharacter (precedence 1 by name, precedence 2 as the sole entry).
+//
+// Only the STATIC SyncedCharacter subset round-trips (name/race/charClass/
+// abilities/ac/hpMax) — that is exactly the subset extractCharacterFromPayload
+// returns and the wizard consumes. Live state (hpCurrent/conditions/initiative/
+// speed) is intentionally not part of the import contract.
+export function characterToMarkdown(character, opts = {}) {
+  const synced = normalizeSyncedCharacter(character)
+  const hpPct =
+    character && Number(character.hpMax) > 0
+      ? Math.max(0, Math.min(100, Math.round((Number(character.hpCurrent) / Number(character.hpMax)) * 100)))
+      : 100
+  const payload = {
+    campaign: {
+      name: opts.campaignName || `${synced.name} — Character`,
+      genre: opts.genre || 'dnd',
+    },
+    // A single party row so a blockless-fallback reader still sees the character,
+    // and so deriveRecap/partyTable render something sensible in the prose.
+    party: [
+      {
+        id: 'export-0',
+        name: synced.name,
+        role: synced.charClass,
+        hpPct,
+        isActive: true,
+        conditions: Array.isArray(character?.conditions) ? character.conditions : [],
+      },
+    ],
+    // The authoritative round-trip carrier: keyed by the character's own name so
+    // extractCharacterFromPayload's precedence-1 (displayName match) and
+    // precedence-2 (first entry) both resolve to this character.
+    characters: { [synced.name]: synced },
+  }
+  return toMarkdown(serializeSession(payload), null)
+}
+
+// Sanitize a character name into a safe download filename stem.
+// e.g. "Tharivol Q'tar!" → "Tharivol-Qtar". Falls back to 'character'.
+export function characterFileName(character) {
+  const raw = String(character?.name ?? '').trim()
+  const slug = raw
+    .replace(/[^a-zA-Z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .toLowerCase()
+  return `${slug || 'character'}.md`
+}
+
 // ─── DM prompt player-summary helpers (Phase 4) ──────────────────────────────
 // These are pure helpers shared by the client (Chat.jsx → context.js call site)
 // and the server (sync-server.mjs → context.js call site, Phase 5). Exporting

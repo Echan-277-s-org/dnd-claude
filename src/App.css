@@ -56,9 +56,13 @@ body {
 /* ─── SETUP SCREEN ─────────────────────────────────── */
 
 .setup-container {
-  min-height: 100vh;
+  /* Fixed-height scroll viewport: a real height (not min-height) is required so
+     overflow-y actually engages when the wizard card is taller than the screen.
+     align-items:center is dropped (it top-clips a tall card); .setup-card uses
+     margin:auto instead for scroll-safe centering. */
+  height: 100vh;
+  height: 100dvh;
   display: flex;
-  align-items: center;
   justify-content: center;
   overflow-y: auto;
   padding: 24px 20px;
@@ -76,6 +80,10 @@ body {
 .setup-card {
   width: 100%;
   max-width: 520px;
+  /* Scroll-safe centering: centers vertically when the card is shorter than the
+     viewport, top-aligns and scrolls when it is taller (so Next/Create/Begin stay
+     reachable). Replaces the parent's removed align-items:center. */
+  margin: auto;
   background: var(--surface-1);
   border: 1px solid var(--border-gold);
   border-radius: 4px;
@@ -1036,16 +1044,10 @@ body {
 }
 
 /* Inline edit */
+/* Read-only display value (the in-game sheet is not editable). No pointer cursor
+   or hover underline — those previously signalled "click to edit". */
 .char-inline-value {
-  cursor: pointer;
-  border-bottom: 1px dashed transparent;
-  transition: border-color 0.15s, color 0.15s;
   display: inline-block;
-}
-
-.char-inline-value:hover {
-  border-bottom-color: var(--gold-dim);
-  color: var(--gold-bright);
 }
 
 .char-inline-input {
@@ -1235,21 +1237,17 @@ body {
   gap: 5px;
 }
 
+/* Condition chips are non-interactive display only (read-only sheet). An active
+   condition stays visually highlighted; there is no hover/click affordance. */
 .char-condition-chip {
+  display: inline-block;
   background: var(--surface-2);
   border: 1px solid var(--border);
   border-radius: 10px;
   padding: 3px 9px;
   font-size: 12px;
   color: var(--text-muted);
-  cursor: pointer;
-  transition: all 0.15s;
   font-family: var(--font-body);
-}
-
-.char-condition-chip:hover {
-  border-color: var(--border-gold);
-  color: var(--text-secondary);
 }
 
 .char-condition-chip--active {
@@ -1258,8 +1256,31 @@ body {
   color: color-mix(in srgb, var(--red) 45%, #ffffff);
 }
 
-.char-condition-chip--active:hover {
-  background: color-mix(in oklab, var(--red) 35%, transparent);
+/* ─── Character panel footer ─────────────────────────── */
+.char-panel-footer {
+  margin-top: 20px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+.char-export-btn {
+  width: 100%;
+  padding: 9px 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-gold);
+  border-radius: 4px;
+  color: var(--gold-dim);
+  font-family: var(--font-body);
+  font-size: 13px;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s, border-color 0.15s;
+}
+
+.char-export-btn:hover {
+  color: var(--gold-bright);
+  background: var(--surface-3);
+  border-color: var(--gold);
 }
 
 /* ─── CHAT LAYOUT ──────────────────────────────────── */

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { characterToMarkdown, characterFileName } from '../lib/session'
 
 const ABILITY_KEYS = ['STR', 'DEX', 'CON', 'INT', 'WIS', 'CHA']
 
@@ -16,70 +16,24 @@ function modifier(score) {
   return mod >= 0 ? `+${mod}` : `${mod}`
 }
 
-function InlineEdit({ value, onChange, className, type = 'text', style }) {
-  const [editing, setEditing] = useState(false)
-  const [draft, setDraft] = useState(value)
-
-  useEffect(() => {
-    setDraft(value)
-  }, [value])
-
-  if (editing) {
-    return (
-      <input
-        type={type}
-        value={draft}
-        onChange={e => setDraft(e.target.value)}
-        onBlur={() => {
-          setEditing(false)
-          const final = type === 'number' ? Number(draft) || 0 : draft
-          onChange(final)
-        }}
-        onKeyDown={e => {
-          if (e.key === 'Enter') e.target.blur()
-          if (e.key === 'Escape') {
-            setDraft(value)
-            setEditing(false)
-          }
-        }}
-        className={`char-inline-input ${className || ''}`}
-        style={style}
-        autoFocus
-      />
-    )
-  }
-
-  return (
-    <span
-      className={`char-inline-value ${className || ''}`}
-      style={style}
-      onClick={() => setEditing(true)}
-      title="Click to edit"
-    >
-      {value}
-    </span>
-  )
-}
-
-export default function CharacterPanel({ character, setCharacter, isOpen, onToggle }) {
-  function update(patch) {
-    setCharacter(prev => {
-      const next = { ...prev, ...patch }
-      localStorage.setItem('dnd_character', JSON.stringify(next))
-      return next
-    })
-  }
-
-  function updateAbility(key, val) {
-    const abilities = { ...character.abilities, [key]: Number(val) || 0 }
-    update({ abilities })
-  }
-
-  function toggleCondition(cond) {
-    const active = character.conditions.includes(cond)
-      ? character.conditions.filter(c => c !== cond)
-      : [...character.conditions, cond]
-    update({ conditions: active })
+// The in-game character sheet is READ-ONLY. The character is built in the setup
+// wizard; in-session it is displayed but never edited from this panel. An
+// "Export Character" action downloads the character as a re-importable .md file.
+export default function CharacterPanel({ character, isOpen, onToggle }) {
+  // Export the player's character to a self-contained .md handoff. Uses the SAME
+  // blob/anchor download pattern as Chat.jsx's handleSaveSession; the file
+  // round-trips with the wizard's ".md" import path (extractCharacterFromPayload).
+  function handleExportCharacter() {
+    const md = characterToMarkdown(character)
+    const blob = new Blob([md], { type: 'text/markdown;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = characterFileName(character)
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    URL.revokeObjectURL(url)
   }
 
   return (
@@ -91,23 +45,11 @@ export default function CharacterPanel({ character, setCharacter, isOpen, onTogg
 
         {/* Identity */}
         <div className="char-identity">
-          <InlineEdit
-            value={character.name}
-            onChange={v => update({ name: v })}
-            className="char-name"
-          />
+          <span className="char-inline-value char-name">{character.name}</span>
           <div className="char-race-class">
-            <InlineEdit
-              value={character.race}
-              onChange={v => update({ race: v })}
-              className="char-race"
-            />
+            <span className="char-inline-value char-race">{character.race}</span>
             <span className="char-sep">/</span>
-            <InlineEdit
-              value={character.charClass}
-              onChange={v => update({ charClass: v })}
-              className="char-class"
-            />
+            <span className="char-inline-value char-class">{character.charClass}</span>
           </div>
         </div>
 
@@ -115,19 +57,9 @@ export default function CharacterPanel({ character, setCharacter, isOpen, onTogg
         <div className="char-section">
           <div className="char-section-label">Hit Points</div>
           <div className="char-hp-row">
-            <InlineEdit
-              value={character.hpCurrent}
-              onChange={v => update({ hpCurrent: Number(v) || 0 })}
-              type="number"
-              className="char-hp-val"
-            />
+            <span className="char-inline-value char-hp-val">{character.hpCurrent}</span>
             <span className="char-hp-sep">/</span>
-            <InlineEdit
-              value={character.hpMax}
-              onChange={v => update({ hpMax: Number(v) || 0 })}
-              type="number"
-              className="char-hp-val char-hp-max"
-            />
+            <span className="char-inline-value char-hp-val char-hp-max">{character.hpMax}</span>
           </div>
           <div className="char-hp-bar-track">
             <div
@@ -151,12 +83,7 @@ export default function CharacterPanel({ character, setCharacter, isOpen, onTogg
               { label: 'Speed', key: 'speed' },
             ].map(({ label, key }) => (
               <div key={key} className="char-badge">
-                <InlineEdit
-                  value={character[key]}
-                  onChange={v => update({ [key]: Number(v) || 0 })}
-                  type="number"
-                  className="char-badge-val"
-                />
+                <span className="char-inline-value char-badge-val">{character[key]}</span>
                 <span className="char-badge-label">{label}</span>
               </div>
             ))}
@@ -170,32 +97,38 @@ export default function CharacterPanel({ character, setCharacter, isOpen, onTogg
             {ABILITY_KEYS.map(key => (
               <div key={key} className="char-ability">
                 <span className="char-ability-key">{key}</span>
-                <InlineEdit
-                  value={character.abilities[key]}
-                  onChange={v => updateAbility(key, v)}
-                  type="number"
-                  className="char-ability-score"
-                />
+                <span className="char-inline-value char-ability-score">{character.abilities[key]}</span>
                 <span className="char-ability-mod">{modifier(character.abilities[key])}</span>
               </div>
             ))}
           </div>
         </div>
 
-        {/* Conditions */}
+        {/* Conditions — non-interactive display. Active conditions stay highlighted. */}
         <div className="char-section">
           <div className="char-section-label">Conditions</div>
           <div className="char-conditions">
             {CONDITIONS.map(cond => (
-              <button
+              <span
                 key={cond}
                 className={`char-condition-chip ${character.conditions.includes(cond) ? 'char-condition-chip--active' : ''}`}
-                onClick={() => toggleCondition(cond)}
               >
                 {cond}
-              </button>
+              </span>
             ))}
           </div>
+        </div>
+
+        {/* Footer actions */}
+        <div className="char-panel-footer">
+          <button
+            type="button"
+            className="char-export-btn"
+            onClick={handleExportCharacter}
+            title="Download this character as a re-importable .md file"
+          >
+            Export Character
+          </button>
         </div>
       </div>
 

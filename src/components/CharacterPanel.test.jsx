@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, fireEvent, within } from '@testing-library/react'
-import userEvent from '@testing-library/user-event'
+import { render, screen, fireEvent } from '@testing-library/react'
 import CharacterPanel from './CharacterPanel'
+import { characterFileName } from '../lib/session'
 
 // ─── localStorage mock ──────────────────────────────────────────────────────
 const localStorageMock = (() => {
@@ -34,14 +34,12 @@ const DEFAULT_CHARACTER = {
   conditions: [],
 }
 
+// CharacterPanel is now READ-ONLY: it accepts { character, isOpen, onToggle } and
+// never mutates the character. We still pass a setCharacter spy so tests can assert
+// it is NEVER called (no write path remains).
 function renderPanel(characterOverrides = {}, isOpen = true) {
   const character = { ...DEFAULT_CHARACTER, ...characterOverrides }
-  const setCharacter = vi.fn(updater => {
-    // simulate functional update: if updater is a function call it with character
-    if (typeof updater === 'function') {
-      updater(character)
-    }
-  })
+  const setCharacter = vi.fn()
   const onToggle = vi.fn()
   const utils = render(
     <CharacterPanel
@@ -186,84 +184,93 @@ describe('CharacterPanel — HP bar percentage', () => {
   })
 })
 
-// ─── Inline edit — name ──────────────────────────────────────────────────────
+// ─── Read-only identity (was: InlineEdit name field) ──────────────────────────
+// The panel is now read-only. Name/race/class render as display text; there is no
+// inline edit, clicking a value does NOT open an input, mutate state, or persist.
 
-describe('CharacterPanel — InlineEdit name field', () => {
-  it('clicking the name shows an input', () => {
+describe('CharacterPanel — read-only identity (no inline edit)', () => {
+  it('renders the name as static text, not an editable control', () => {
     renderPanel()
-    const nameSpan = screen.getByText('Adventurer')
-    fireEvent.click(nameSpan)
-    expect(screen.getByRole('textbox')).toBeInTheDocument()
-  })
-
-  it('Enter key commits the edit and calls setCharacter', () => {
-    const { setCharacter } = renderPanel()
-    const nameSpan = screen.getByText('Adventurer')
-    fireEvent.click(nameSpan)
-    const input = screen.getByRole('textbox')
-    fireEvent.change(input, { target: { value: 'Thorin Stonehelm' } })
-    fireEvent.keyDown(input, { key: 'Enter' })
-    expect(setCharacter).toHaveBeenCalled()
-  })
-
-  it('Enter key writes to localStorage', () => {
-    renderPanel()
-    const nameSpan = screen.getByText('Adventurer')
-    fireEvent.click(nameSpan)
-    const input = screen.getByRole('textbox')
-    fireEvent.change(input, { target: { value: 'Thorin Stonehelm' } })
-    fireEvent.keyDown(input, { key: 'Enter' })
-    // blur is triggered by Enter in the component
-    fireEvent.blur(input)
-    expect(localStorageMock.setItem).toHaveBeenCalledWith(
-      'dnd_character',
-      expect.stringContaining('Thorin Stonehelm')
-    )
-  })
-
-  it('Escape key cancels the edit and reverts to original value', () => {
-    renderPanel()
-    const nameSpan = screen.getByText('Adventurer')
-    fireEvent.click(nameSpan)
-    const input = screen.getByRole('textbox')
-    fireEvent.change(input, { target: { value: 'WRONG NAME' } })
-    fireEvent.keyDown(input, { key: 'Escape' })
-    // input should be gone
-    expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
-    // original name still visible
+    // The name is a display span (no input/textbox in the panel).
     expect(screen.getByText('Adventurer')).toBeInTheDocument()
+    expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
   })
 
-  it('Escape does not call setCharacter', () => {
+  it('clicking the name does NOT reveal an input (read-only)', () => {
+    renderPanel()
+    fireEvent.click(screen.getByText('Adventurer'))
+    expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
+  })
+
+  it('clicking the name does NOT call setCharacter', () => {
     const { setCharacter } = renderPanel()
     fireEvent.click(screen.getByText('Adventurer'))
-    const input = screen.getByRole('textbox')
-    fireEvent.change(input, { target: { value: 'WRONG' } })
-    fireEvent.keyDown(input, { key: 'Escape' })
     expect(setCharacter).not.toHaveBeenCalled()
+  })
+
+  it('clicking the name does NOT write to localStorage', () => {
+    renderPanel()
+    fireEvent.click(screen.getByText('Adventurer'))
+    expect(localStorageMock.setItem).not.toHaveBeenCalled()
+  })
+
+  it('renders race/class as static display values', () => {
+    renderPanel({ race: 'Elf', charClass: 'Wizard' })
+    expect(screen.getByText('Elf')).toBeInTheDocument()
+    expect(screen.getByText('Wizard')).toBeInTheDocument()
+    // Clicking them also reveals no editable control.
+    fireEvent.click(screen.getByText('Elf'))
+    fireEvent.click(screen.getByText('Wizard'))
+    expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
   })
 })
 
-// ─── Condition chips ─────────────────────────────────────────────────────────
+// ─── Condition chips — non-interactive ────────────────────────────────────────
+// Chips display state only. Active conditions stay highlighted; clicking a chip
+// does nothing (no state mutation, no localStorage write).
 
-describe('CharacterPanel — condition chips', () => {
-  it('condition chip starts without active class', () => {
+describe('CharacterPanel — condition chips (non-interactive)', () => {
+  it('a non-active condition chip has no active class', () => {
     const { container } = renderPanel()
     const chip = Array.from(container.querySelectorAll('.char-condition-chip'))
       .find(el => el.textContent === 'Poisoned')
     expect(chip).not.toHaveClass('char-condition-chip--active')
   })
 
-  it('clicking a condition chip calls setCharacter with updated conditions', () => {
+  it('clicking a condition chip does NOT call setCharacter (read-only)', () => {
     const { setCharacter } = renderPanel()
     fireEvent.click(screen.getByText('Poisoned'))
-    expect(setCharacter).toHaveBeenCalled()
+    expect(setCharacter).not.toHaveBeenCalled()
+  })
+
+  it('clicking a condition chip does NOT toggle its active class', () => {
+    const { container } = renderPanel()
+    const chip = Array.from(container.querySelectorAll('.char-condition-chip'))
+      .find(el => el.textContent === 'Poisoned')
+    fireEvent.click(chip)
+    // Still inactive — clicking is inert.
+    expect(chip).not.toHaveClass('char-condition-chip--active')
+  })
+
+  it('clicking a condition chip does NOT write to localStorage', () => {
+    renderPanel()
+    fireEvent.click(screen.getByText('Poisoned'))
+    expect(localStorageMock.setItem).not.toHaveBeenCalled()
   })
 
   it('renders active class when condition is already in character.conditions', () => {
     const { container } = renderPanel({ conditions: ['Poisoned'] })
     const chip = Array.from(container.querySelectorAll('.char-condition-chip'))
       .find(el => el.textContent === 'Poisoned')
+    expect(chip).toHaveClass('char-condition-chip--active')
+  })
+
+  it('an active condition chip STAYS highlighted after a click (no toggle off)', () => {
+    const { container } = renderPanel({ conditions: ['Poisoned'] })
+    const chip = Array.from(container.querySelectorAll('.char-condition-chip'))
+      .find(el => el.textContent === 'Poisoned')
+    fireEvent.click(chip)
+    // Active stays highlighted — clicking does not clear it.
     expect(chip).toHaveClass('char-condition-chip--active')
   })
 
@@ -277,29 +284,89 @@ describe('CharacterPanel — condition chips', () => {
   })
 })
 
-// ─── localStorage persistence ────────────────────────────────────────────────
+// ─── No localStorage writes (panel is read-only) ──────────────────────────────
+// The write paths (update/updateAbility/toggleCondition) were removed. The panel
+// never persists to dnd_character.
 
-describe('CharacterPanel — localStorage persistence', () => {
-  it('setCharacter stores to dnd_character key on update', () => {
+describe('CharacterPanel — read-only, never persists', () => {
+  it('rendering the panel performs no localStorage write', () => {
     renderPanel()
+    expect(localStorageMock.setItem).not.toHaveBeenCalled()
+  })
+
+  it('clicking values and condition chips performs no localStorage write', () => {
+    renderPanel({ conditions: ['Poisoned'] })
+    fireEvent.click(screen.getByText('Adventurer'))
     fireEvent.click(screen.getByText('Poisoned'))
-    expect(localStorageMock.setItem).toHaveBeenCalledWith(
+    fireEvent.click(screen.getByText('Frightened'))
+    expect(localStorageMock.setItem).not.toHaveBeenCalledWith(
       'dnd_character',
       expect.any(String)
     )
+    expect(localStorageMock.setItem).not.toHaveBeenCalled()
+  })
+})
+
+// ─── Export Character (req 5) ─────────────────────────────────────────────────
+// The footer has an "Export Character" button that downloads the character as a
+// re-importable .md via the blob/anchor pattern (characterToMarkdown +
+// characterFileName). We mock URL.createObjectURL/revokeObjectURL (jsdom lacks
+// them) and spy on the anchor click to assert the download is wired.
+
+describe('CharacterPanel — Export Character button', () => {
+  let createObjURL
+  let revokeObjURL
+  let clickSpy
+
+  beforeEach(() => {
+    createObjURL = vi.fn(() => 'blob:mock-url')
+    revokeObjURL = vi.fn()
+    // jsdom does not implement these — define them so the handler runs.
+    globalThis.URL.createObjectURL = createObjURL
+    globalThis.URL.revokeObjectURL = revokeObjURL
+    clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
   })
 
-  it('the stored JSON is valid and contains character fields', () => {
-    let stored
-    localStorageMock.setItem.mockImplementation((key, value) => {
-      if (key === 'dnd_character') stored = value
-    })
+  afterEach(() => {
+    clickSpy.mockRestore()
+    delete globalThis.URL.createObjectURL
+    delete globalThis.URL.revokeObjectURL
+  })
+
+  it('renders the Export Character button in the footer', () => {
     renderPanel()
-    fireEvent.click(screen.getByText('Poisoned'))
-    if (stored) {
-      const parsed = JSON.parse(stored)
-      expect(parsed).toHaveProperty('name')
-      expect(parsed).toHaveProperty('abilities')
-    }
+    expect(screen.getByRole('button', { name: /Export Character/i })).toBeInTheDocument()
+  })
+
+  it('clicking Export Character triggers a blob download (createObjectURL + anchor click)', () => {
+    renderPanel()
+    fireEvent.click(screen.getByRole('button', { name: /Export Character/i }))
+    // A blob URL is created and the synthesized anchor is clicked to start the download.
+    expect(createObjURL).toHaveBeenCalledTimes(1)
+    // The blob passed to createObjectURL is a markdown Blob.
+    const blobArg = createObjURL.mock.calls[0][0]
+    expect(blobArg).toBeInstanceOf(Blob)
+    expect(blobArg.type).toContain('text/markdown')
+    expect(clickSpy).toHaveBeenCalledTimes(1)
+    // The object URL is revoked after the click (no leak).
+    expect(revokeObjURL).toHaveBeenCalledWith('blob:mock-url')
+  })
+
+  it('the download filename is derived from the character name (characterFileName)', () => {
+    let downloadName
+    // Capture the anchor's download attribute at click time.
+    clickSpy.mockImplementation(function () {
+      downloadName = this.getAttribute('download')
+    })
+    renderPanel({ name: 'Tharivol' })
+    fireEvent.click(screen.getByRole('button', { name: /Export Character/i }))
+    expect(downloadName).toBe(characterFileName({ name: 'Tharivol' }))
+    expect(downloadName).toBe('tharivol.md')
+  })
+
+  it('exporting does NOT write to localStorage (read-only)', () => {
+    renderPanel()
+    fireEvent.click(screen.getByRole('button', { name: /Export Character/i }))
+    expect(localStorageMock.setItem).not.toHaveBeenCalled()
   })
 })
