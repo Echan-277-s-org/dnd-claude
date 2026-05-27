@@ -5,7 +5,7 @@ import CharacterPanel from './CharacterPanel'
 import PartyStrip from './PartyStrip'
 import DiceChip from './DiceChip'
 import { getGenre } from '../lib/genres'
-import { serializeSession, deserializeSession, getLanHost, toMarkdown, sessionFileName, markOrphanedDice, applyPartyUpdate, makeRoomCode, buildPlayersForPrompt } from '../lib/session'
+import { serializeSession, deserializeSession, getLanHost, toMarkdown, sessionFileName, markOrphanedDice, applyPartyUpdate, makeRoomCode, buildPlayersForPrompt, numCtxForModel } from '../lib/session'
 import { useSessionPersistence } from '../hooks/useSessionPersistence'
 import { useWebSocket } from '../hooks/useWebSocket'
 import { isActiveTurn } from '../lib/turnStateMachine.js'
@@ -563,7 +563,7 @@ export default function Chat({
             ...apiMessages,
           ],
           options: {
-            num_ctx: 8192,
+            num_ctx: numCtxForModel(campaign.model || 'qwen2.5:14b'),
             num_predict: 900,
             temperature: 0.8,
             top_p: 0.9,

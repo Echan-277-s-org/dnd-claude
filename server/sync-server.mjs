@@ -29,7 +29,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { randomUUID } from 'node:crypto'
 import { WebSocketServer } from 'ws'
-import { toMarkdown, fromMarkdown, serializeSession, applyPartyUpdate, buildPlayersForPrompt } from '../src/lib/session.js'
+import { toMarkdown, fromMarkdown, serializeSession, applyPartyUpdate, buildPlayersForPrompt, numCtxForModel } from '../src/lib/session.js'
 import { getGenre } from '../src/lib/genres.js'
 import { isActiveTurn } from '../src/lib/turnStateMachine.js'
 
@@ -1033,9 +1033,12 @@ export function createSyncServer({ sessionsDir = DEFAULT_DIR, roomGcMs = 30 * 60
             body: JSON.stringify({
               model,
               stream: true,
-              messages: [{ role: 'system', content: systemContent }, ...apiMessages],
+              messages: [
+                { role: 'system', content: systemContent },
+                ...apiMessages,
+              ],
               options: {
-                num_ctx: 8192,
+                num_ctx: numCtxForModel(model),
                 num_predict: 900,
                 temperature: 0.8,
                 top_p: 0.9,

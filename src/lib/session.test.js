@@ -1110,3 +1110,4 @@ describe('Phase 6 (G-C3) — single-player path: no characters → prompt unchan
     expect(back.party).toEqual([])
   })
 })
+
