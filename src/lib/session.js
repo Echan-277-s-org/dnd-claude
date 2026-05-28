@@ -16,6 +16,8 @@
 // Bumped to 3 for per-player character sync (Phase 1): adds `characters` map.
 // v1/v2 payloads still load — deserializeSession backfills characters:{} — so the
 // .md save/continue contract is preserved.
+import { randomUUID } from './uuid'
+
 export const SCHEMA_VERSION = 3
 
 // Phase enum. RESTING phases are the only values ever PERSISTED. The transient
@@ -77,7 +79,7 @@ export function applyPartyUpdate(rawArray, existing) {
     }
 
     return {
-      id: found?.id ?? crypto.randomUUID(),
+      id: found?.id ?? randomUUID(),
       name: String(raw?.name ?? '').trim() || 'Unknown',
       role: String(raw?.role ?? '').trim() || '',
       hpPct: Math.max(0, Math.min(100, Math.round(Number(raw?.hpPct) || 0))),
