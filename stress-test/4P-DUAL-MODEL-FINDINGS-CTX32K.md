@@ -81,7 +81,7 @@ No confusion with worked-example names (`Aelis`, `Borin`). No decay to mid-tier 
 
 ---
 
-## The Early Stop at R137T1: Harness Artifact (§9)
+## The Early Stop at R137T1: Harness Artifact (§9) — NOW FIXED
 
 ### What Happened
 
@@ -96,13 +96,19 @@ The harness driver tried to route R137T1 to "Borin", who was not in the simulate
 - **In production a one-off party slip is non-fatal.** `applySpotlightFairness` rotates away from the phantom on the next turn. A real player sees at most a brief wrong name on the HUD ("Borin's turn" instead of Bron), then the system recovers. No crash, no data loss.
 - **The larger window does not raise exposure.** The worked example is injected into the system message every turn regardless of history size. The 32K context changes only what else the model can recall, not how often it sees the example names.
 
-### Follow-Up Options (not blockers)
+### Resolution (2026-05-27)
 
-None are required for PR #8 to ship:
+The artifact has been fixed via defense-in-depth hardening. Branch `harness-200-hardening` (commit `8ddfcd2`) implemented:
 
-- **Option A (lowest risk):** harden the harness spotlight reconciliation. After a non-roster `NOT_YOUR_TURN`, advance to the next roster player and continue. This survives a one-off slip and would likely reach round 200.
-- **Option B (medium risk):** extend `anchorJoinedPCNames` to handle cross-slot renames (detect a Borin/Aelis swap and repair both).
-- **Option C (prevention):** rename the worked-example PCs to unambiguous placeholders (`[PC_Ranger]`, `[PC_Cleric]`) so the model cannot copy real-sounding names.
+- **Option A (harness):** Phantom roster member skip. After a non-roster `NOT_YOUR_TURN`, advance spotlight to the next real roster player. Emits `PHANTOM_ROSTER_RECOVERED` telemetry.
+- **Option B (server):** Enhanced `anchorJoinedPCNames`: role-match-first repair, cross-slot guards, total-confabulation safety net. +9 unit tests (903 pass total).
+- **Option C (prompt):** Anti-copy instruction in `src/lib/context.js` plus English-only guardrail.
+
+A 200-round validation run (run_id `4p_qwen25_ctx32k_v2`) completed with all 50 probes (6/6 PASS each). The model did not confabulate, so Options A/B were not exercised, but the system now handles the edge case if it occurs.
+
+Note on the pivot: an interim attempt using `PC_Ranger`/`PC_Cleric` placeholders regressed. qwen2.5 treated `PC_<Role>` as a generative template and copied the entire example party on turn 1, including hpPct values. The 3-round smoke gate caught this before the long run. We pivoted to arbitrary names plus an explicit anti-copy instruction, which held.
+
+**Detailed findings:** See `stress-test/4P-200-ROUND-HARDENING-FINDINGS.md`
 
 ---
 
@@ -118,12 +124,13 @@ None are required for PR #8 to ship:
 ## Continuity Ceiling & Caveats (§10)
 
 ### What We Validated
-- **Through R136 (34 probes, 136 B-anchor tests, 204 anchor checks total):** every anchor retained, with up to 1.15 MB of session history sent to the model each turn.
+- **Through R136 (34 probes, 136 B-anchor tests, 204 anchor checks total) [This run]:** every anchor retained, with up to 1.15 MB of session history sent to the model each turn.
+- **Through R200 (50 probes, 200 B-anchor tests, 300 anchor checks total) [Hardening run, 2026-05-27]:** every anchor retained across 1.97 MB of session history. See `stress-test/4P-200-ROUND-HARDENING-FINDINGS.md` for full results.
 - **At 32768 tokens:** no drift onset and no graceful fade, unlike the baseline's salience-prioritized fade after R16.
 
 ### What We Did NOT Validate
-- **Full 200-round endurance:** the run stopped at R137 on the harness artifact, so durability past 136 rounds is unproven. 136 rounds is a floor, not a measured ceiling.
-- **The natural failure mode at 32768:** we never saw a collapse, so we do not know where one would occur. The baseline collapsed at R40; the larger window pushes that out past R136, but the true ceiling is unmeasured.
+- ~~**Full 200-round endurance:** the run stopped at R137 on the harness artifact, so durability past 136 rounds is unproven. 136 rounds is a floor, not a measured ceiling.~~ **VALIDATED (2026-05-27):** Full 200-round run completed successfully (branch `harness-200-hardening`).
+- **The natural failure mode at 32768:** we never saw a collapse, so we do not know where one would occur. The baseline collapsed at R40; the larger window pushes that out past R200, but the true ceiling is unmeasured. localStorage exhaustion is the projected limit (R488).
 - **Impish-qwen:14b @ 32768:** open item (baseline impish ran at num_ctx=8192 only; the parked PR #6 would enable this re-test).
 
 ### Honest Limitations
@@ -168,4 +175,6 @@ Artifacts:
 
 ## Verdict
 
-The context-window continuity fix (PR #8) ships. Category-B accuracy went from 0.455 at baseline to 1.000, drift onset is gone through R136, and the DM held every anchor across 136 rounds with 1.1 MB of history. The run reached 137 of a planned 200 rounds before a harness-side party-block edge case stopped it, so the 136-round result is a floor: durability is solid where measured, but full-200 endurance is not yet proven. The early stop is a harness artifact, not a regression, and does not block deployment.
+The context-window continuity fix (PR #8) ships. Category-B accuracy went from 0.455 at baseline to 1.000, drift onset is gone through R136, and the DM held every anchor across 136 rounds with 1.1 MB of history. The run reached 137 of a planned 200 rounds before a harness-side party-block edge case stopped it, so the 136-round result was initially a floor.
+
+**UPDATE (2026-05-27):** The artifact has been fixed via defense-in-depth hardening. A full 200-round validation run (branch `harness-200-hardening`) completed with all 50 probes at 6/6 PASS across 1.97 MB of session history. The early stop was a harness artifact, not a regression, and is now gone. Full-200 endurance is proven.
