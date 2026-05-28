@@ -1,0 +1,39 @@
+# Impish_QWEN_14B-1M — Ollama Modelfile for the dnd-claude DM app
+# Base: SicariusSicariiStuff/Impish_QWEN_14B-1M (RP finetune of Qwen2.5-14B-Instruct-1M)
+#
+# Build (run from the folder holding the downloaded .gguf):
+#   ollama create impish-qwen:14b -f Modelfile.impish-qwen
+#
+# The name "impish-qwen:14b" matches the dropdown value you add to
+# src/components/ApiKeySetup.jsx (OLLAMA_MODELS) and passes the server's
+# MODEL_RE allowlist (sync-server.mjs:49) as-is.
+
+# 1) Point FROM at the GGUF you downloaded from the model card's GGUF link.
+#    Q4_K_M (~9 GB) = fast/efficient; Q5_K_M (~10.5 GB) = a bit sharper. Pick one.
+FROM ./Impish_QWEN_14B-Q5_K_M.gguf
+
+# 2) ChatML template (Qwen2.5 family). The app POSTs role:system|user|assistant
+#    messages to /api/chat (Chat.jsx:561); this renders each as a ChatML turn.
+TEMPLATE """{{ range .Messages }}<|im_start|>{{ .Role }}
+{{ .Content }}<|im_end|>
+{{ end }}<|im_start|>assistant
+"""
+
+# 3) ChatML stop tokens.
+PARAMETER stop "<|im_start|>"
+PARAMETER stop "<|im_end|>"
+
+# 4) Defaults — Sicarius's recommended RP samplers.
+#    IMPORTANT: the app sends its OWN options on every request (Chat.jsx:565,
+#    sync-server.mjs:1037), and Ollama request options OVERRIDE these PARAMETERs.
+#    So these only apply if you call the model directly (e.g. `ollama run impish-qwen:14b`).
+#    To make the app use these values / longer context, edit those two call sites instead.
+PARAMETER num_ctx 32768
+PARAMETER temperature 0.8
+PARAMETER top_p 0.95
+PARAMETER top_k 25
+PARAMETER repeat_penalty 1.12
+PARAMETER repeat_last_n 1024
+
+# No SYSTEM line on purpose: the app builds its own DM system prompt via
+# buildSystemPrompt() (src/lib/context.js / context.starwars.js).
