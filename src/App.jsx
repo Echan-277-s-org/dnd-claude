@@ -4,6 +4,7 @@ import Chat from './components/Chat'
 import { serializeSession } from './lib/session'
 import { makeRoomCode } from './lib/session'
 import { buildCharacter } from './lib/characterBuilder'
+import { randomUUID } from './lib/uuid'
 
 // Genre drives the visual theme — there is no independent theme toggle.
 const THEME_FOR_GENRE = { dnd: 'dnd', starwars: 'void' }
@@ -89,7 +90,7 @@ function loadParty() {
 function loadSessionId() {
   let id = localStorage.getItem('dnd_session_id')
   if (!id) {
-    id = crypto.randomUUID()
+    id = randomUUID()
     localStorage.setItem('dnd_session_id', id)
   }
   return id
@@ -155,7 +156,7 @@ export default function App() {
     // Clean slate: mint a FRESH sessionId and persist it so the sync server can't
     // re-pull the prior session under the old id. Drop the persisted session payload
     // for the same reason.
-    const sessionId = crypto.randomUUID()
+    const sessionId = randomUUID()
     localStorage.setItem('dnd_session_id', sessionId)
     localStorage.removeItem('dnd_session')
     const rc = makeRoomCode(sessionId)

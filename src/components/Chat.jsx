@@ -9,6 +9,7 @@ import { serializeSession, deserializeSession, getLanHost, toMarkdown, sessionFi
 import { useSessionPersistence } from '../hooks/useSessionPersistence'
 import { useWebSocket } from '../hooks/useWebSocket'
 import { isActiveTurn } from '../lib/turnStateMachine.js'
+import { randomUUID } from '../lib/uuid'
 
 // Phase A: localStorage key for the persisted session payload (same shape that
 // Phase A2's .md and Phase B's sync server use — defined once in session.js).
@@ -533,7 +534,7 @@ export default function Chat({
       { playerCount, numCtx, systemContent },
     )
 
-    const assistantId = crypto.randomUUID()
+    const assistantId = randomUUID()
     setMessages(prev => [...prev, userMsg, { role: 'assistant', content: '', id: assistantId }])
     setInput('')
     setIsLoading(true)
