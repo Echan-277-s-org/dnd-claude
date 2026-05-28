@@ -7,6 +7,7 @@ import CharacterWizard from './CharacterWizard'
 const OLLAMA_MODELS = [
   { value: 'qwen2.5:14b', label: 'Qwen 2.5 14B — Fast & capable (recommended)' },
   { value: 'qwen2.5:32b', label: 'Qwen 2.5 32B — Richer narration, slower' },
+  { value: 'impish-qwen:14b', label: 'Impish Qwen 14B — RP-tuned, low-censorship' },
 ]
 
 // Resolve sessionId for a given roomCode by querying GET /sessions from the sync

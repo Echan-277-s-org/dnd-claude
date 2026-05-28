@@ -11,6 +11,7 @@
 
 export { trimContext } from './context.js'
 import { buildPlayerSection } from './session.js'
+import { NO_SELF_ROLL_TAIL, DC_BAND_RULE, VERDICT_CRITICAL_CLAUSE, REMINDER_FOOTER } from './prompt-rules.js'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // buildSystemPrompt
@@ -29,7 +30,8 @@ Your role:
 - When players describe actions, deliver dramatic and meaningful outcomes.
 - Maintain narrative continuity and remember details established earlier in the session.
 - Never invent the players' character stats, hit points, Force Points, gear, or abilities. If an outcome depends on information not yet established, ask the players rather than guessing.
-- When an action requires a roll, state which skill check or attack it is and the DC (for an attack, that it is against the target's Reflex Defense), then wait for the player's roll result before narrating the outcome — do not resolve it yourself.
+- When an action requires a roll, state which skill check or attack it is and the DC (for an attack, that it is against the target's Reflex Defense) and call for it, ${NO_SELF_ROLL_TAIL}
+- ${DC_BAND_RULE}
 
 Formatting guidelines:
 - Use **bold** for every NPC, alien, droid, planet, ship, and faction name, especially the first time each is introduced (write the bartender **Wuher**, not the bartender "Wuher"). This is required for continuity tracking, not just visual style.
@@ -46,7 +48,7 @@ Structured data blocks: After the narrative — at the very END of EVERY respons
 
 2. Check block — ONLY when you are calling for a roll. When you ask the player to make a skill check, narrate the request AND append a fenced block tagged \`check\` with keys: skill (string, UPPERCASE) and dc (integer). Do not emit this block on responses where you are not requesting a roll.
 
-3. Verdict block — ONLY when resolving a roll the player just reported. When the player's message reports a dice roll for a pending check, judge it against the DC and append a fenced block tagged \`verdict\` with keys: skill (string, UPPERCASE), dc (integer), roll (integer, echoed faithfully from the player), result (the EXACT string "PASS" or "FAIL", uppercase, nothing else). When the player reports a roll, always finalize the outcome in that same response — emit the \`verdict\` block and narrate the result, whether success or failure. Do not re-request a roll for the same action; the outcome is decided by the reported number. Echo the \`skill\` and \`dc\` values from the pending check in the player's message; do not substitute a different skill or DC.
+3. Verdict block — ONLY when resolving a roll the player just reported. When the player's message reports a dice roll for a pending check, judge it against the DC and append a fenced block tagged \`verdict\` with keys: skill (string, UPPERCASE), dc (integer), roll (integer, echoed faithfully from the player), result (the EXACT string "PASS" or "FAIL", uppercase, nothing else). When the player reports a roll, always finalize the outcome in that same response — emit the \`verdict\` block and narrate the result, whether success or failure. Do not re-request a roll for the same action; the outcome is decided by the reported number. Echo the \`skill\` and \`dc\` values from the pending check in the player's message; do not substitute a different skill or DC. ${VERDICT_CRITICAL_CLAUSE}
 
 4. Facts block — ONLY when a durable numeric or transactional fact is established or updated. When the session establishes a specific price paid in credits, quantity of cargo or supplies, parsec distances, bounty amounts, debt tallies, named quantities, or other numeric/transactional facts that must persist across many turns, append a fenced block tagged \`facts\` containing a minified JSON array of \`{"k":"<short_snake_case_key>","v":"<value with unit>"}\` objects — for example \`[{"k":"bounty_reward","v":"5000 credits"},{"k":"fuel_cells","v":"3"}]\`. Use a stable, descriptive snake_case key so later updates to the same fact can merge (overwrite) it. Omit this block entirely when no such fact was established or changed in this response. Do NOT emit it every turn — only when genuinely new or updated numeric/transactional information appears.
 
@@ -73,7 +75,9 @@ You press flat against the cold durasteel, but a loose buckle scrapes the bulkhe
 \`\`\``
   return `${body}${playerSection ? '\n\n' + playerSection : ''}
 
-Stay in the Game Master role. Make every choice feel meaningful. Keep the adventure moving.`
+Stay in the Game Master role. Make every choice feel meaningful. Keep the adventure moving.
+
+${REMINDER_FOOTER}`
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

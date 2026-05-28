@@ -48,7 +48,10 @@ the visual theme**: `App.jsx` writes `<html data-theme>` from `THEME_FOR_GENRE`
 
 **Backend — local Ollama.** `Chat.jsx` POSTs to `http://<host>:11434/api/chat` with `stream: true`
 and reads newline-delimited JSON, accumulating `event.message.content` deltas into the last
-message. Default model `qwen2.5:14b` (from `campaign.model`). No cloud API / no API key.
+message. Default model `qwen2.5:14b` (from `campaign.model`); selectable in setup are also
+`qwen2.5:32b` (richer, slower; `num_ctx` capped at 8192 to fit 24 GB VRAM via `numCtxForModel`)
+and `impish-qwen:14b` (RP-tuned Qwen 2.5 14B finetune — see `ollama/IMPISH-SWAP-NOTES.md` to
+install). No cloud API / no API key.
 
 **Dice messages**: `{ role: 'dice', die, result, check?, verdict? }`. Bare on roll; `check`/`verdict`
 are added later by the structured-block parser. Transformed to text (`[Dice roll: d20 → 17 …]`)
