@@ -4298,4 +4298,365 @@ describe('Fix #5 — anchorJoinedPCNames pure-logic unit tests', () => {
     expect(result[0].name).toBe('Kael')
     expect(result).toHaveLength(1)
   })
+
+  // ── 8. Cross-slot: single confabulated rename at a different index ────────────
+
+  it('cross-slot: repairs "Borin" (Cleric) at index 1 back to "Bron" (Cleric) when Bron was at index 3', () => {
+    const characters = makeCharacters('Kael', 'Lyra', 'Sora', 'Bron')
+
+    // Old party: Bron (Cleric) at index 3.
+    const oldParty = [
+      makePartyMember('Kael', { role: 'Fighter' }),
+      makePartyMember('Lyra', { role: 'Ranger'  }),
+      makePartyMember('Sora', { role: 'Rogue'   }),
+      makePartyMember('Bron', { role: 'Cleric'  }),
+    ]
+
+    // New party: DM emitted "Borin" (Cleric) at index 1; Bron is absent; the
+    // confabulation landed at a DIFFERENT index than Bron held (cross-slot).
+    const newParty = [
+      makePartyMember('Kael',  { id: 'id-kael', role: 'Fighter', hpPct: 90  }),
+      makePartyMember('Borin', { id: 'id-borin-new', role: 'Cleric', hpPct: 70 }), // phantom
+      makePartyMember('Sora',  { id: 'id-sora', role: 'Rogue',   hpPct: 85  }),
+      makePartyMember('Lyra',  { id: 'id-lyra', role: 'Ranger',  hpPct: 95  }),
+    ]
+
+    const result = anchorJoinedPCNames(newParty, oldParty, characters)
+
+    // "Borin" at index 1 must be repaired to "Bron".
+    expect(result[1].name).toBe('Bron')
+    // Role and other DM-emitted fields on the repaired slot are preserved.
+    expect(result[1].role).toBe('Cleric')
+    expect(result[1].hpPct).toBe(70)
+    expect(result[1].id).toBe('id-borin-new')
+    // Other slots untouched.
+    expect(result[0].name).toBe('Kael')
+    expect(result[2].name).toBe('Sora')
+    expect(result[3].name).toBe('Lyra')
+    // Membership count unchanged.
+    expect(result).toHaveLength(4)
+  })
+
+  // ── 9. Cross-slot: two simultaneous confabulated renames ─────────────────────
+
+  it('cross-slot: repairs both "Aelis" (Fighter) → Kael and "Borin" (Cleric) → Bron when both land at wrong slots', () => {
+    const characters = makeCharacters('Kael', 'Lyra', 'Sora', 'Bron')
+
+    // Old party: Kael (Fighter) at index 0, Bron (Cleric) at index 3.
+    const oldParty = [
+      makePartyMember('Kael', { role: 'Fighter' }),
+      makePartyMember('Lyra', { role: 'Ranger'  }),
+      makePartyMember('Sora', { role: 'Rogue'   }),
+      makePartyMember('Bron', { role: 'Cleric'  }),
+    ]
+
+    // New party: DM confabulated Kael → "Aelis" (Fighter) at index 2 and
+    // Bron → "Borin" (Cleric) at index 0 — both cross-slot.
+    const newParty = [
+      makePartyMember('Borin', { id: 'id-borin-new', role: 'Cleric',  hpPct: 65 }), // phantom for Bron
+      makePartyMember('Lyra',  { id: 'id-lyra',      role: 'Ranger',  hpPct: 80 }),
+      makePartyMember('Aelis', { id: 'id-aelis-new', role: 'Fighter', hpPct: 55 }), // phantom for Kael
+      makePartyMember('Sora',  { id: 'id-sora',      role: 'Rogue',   hpPct: 90 }),
+    ]
+
+    const result = anchorJoinedPCNames(newParty, oldParty, characters)
+
+    // Both phantoms must be repaired to canonical names.
+    const names = result.map(m => m.name)
+    expect(names).toContain('Kael')
+    expect(names).toContain('Bron')
+    // Real PCs and their data untouched.
+    expect(names).toContain('Lyra')
+    expect(names).toContain('Sora')
+    expect(result).toHaveLength(4)
+    // Repaired slots preserve DM-emitted fields.
+    const kaelSlot = result.find(m => m.name === 'Kael')
+    expect(kaelSlot.role).toBe('Fighter')
+    expect(kaelSlot.hpPct).toBe(55)
+    const bronSlot = result.find(m => m.name === 'Bron')
+    expect(bronSlot.role).toBe('Cleric')
+    expect(bronSlot.hpPct).toBe(65)
+  })
+
+  // ── 10. Cross-slot + legit NPC: PC repaired, NPC untouched ───────────────────
+
+  it('cross-slot + legit NPC: repairs Bron (Cleric) → "Borin" (Cleric) while preserving new NPC "Mira" (Merchant)', () => {
+    const characters = makeCharacters('Kael', 'Lyra', 'Sora', 'Bron')
+
+    // Old party: 4 PCs, no Mira.
+    const oldParty = [
+      makePartyMember('Kael', { role: 'Fighter' }),
+      makePartyMember('Lyra', { role: 'Ranger'  }),
+      makePartyMember('Sora', { role: 'Rogue'   }),
+      makePartyMember('Bron', { role: 'Cleric'  }),
+    ]
+
+    // New party: "Borin" (Cleric) is the cross-slot confabulation for Bron;
+    // "Mira" (Merchant) is a genuine new NPC introduced by the DM this turn.
+    const newParty = [
+      makePartyMember('Kael',  { id: 'id-kael', role: 'Fighter',  hpPct: 100 }),
+      makePartyMember('Borin', { id: 'id-borin-new', role: 'Cleric', hpPct: 60 }), // phantom for Bron
+      makePartyMember('Sora',  { id: 'id-sora', role: 'Rogue',    hpPct: 80  }),
+      makePartyMember('Lyra',  { id: 'id-lyra', role: 'Ranger',   hpPct: 75  }),
+      makePartyMember('Mira',  { id: 'id-mira', role: 'Merchant', hpPct: 100 }), // legit NPC
+    ]
+
+    const result = anchorJoinedPCNames(newParty, oldParty, characters)
+
+    // Borin repaired to Bron.
+    const bronSlot = result.find(m => m.name === 'Bron')
+    expect(bronSlot).toBeDefined()
+    expect(bronSlot.role).toBe('Cleric')
+    expect(bronSlot.hpPct).toBe(60)
+    // Legit NPC "Mira" preserved and untouched.
+    const miraSlot = result.find(m => m.name === 'Mira')
+    expect(miraSlot).toBeDefined()
+    expect(miraSlot.role).toBe('Merchant')
+    // All 4 canonical PCs present.
+    const names = result.map(m => m.name)
+    expect(names).toContain('Kael')
+    expect(names).toContain('Lyra')
+    expect(names).toContain('Sora')
+    expect(names).toContain('Bron')
+    // Membership count unchanged.
+    expect(result).toHaveLength(5)
+  })
+
+  // ── 11. Same-index NPC collision: brand-new NPC at the missing PC's exact old index is NOT renamed ─────
+
+  it('same-index NPC collision: a brand-new NPC at the missing PC\'s exact old index is NOT renamed to the PC', () => {
+    // Reproduces review finding M1: roster Kael/Lyra/Sora/Bron; oldParty has Bron(Cleric)
+    // at index 3; newParty has brand-new "Mira"(Merchant) at index 3 with Bron absent.
+    // Pass 2's same-slot rule used to rename Mira → Bron, destroying the NPC.
+    // The role-compatibility guard must skip this slot instead.
+    const characters = makeCharacters('Kael', 'Lyra', 'Sora', 'Bron')
+
+    const oldParty = [
+      makePartyMember('Kael', { role: 'Fighter' }),
+      makePartyMember('Lyra', { role: 'Ranger'  }),
+      makePartyMember('Sora', { role: 'Rogue'   }),
+      makePartyMember('Bron', { role: 'Cleric'  }),
+    ]
+
+    // newParty: Kael/Lyra/Sora present at 0/1/2; Bron absent; brand-new NPC "Mira"
+    // (Merchant) is at index 3 — the exact old index that Bron occupied.
+    const newParty = [
+      makePartyMember('Kael', { id: 'id-kael', role: 'Fighter', hpPct: 100 }),
+      makePartyMember('Lyra', { id: 'id-lyra', role: 'Ranger',  hpPct: 90  }),
+      makePartyMember('Sora', { id: 'id-sora', role: 'Rogue',   hpPct: 85  }),
+      makePartyMember('Mira', { id: 'id-mira', role: 'Merchant', hpPct: 100 }), // new NPC, NOT Bron
+    ]
+
+    const result = anchorJoinedPCNames(newParty, oldParty, characters)
+
+    // Index 3 must still be "Mira" with role "Merchant" — NOT renamed to "Bron".
+    expect(result[3].name).toBe('Mira')
+    expect(result[3].role).toBe('Merchant')
+    // Bron remains absent — the harness's Option A / PARTY_SHRINK flag handles
+    // the unrepaired remainder; we do NOT assert Bron present.
+    expect(result.find(m => m.name === 'Bron')).toBeUndefined()
+    // Membership count unchanged.
+    expect(result).toHaveLength(4)
+    // Other PCs untouched.
+    expect(result[0].name).toBe('Kael')
+    expect(result[1].name).toBe('Lyra')
+    expect(result[2].name).toBe('Sora')
+  })
+
+  // ── Safety net (Fix #5b) — total / turn-1 confabulation ─────────────────────
+  //
+  // Helper: build a characters map with per-member charClass support.
+  function makeCharactersWithClass(...specs) {
+    // specs: [name, charClass] pairs, or plain strings (defaults to 'Fighter').
+    return Object.fromEntries(specs.map(s => {
+      const [name, charClass = 'Fighter'] = Array.isArray(s) ? s : [s, 'Fighter']
+      return [name, { name, race: 'Human', charClass }]
+    }))
+  }
+
+  it('safety net: turn-1 total confab (oldParty=[]) rebuilds to canonical roster preserving isActive/hpPct', () => {
+    // Roster: Kael(Fighter), Lyra(Wizard), Bron(Cleric), Sora(Rogue).
+    const characters = makeCharactersWithClass(
+      ['Kael', 'Fighter'], ['Lyra', 'Wizard'], ['Bron', 'Cleric'], ['Sora', 'Rogue']
+    )
+
+    // Turn 1: no old party (empty).
+    const oldParty = []
+
+    // DM wholesale-confabulated 4 fake PCs.
+    const newParty = [
+      { id: 'id-fake-0', name: 'PC_Ranger',  role: 'Ranger',  hpPct: 80, isActive: true  },
+      { id: 'id-fake-1', name: 'PC_Cleric',  role: 'Cleric',  hpPct: 95, isActive: false },
+      { id: 'id-fake-2', name: 'PC_Wizard',  role: 'Wizard',  hpPct: 18, isActive: false },
+      { id: 'id-fake-3', name: 'PC_Rogue',   role: 'Rogue',   hpPct: 22, isActive: false },
+    ]
+
+    const result = anchorJoinedPCNames(newParty, oldParty, characters)
+
+    // Must be rebuilt to the 4 canonical names.
+    expect(result).toHaveLength(4)
+    const names = result.map(m => m.name)
+    expect(names).toContain('Kael')
+    expect(names).toContain('Lyra')
+    expect(names).toContain('Bron')
+    expect(names).toContain('Sora')
+
+    // Roles must come from charClass, not from the confab entries.
+    const kael = result.find(m => m.name === 'Kael')
+    expect(kael.role).toBe('Fighter')
+    const lyra = result.find(m => m.name === 'Lyra')
+    expect(lyra.role).toBe('Wizard')
+    const bron = result.find(m => m.name === 'Bron')
+    expect(bron.role).toBe('Cleric')
+    const sora = result.find(m => m.name === 'Sora')
+    expect(sora.role).toBe('Rogue')
+
+    // Index-0's isActive and hpPct must be carried over from the confab entry at index 0.
+    expect(result[0].isActive).toBe(true)  // confab index 0 had isActive:true
+    expect(result[0].hpPct).toBe(80)       // confab index 0 had hpPct:80
+
+    // Result is the same reference (mutated in place).
+    expect(result).toBe(newParty)
+  })
+
+  it('safety net: total confab WITH oldParty present (not turn-1) rebuilds to canonical roster; id from oldParty by name', () => {
+    const characters = makeCharactersWithClass(
+      ['Kael', 'Fighter'], ['Lyra', 'Wizard'], ['Bron', 'Cleric'], ['Sora', 'Rogue']
+    )
+
+    // oldParty has the 4 real PCs with stable ids.
+    const oldParty = [
+      { id: 'id-kael', name: 'Kael', role: 'Fighter', hpPct: 100, isActive: false },
+      { id: 'id-lyra', name: 'Lyra', role: 'Wizard',  hpPct: 100, isActive: false },
+      { id: 'id-bron', name: 'Bron', role: 'Cleric',  hpPct: 100, isActive: false },
+      { id: 'id-sora', name: 'Sora', role: 'Rogue',   hpPct: 100, isActive: false },
+    ]
+
+    // DM emitted 4 completely fake PCs — total confab on a mid-run turn.
+    const newParty = [
+      { id: 'id-fake-a', name: 'Alpha',   role: 'Paladin', hpPct: 50, isActive: true  },
+      { id: 'id-fake-b', name: 'Beta',    role: 'Bard',    hpPct: 60, isActive: false },
+      { id: 'id-fake-c', name: 'Gamma',   role: 'Druid',   hpPct: 70, isActive: false },
+      { id: 'id-fake-d', name: 'Delta',   role: 'Warlock', hpPct: 80, isActive: false },
+    ]
+
+    const result = anchorJoinedPCNames(newParty, oldParty, characters)
+
+    // Must be rebuilt to the 4 canonical names.
+    expect(result).toHaveLength(4)
+    const names = result.map(m => m.name)
+    expect(names).toContain('Kael')
+    expect(names).toContain('Lyra')
+    expect(names).toContain('Bron')
+    expect(names).toContain('Sora')
+
+    // ids must be rescued from oldParty by name-match.
+    const kael = result.find(m => m.name === 'Kael')
+    expect(kael.id).toBe('id-kael')
+    const lyra = result.find(m => m.name === 'Lyra')
+    expect(lyra.id).toBe('id-lyra')
+
+    // Roles from charClass.
+    expect(kael.role).toBe('Fighter')
+    expect(lyra.role).toBe('Wizard')
+
+    // isActive carried over positionally from index 0 (confab Alpha had isActive:true).
+    expect(result[0].isActive).toBe(true)
+  })
+
+  it('safety net: partial confab does NOT trigger rebuild — passes 1-3 handle it, Kael/Lyra names untouched', () => {
+    // Roster of 4; newParty has Kael + Lyra real but Bron→"Borin"(Cleric) and Sora
+    // present as a real name — safety net must NOT fire.
+    const characters = makeCharactersWithClass(
+      ['Kael', 'Fighter'], ['Lyra', 'Ranger'], ['Bron', 'Cleric'], ['Sora', 'Rogue']
+    )
+
+    const oldParty = [
+      makePartyMember('Kael', { id: 'id-kael', role: 'Fighter' }),
+      makePartyMember('Lyra', { id: 'id-lyra', role: 'Ranger'  }),
+      makePartyMember('Bron', { id: 'id-bron', role: 'Cleric'  }),
+      makePartyMember('Sora', { id: 'id-sora', role: 'Rogue'   }),
+    ]
+
+    // Kael + Lyra + Sora real; Bron→"Borin"(Cleric) partial confab at index 2.
+    const newParty = [
+      makePartyMember('Kael',  { id: 'id-kael', role: 'Fighter', hpPct: 100 }),
+      makePartyMember('Lyra',  { id: 'id-lyra', role: 'Ranger',  hpPct: 90  }),
+      makePartyMember('Borin', { id: 'id-borin-new', role: 'Cleric', hpPct: 70 }), // partial confab
+      makePartyMember('Sora',  { id: 'id-sora', role: 'Rogue',   hpPct: 85  }),
+    ]
+
+    const result = anchorJoinedPCNames(newParty, oldParty, characters)
+
+    // Safety net must NOT have fired — entry count is unchanged (no wholesale rebuild).
+    expect(result).toHaveLength(4)
+
+    // Kael and Lyra must be untouched (passes 1-3 left them alone; safety net didn't touch).
+    expect(result[0].name).toBe('Kael')
+    expect(result[1].name).toBe('Lyra')
+
+    // "Borin" at index 2 must have been repaired to "Bron" by passes 1-3 (role-match).
+    // This confirms passes 1-3 ran normally and the safety net did not interfere.
+    expect(result[2].name).toBe('Bron')
+
+    // Sora at index 3 is unchanged.
+    expect(result[3].name).toBe('Sora')
+  })
+
+  it('safety net: empty characters (N=1) is still a no-op (early-return guard)', () => {
+    // Empty characters map → the existing early-return fires before the safety net;
+    // confirm the safety net never runs by verifying the fake party is returned as-is.
+    const oldParty = []
+    const newParty = [
+      { id: 'id-x', name: 'PC_Ranger', role: 'Ranger', hpPct: 50, isActive: true },
+    ]
+
+    const result = anchorJoinedPCNames(newParty, oldParty, {})
+
+    // No roster → no-op → original single fake entry untouched.
+    expect(result).toHaveLength(1)
+    expect(result[0].name).toBe('PC_Ranger')
+    expect(result).toBe(newParty)
+  })
+
+  // ── 12. Role-mismatch: no false repair when roles conflict ───────────────────
+
+  it('role-mismatch: does NOT rename a Fighter phantom to Bron (Cleric) — leaves party unchanged for that PC', () => {
+    const characters = makeCharacters('Kael', 'Lyra', 'Sora', 'Bron')
+
+    // Old party: Bron (Cleric) at index 3.
+    const oldParty = [
+      makePartyMember('Kael', { role: 'Fighter' }),
+      makePartyMember('Lyra', { role: 'Ranger'  }),
+      makePartyMember('Sora', { role: 'Rogue'   }),
+      makePartyMember('Bron', { role: 'Cleric'  }),
+    ]
+
+    // New party: Bron is absent; the only brand-new entry is "Thorin" with role
+    // "Fighter" — a role mismatch (Bron is Cleric). Phase 2 missed it (different
+    // slot). Phase 3 must NOT remap "Thorin" to "Bron" because roles differ and
+    // there are multiple PCs present (no safe 1:1 fallback either, since
+    // stillMissing.length === 1 and available.length === 1 BUT the role check
+    // is done first and fails; we verify the guard works via role-mismatch path).
+    const newParty = [
+      makePartyMember('Kael',  { id: 'id-kael', role: 'Fighter', hpPct: 100 }),
+      makePartyMember('Thorin',{ id: 'id-thorin-new', role: 'Fighter', hpPct: 80 }), // wrong role for Bron
+      makePartyMember('Sora',  { id: 'id-sora', role: 'Rogue',   hpPct: 90  }),
+      makePartyMember('Lyra',  { id: 'id-lyra', role: 'Ranger',  hpPct: 85  }),
+    ]
+
+    const result = anchorJoinedPCNames(newParty, oldParty, characters)
+
+    // "Thorin" must NOT be renamed — role mismatch means we cannot safely remap.
+    // (The 1:1 fallback does not apply here because the role check fires first and
+    // the role does not match; the guard correctly skips the remap.)
+    expect(result.find(m => m.name === 'Thorin')).toBeDefined()
+    expect(result.find(m => m.name === 'Bron')).toBeUndefined()
+    // "Thorin" slot is unchanged.
+    const thorinSlot = result.find(m => m.name === 'Thorin')
+    expect(thorinSlot.role).toBe('Fighter')
+    expect(thorinSlot.hpPct).toBe(80)
+    // Membership count unchanged.
+    expect(result).toHaveLength(4)
+  })
 })

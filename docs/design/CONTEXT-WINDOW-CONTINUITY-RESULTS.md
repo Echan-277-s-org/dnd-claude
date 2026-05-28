@@ -132,6 +132,32 @@ Ship PR #8. Through the part of the run we measured, the fix works: Category-B a
 
 ---
 
+## UPDATE: Full 200-Round Validation Complete (2026-05-27)
+
+**Status:** Full 200-round endurance run completed and verified. The prior R137 early stop was caused by a harness-side party-block edge case (worked-example name copied into party block). This has been fixed via defense-in-depth hardening.
+
+**Branch:** `harness-200-hardening` (commit `8ddfcd2`)
+
+**Four hardening changes:**
+1. **Prompt (Option C, `src/lib/context.js`):** Anti-copy instruction plus English-only guardrail.
+2. **Server (Option B, `server/sync-server.mjs`, `anchorJoinedPCNames`):** Role-match-first repair, cross-slot guards, total-confabulation safety net. +9 unit tests (903 pass / 2 skip total).
+3. **Harness (Option A, `stress-test/harness-4p.mjs`):** Phantom roster member skip (robustness fallback).
+4. **Interim pivot (smoke gate):** An earlier `PC_<Role>` placeholder approach regressed; qwen2.5 treated it as a template and copied the entire example party. Smoke tests caught it, and we pivoted to arbitrary names plus an explicit anti-copy instruction.
+
+**Results (run_id `4p_qwen25_ctx32k_v2`):**
+- Continuity: Category A=1.0 (50/50), B=1.0 (200/200), C=1.0 (50/50), all 4 spotlight owners
+- Probes: P1–P50 (rounds 4–200), all 6/6 PASS
+- Session history: 1.97 MB at R200; localStorage growth projects exhaustion near round 488 (pre-existing ceiling, not introduced by continuity fix)
+- Robustness: zero hard failures, zero robustness events (PHANTOM_ROSTER_RECOVERED 0, PARTY_SHRINK 0, SERVER_ERROR 0)
+- Performance: mean 66.95 tok/s (−16% vs. 8192 baseline, −2.7% vs. prior 32K run), ~7–9 s per turn (no regression). VRAM was not re-captured this run; baseline prior run measured 17 GB on RTX 4090. Model stayed GPU-resident (cpu_offload_detected: false).
+- Limiting factor: localStorage growth projected to round 488, not continuity
+
+**Note on artifact:** The R137 stop was not a regression in PR #8's continuity fix; PR #8 did not touch party-block parsing. The artifact was an edge case that became visible at scale. The fix is production-ready.
+
+**Detailed findings:** See `stress-test/4P-200-ROUND-HARDENING-FINDINGS.md`
+
+---
+
 ## Test Artifacts
 
 | Artifact | Path | Purpose |
