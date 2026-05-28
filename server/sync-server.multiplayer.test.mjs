@@ -626,85 +626,6 @@ describe('Phase 3 — exactly one Ollama call per action', () => {
     ws.close()
   })
 
-  it('per-model num_ctx: a qwen2.5:32b room sends num_ctx 8192 (4090 VRAM cap)', async () => {
-    ctx.mockOllama = await startMockOllama()
-    process.env.OLLAMA_HOST = ctx.mockOllama.host
-    const { sessionId, roomCode } = freshIds()
-
-    // Seed the .md store so the room hydrates campaign.model = qwen2.5:32b on join.
-    const putRes = await fetch(`${ctx.base}/session/${sessionId}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        campaign: { name: '32b Room', genre: 'dnd', model: 'qwen2.5:32b', sessionId },
-        messages: [], sessionLog: [], party: [], savedAt: null,
-      }),
-    })
-    expect(putRes.status).toBe(200)
-
-    const { ws } = await connectClient(ctx.wsBase, {
-      roomCode, sessionId, displayName: 'Alex', lastTurnSequence: 0,
-    })
-
-    const done = waitForMessage(ws, m => m.type === 'dm:done')
-    ws.send(JSON.stringify({
-      type: 'action', roomCode, payload: { content: 'I enter the tavern.', type: 'user' },
-    }))
-    await done
-
-    const body = ctx.mockOllama.getLastBody()
-    expect(body.model).toBe('qwen2.5:32b')
-    // qwen2.5:32b at 32K would overflow the 4090's 24 GB — it stays at 8K.
-    expect(body.options.num_ctx).toBe(8192)
-    ws.close()
-  })
-
-  it('no party prefill: a room with a party does NOT send a trailing assistant ```party block', async () => {
-    // Regression guard for the reverted prefill: an assistant-turn party prefill
-    // froze the HUD (first-match block extraction always read the prefilled, stale
-    // state and discarded the model's fresh block). The party block must stay
-    // model-owned. So even when the room already has a party, the request must end
-    // with the player's action — never a synthesized assistant party block.
-    ctx.mockOllama = await startMockOllama()
-    process.env.OLLAMA_HOST = ctx.mockOllama.host
-    const { sessionId, roomCode } = freshIds()
-
-    // Seed the .md store with a non-empty party so the room hydrates it on join.
-    const putRes = await fetch(`${ctx.base}/session/${sessionId}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        campaign: { name: 'Prefill Room', genre: 'dnd', model: 'qwen2.5:14b', sessionId },
-        messages: [], sessionLog: [], savedAt: null,
-        party: [
-          { name: 'Aelis', role: 'Ranger', hpPct: 80, isActive: true },
-          { name: 'Borin', role: 'Cleric', hpPct: 95, isActive: false },
-        ],
-      }),
-    })
-    expect(putRes.status).toBe(200)
-
-    const { ws } = await connectClient(ctx.wsBase, {
-      roomCode, sessionId, displayName: 'Alex', lastTurnSequence: 0,
-    })
-
-    const done = waitForMessage(ws, m => m.type === 'dm:done')
-    ws.send(JSON.stringify({
-      type: 'action', roomCode, payload: { content: 'I enter the tavern.', type: 'user' },
-    }))
-    await done
-
-    const body = ctx.mockOllama.getLastBody()
-    // The final message is the player's action (a user turn), not an assistant prefill.
-    const last = body.messages[body.messages.length - 1]
-    expect(last.role).toBe('user')
-    // No ASSISTANT message carries an app-synthesized ```party block. (The system
-    // prompt legitimately contains ```party in its worked examples — only the
-    // reverted prefill injected one as an assistant turn, so scope the check to that.)
-    expect(body.messages.some(msg => msg.role === 'assistant' && /```party/.test(msg.content))).toBe(false)
-    ws.close()
-  })
-
   it('dm:delta events are broadcast with delta content and turnSequence', async () => {
     ctx.mockOllama = await startMockOllama({ chunks: ['Hello ', 'world.'] })
     process.env.OLLAMA_HOST = ctx.mockOllama.host
@@ -833,6 +754,113 @@ describe('Phase 3 — exactly one Ollama call per action', () => {
     const err = await busy
     expect(err.payload.code).toBe('DM_BUSY')
     expect(ctx.mockOllama.getCallCount()).toBe(1)
+    ws.close()
+  })
+})
+
+// ─── Phase 3b — Per-model Ollama options + no-party-prefill regression ───────
+//
+// Ancillary coverage for the Phase 3 DM trigger: that the Ollama POST body
+// reflects the room's model (per-model `num_ctx` routing via numCtxForModel),
+// and that the assistant message stream never carries an app-synthesized
+// ```party block (regression guard for a reverted prefill experiment that
+// froze the HUD).
+
+describe('Phase 3b — per-model num_ctx + no party prefill regression', () => {
+  let ctx
+  let prevOllamaHost
+
+  let p3bseq = 0
+  function freshIds() {
+    p3bseq += 1
+    const hex = String(p3bseq).padStart(8, '0')
+    return { sessionId: `${hex}-0000-0000-0000-000000000350`, roomCode: `dnd-p3b${hex}` }
+  }
+
+  beforeEach(async () => {
+    prevOllamaHost = process.env.OLLAMA_HOST
+    ctx = await startTestServer()
+  })
+  afterEach(async () => {
+    if (prevOllamaHost === undefined) delete process.env.OLLAMA_HOST
+    else process.env.OLLAMA_HOST = prevOllamaHost
+    await new Promise(r => ctx.server.close(r))
+    if (ctx.mockOllama) {
+      ctx.mockOllama.destroy()
+      await new Promise(r => ctx.mockOllama.server.close(r))
+    }
+  })
+
+  // Helper: seed a room with `campaign`/`party`, start mock Ollama, connect a WS,
+  // send one user action, await dm:done, return { body, ws } for assertion.
+  async function seedAndSendAction({ campaign, party = [] }) {
+    ctx.mockOllama = await startMockOllama()
+    process.env.OLLAMA_HOST = ctx.mockOllama.host
+    const { sessionId, roomCode } = freshIds()
+
+    const putRes = await fetch(`${ctx.base}/session/${sessionId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        campaign: { ...campaign, sessionId },
+        messages: [], sessionLog: [], party, savedAt: null,
+      }),
+    })
+    expect(putRes.status).toBe(200)
+
+    const { ws } = await connectClient(ctx.wsBase, {
+      roomCode, sessionId, displayName: 'Alex', lastTurnSequence: 0,
+    })
+
+    const done = waitForMessage(ws, m => m.type === 'dm:done')
+    ws.send(JSON.stringify({
+      type: 'action', roomCode, payload: { content: 'I enter the tavern.', type: 'user' },
+    }))
+    await done
+
+    return { body: ctx.mockOllama.getLastBody(), ws }
+  }
+
+  it('per-model num_ctx: a qwen2.5:32b room sends num_ctx 8192 (4090 VRAM cap)', async () => {
+    const { body, ws } = await seedAndSendAction({
+      campaign: { name: '32b Room', genre: 'dnd', model: 'qwen2.5:32b' },
+    })
+    expect(body.model).toBe('qwen2.5:32b')
+    // qwen2.5:32b at 32K would overflow the 4090's 24 GB — it stays at 8K.
+    expect(body.options.num_ctx).toBe(8192)
+    ws.close()
+  })
+
+  it('per-model num_ctx: an impish-qwen:14b room sends num_ctx 32768 (default)', async () => {
+    const { body, ws } = await seedAndSendAction({
+      campaign: { name: 'Impish Room', genre: 'dnd', model: 'impish-qwen:14b' },
+    })
+    expect(body.model).toBe('impish-qwen:14b')
+    // impish-qwen:14b is a 14B model — falls through to DEFAULT_NUM_CTX.
+    expect(body.options.num_ctx).toBe(32768)
+    ws.close()
+  })
+
+  it('no party prefill: a room with a party does NOT send a trailing assistant ```party block', async () => {
+    // Regression guard for the reverted prefill: an assistant-turn party prefill
+    // froze the HUD (first-match block extraction always read the prefilled, stale
+    // state and discarded the model's fresh block). The party block must stay
+    // model-owned. So even when the room already has a party, the request must end
+    // with the player's action — never a synthesized assistant party block.
+    const { body, ws } = await seedAndSendAction({
+      campaign: { name: 'Prefill Room', genre: 'dnd', model: 'qwen2.5:14b' },
+      party: [
+        { name: 'Aelis', role: 'Ranger', hpPct: 80, isActive: true },
+        { name: 'Borin', role: 'Cleric', hpPct: 95, isActive: false },
+      ],
+    })
+    // The final message is the player's action (a user turn), not an assistant prefill.
+    const last = body.messages[body.messages.length - 1]
+    expect(last.role).toBe('user')
+    // No ASSISTANT message carries an app-synthesized ```party block. (The system
+    // prompt legitimately contains ```party in its worked examples — only the
+    // reverted prefill injected one as an assistant turn, so scope the check to that.)
+    expect(body.messages.some(msg => msg.role === 'assistant' && /```party/.test(msg.content))).toBe(false)
     ws.close()
   })
 })
