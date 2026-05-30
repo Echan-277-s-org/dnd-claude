@@ -9,6 +9,7 @@
 // Sentinel return values (never persisted, never broadcast as a real phase):
 //   'DM_BUSY'       — action rejected; DM trigger is already in flight
 //   'NOT_YOUR_TURN' — combat action rejected; sender is not the active member
+//   'NOT_STARTED'   — action rejected; the room is still in the pregame lobby
 
 /**
  * isActiveTurn(displayName, party) → boolean
@@ -55,6 +56,8 @@ export function isActiveTurn(displayName, party) {
  * | resolving       | dm:done / resolved| party has isActive?            | combat / free-roam |
  * | combat          | dm:done / resolved| party has isActive?            | combat / free-roam |
  * | combat          | action            | isActiveTurn(dn, ctx.party)?   | awaiting-dm / NOT_YOUR_TURN |
+ * | lobby           | start             | —                              | free-roam       |
+ * | lobby           | action            | —                              | NOT_STARTED     |
  * | null/undefined  | room:init         | —                              | event.phase     |
  * | any             | (other)           | —                              | currentPhase (unchanged) |
  */
@@ -66,8 +69,17 @@ export function phaseReducer(currentPhase, event, context = {}) {
     return event.phase ?? 'free-roam'
   }
 
+  // ── start — host launches the adventure from the pregame lobby.
+  if (type === 'start') {
+    return currentPhase === 'lobby' ? 'free-roam' : currentPhase
+  }
+
   switch (type) {
     case 'action': {
+      // Pregame lobby: no actions are accepted until the host starts the game.
+      if (currentPhase === 'lobby') {
+        return 'NOT_STARTED'
+      }
       if (currentPhase === 'free-roam') {
         return 'awaiting-dm'
       }

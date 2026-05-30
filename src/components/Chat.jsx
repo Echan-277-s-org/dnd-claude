@@ -4,6 +4,7 @@ import HistoryPanel from './HistoryPanel'
 import CharacterPanel from './CharacterPanel'
 import PartyStrip from './PartyStrip'
 import DiceChip from './DiceChip'
+import Lobby from './Lobby'
 import { getGenre } from '../lib/genres'
 import { serializeSession, deserializeSession, getLanHost, toMarkdown, sessionFileName, markOrphanedDice, applyPartyUpdate, makeRoomCode, buildPlayersForPrompt, numCtxForModel } from '../lib/session'
 import { useSessionPersistence } from '../hooks/useSessionPersistence'
@@ -159,6 +160,10 @@ export default function Chat({
   // Phase 4: multiplayer presence — list of { displayName, status } from server.
   const [presence, setPresence] = useState([])
 
+  // Pregame lobby roster — { host, phase, allReady, players[] } from the server's
+  // lobby:update broadcast. Only consulted while serverPhase === 'lobby'.
+  const [lobby, setLobby] = useState(null)
+
   // Phase 5: server-authoritative phase ('free-roam' | 'combat' | 'awaiting-dm' | 'resolving').
   // Driven by session:update and session:state events from the server.
   // Single-player: stays 'free-roam' (never updated via WS).
@@ -240,6 +245,12 @@ export default function Chat({
         // All displayName strings are stored in state and rendered as React text nodes.
         if (Array.isArray(payload)) {
           setPresence(payload)
+        }
+      } else if (type === 'lobby:update') {
+        // Pregame lobby roster ({ host, phase, allReady, players[] }). All strings
+        // render as React text nodes (never innerHTML).
+        if (payload && Array.isArray(payload.players)) {
+          setLobby(payload)
         }
       } else if (type === 'error') {
         // Server-sent error (DM_BUSY, NOT_YOUR_TURN, etc.). Show feedback.
@@ -704,6 +715,16 @@ export default function Chat({
   // The room code shown is the one passed from App, or derived from sessionId.
   const sharedRoomCode = roomCode || makeRoomCode(campaign.sessionId)
 
+  // ─── Pregame lobby send handlers ────────────────────────────────────────────
+  // The room code on the wire is the joined code (or the shared fallback).
+  const handleToggleReady = useCallback((ready) => {
+    wsSend({ type: 'lobby:ready', roomCode: roomCode || campaign.roomCode || sharedRoomCode, payload: { ready: !!ready } })
+  }, [wsSend, roomCode, campaign.roomCode, sharedRoomCode])
+
+  const handleStartGame = useCallback(() => {
+    wsSend({ type: 'lobby:start', roomCode: roomCode || campaign.roomCode || sharedRoomCode })
+  }, [wsSend, roomCode, campaign.roomCode, sharedRoomCode])
+
   // Find last assistant message index for action suggestions
   const lastAssistantIndex = (() => {
     for (let i = messages.length - 1; i >= 0; i--) {
@@ -736,6 +757,27 @@ export default function Chat({
   const inputPlaceholder = isMultiplayer && serverPhase === 'combat' && !myTurn
     ? `Waiting for ${activeName}'s action…`
     : genre.inputPlaceholder
+
+  // ─── Pregame lobby ──────────────────────────────────────────────────────────
+  // While the server room is in the 'lobby' phase, the party gathers, reviews
+  // characters, and readies up. The host starts the adventure (phase → free-roam),
+  // at which point a session:update flips serverPhase and the play screen mounts.
+  // Single-player never reaches this branch (serverPhase stays 'free-roam').
+  if (isMultiplayer && serverPhase === 'lobby') {
+    return (
+      <Lobby
+        genre={genre}
+        campaignName={campaign.name || genre.headerDefaultName}
+        roomCode={sharedRoomCode}
+        myDisplayName={displayName ?? ''}
+        players={lobby?.players ?? presence.map(p => ({ ...p, ready: false, isHost: false, character: null }))}
+        host={lobby?.host ?? null}
+        allReady={lobby?.allReady ?? false}
+        onToggleReady={handleToggleReady}
+        onStart={handleStartGame}
+      />
+    )
+  }
 
   return (
     <div

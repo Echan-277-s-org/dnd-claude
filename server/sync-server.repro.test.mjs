@@ -43,9 +43,12 @@ import { serializeSession } from '../src/lib/session.js'
 // ─── helpers (mirrored from sync-server.multiplayer.test.mjs) ────────────────
 
 async function startTestServer() {
+  // lobby:false — these repro tests join a fresh room and immediately trigger the
+  // DM, so they must open straight into free-roam (the pregame lobby would gate
+  // the action). The lobby has its own dedicated suite in the multiplayer tests.
   const dir = await mkdtemp(path.join(tmpdir(), 'dnd-repro-'))
   const httpServer = await new Promise(resolve => {
-    const s = createSyncServer({ sessionsDir: dir }).listen(0, () => resolve(s))
+    const s = createSyncServer({ sessionsDir: dir, lobby: false }).listen(0, () => resolve(s))
   })
   const actualPort = httpServer.address().port
   return {
