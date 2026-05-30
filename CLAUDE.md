@@ -8,7 +8,7 @@ npm run dev      # vite (http://localhost:5173) + LAN sync server (:3001), concu
 npm run dev:vite # vite only (no sync server)
 npm run sync     # sync server only — node server/sync-server.mjs
 npm run build
-npm test -- --run   # Vitest (jsdom + one node-env server suite) — 405 passed, 2 skipped (407 total)
+npm test -- --run   # Vitest (jsdom + node-env server suites) — 938 passed, 2 skipped (940 total)
 ```
 
 **Cross-device / LAN play.** To reach the app and Ollama from a phone on the same LAN,
@@ -36,6 +36,8 @@ the visual theme**: `App.jsx` writes `<html data-theme>` from `THEME_FOR_GENRE`
 | `server/sync-server.mjs` | Phase B LAN sync server: HTTP REST (`GET/PUT/DELETE /session/:id`, `GET /sessions`) + WebSocket `/ws` (noServer, same port 3001). In-memory `rooms` Map (keyed by sessionId; canonical state per §4.1). Server-side Ollama DM proxy (OLLAMA_HOST env, OLLAMA_TIMEOUT_MS=90s, MODEL_RE allowlist); per-connection rate limit ACTION_MIN_INTERVAL_MS=500ms; block-strip inbound; verdict.roll validated vs server dice event. Broadcasts: `session:state/session:update/dm:delta/dm:done/presence:update`; handles: `join/action/ping`. Presence + room GC (~30min) + rejoin (NAME_TAKEN guard). v1 payloads carried by HTTP PUT. |
 | `src/components/DiceRoller.jsx` | d4–d100 roller; emits `{ die, result }` |
 | `src/components/DiceChip.jsx` | Renders a dice message — bare (`die → result`) upgrades to resolved (skill-check + `PASS`/`FAIL` verdict) |
+| `src/components/Lobby.jsx` | Multiplayer pregame lobby (shown while `serverPhase === 'lobby'`): shareable room code, party roster + characters, per-player **Ready** toggle, host-only **Start Adventure** (gated on all-ready). `Chat` early-returns this instead of the play screen |
+| `src/components/WaitingRoom.jsx` | Multiplayer waiting room (shown while `isMultiplayer && !admitted`): a **late joiner** (joined an already-started game) holds here — sees the live party — until the **host admits** them. `Chat` early-returns this after the lobby branch |
 | `src/components/PartyStrip.jsx` | Mobile 3-cell party strip (display-only; LLM-managed) |
 | `src/components/CharacterPanel.jsx` | Player's editable character sheet (HP, stats, conditions); persisted to `dnd_character`. Decoupled from the LLM `party` |
 | `src/components/HistoryPanel.jsx` | Session entities + action log + desktop party sub-section |
@@ -44,7 +46,7 @@ the visual theme**: `App.jsx` writes `<html data-theme>` from `THEME_FOR_GENRE`
 | `src/lib/context.starwars.js` | **starwars** genre engine (same interface; block-emission text identical to `context.js`) |
 | `src/App.css` | `:root` design tokens + `[data-theme="dnd"]` (Candle-lit Grimoire) / `[data-theme="void"]` (Crimson Void) theme blocks |
 | `src/hooks/useWebSocket.js` | WebSocket connection manager: exponential-backoff reconnect (1s→30s ±20% jitter), join handshake, readyState/send/shouldPoll API; `enabled=false` for single-player (zero socket created) |
-| `src/lib/turnStateMachine.js` | Pure phase-transition reducer (client + server shared): `phaseReducer(phase, event, context)` + `isActiveTurn(displayName, party)`; sentinels `'DM_BUSY'` / `'NOT_YOUR_TURN'` |
+| `src/lib/turnStateMachine.js` | Pure phase-transition reducer (client + server shared): `phaseReducer(phase, event, context)` + `isActiveTurn(displayName, party)`; sentinels `'DM_BUSY'` / `'NOT_YOUR_TURN'` / `'NOT_STARTED'`; `'lobby' + start → 'free-roam'` |
 
 **Backend — local Ollama.** `Chat.jsx` POSTs to `http://<host>:11434/api/chat` with `stream: true`
 and reads newline-delimited JSON, accumulating `event.message.content` deltas into the last
@@ -75,10 +77,14 @@ Full spec + rationale: `docs/design/PARTY-HUD-PLAN.md` (and `docs/design/PARTY-H
 **Room model:** clients join a room via URL query `?room=dnd-<8hex>` (decoded to sessionId by `App.jsx`); 2–5 is the design target but no client cap is enforced in code. Each client enters a displayName. The sync server stores room state in-memory (keyed by sessionId per §4.1); persists to `.md` after every action. Canonical state flows from the server; all clients are identical replicas (no split-brain). Design: `docs/design/MULTIPLAYER-ARCHITECTURE.md` (§2–7, canonical); handoff: `docs/design/MULTIPLAYER-V1-HANDOFF.md`.
 
 **WebSocket protocol** (port 3001, same as REST): client→server wire is `{ type, roomCode, payload }` (plus `sessionId` on join). Server→client broadcasts are `{ type, roomCode?, payload }` with inferred roomCode. Message types:
-- Client → Server: `join` (with `sessionId`, `displayName`, `lastTurnSequence`), `action` (with `content`, `pendingCheck`), `ping`.
-- Server → Client: `session:state` (full snapshot on join/rejoin), `session:update` (incremental: messages/party/phase/turnSequence), `dm:delta` (streaming text chunk), `dm:done` (final text + error flag), `presence:update` (list of {displayName, status}), `error`.
+- Client → Server: `join` (with `sessionId`, `displayName`, `lastTurnSequence`, `joinCharacter`), `action` (with `content`, `pendingCheck`), `lobby:ready` (with `ready` bool), `lobby:start` (host only), `lobby:admit` (host only; with `displayName`), `ping`.
+- Server → Client: `session:state` (full snapshot on join/rejoin; carries a per-recipient `admitted` bool), `session:update` (incremental: messages/party/phase/turnSequence), `dm:delta` (streaming text chunk), `dm:done` (final text + error flag), `presence:update` (list of {displayName, status}), `lobby:update` ({host, phase, allReady, players[]} — pregame roster), `waiting:update` ({host, waiting[]} — late joiners awaiting admission), `error`.
 
-**Phase model:** `'free-roam'` (default) → action → `'awaiting-dm'` (transient) → DM completes → `'combat'` (if party has isActive) or back to `'free-roam'`. Transient phases (`'awaiting-dm'`, `'resolving'`) live only in the server's in-memory room state; only resting phases persist to `.md` (MC-4). Governed by `phaseReducer` (§4.2, shared client/server via `turnStateMachine.js`); sentinels `'DM_BUSY'` (action rejected, DM in progress) and `'NOT_YOUR_TURN'` (combat phase, wrong actor).
+**Phase model:** a fresh multiplayer room opens in `'lobby'` (pregame gathering; `createSyncServer({ lobby })` — default on, opt out with `lobby: false`) → host starts → `'free-roam'` → action → `'awaiting-dm'` (transient) → DM completes → `'combat'` (if party has isActive) or back to `'free-roam'`. Transient phases (`'lobby'`, `'awaiting-dm'`, `'resolving'`) live only in the server's in-memory room state; only resting phases persist to `.md` (MC-4), so a restored/`.md`-loaded session is already started and skips the lobby. Governed by `phaseReducer` (§4.2, shared client/server via `turnStateMachine.js`); sentinels `'DM_BUSY'` (action rejected, DM in progress), `'NOT_YOUR_TURN'` (combat phase, wrong actor), `'NOT_STARTED'` (action rejected, still in the lobby).
+
+**Pregame lobby:** the host is the first joiner (reassigned to the earliest-connected player if they leave). Each player toggles **Ready** (`lobby:ready`); only the host sees **Start Adventure**, enabled once every connected player is ready (`lobby:start` → server validates host + all-ready, admits everyone present, flips phase to `'free-roam'`, broadcasts `session:update`). The client (`Chat.jsx`) early-returns `<Lobby>` while `serverPhase === 'lobby'`. Single-player never enters the lobby (no WS).
+
+**Waiting room (late joiners):** a player who joins after the game has started (room past the lobby) is **not admitted** — they hold in `<Lobby>`'s sibling `<WaitingRoom>` (Chat early-returns it when `isMultiplayer && !admitted`) until the **host admits** them (`lobby:admit` → server adds them to `room.admitted`, pushes them a fresh `session:state` with `admitted: true`, rebroadcasts `waiting:update`). Admission is per-player and tracked server-side in `room.admitted` (a Set of normalized names); a not-yet-admitted action is rejected with `NOT_ADMITTED`. The host is always admitted (auto-admitted by `ensureHost` in a started game — covers restored solo sessions and host-inheritance when admitted players leave). The whole mechanism is gated on `lobbyEnabled`; with `lobby: false` everyone is admitted (no waiting room). The host sees an **admit banner** in the play screen listing waiting players.
 
 **Server-side DM trigger:** single-player `sendMessage` is replaced by a server-side Ollama call in multiplayer. The sync server orchestrates: locks the room's action queue, advances the phase to `'awaiting-dm'`, builds the system prompt, streams Ollama with identical parameters as Chat.jsx, parses party/check/verdict blocks, broadcasts incremental `dm:delta` then final `dm:done`, persists the `.md`, and broadcasts `session:update` (all clients sync in parallel). Verdict.roll is validated server-side (MC-2) to reject forged rolls. OLLAMA_HOST and MODEL_RE allowlist are server-only env/code (security item H).
 

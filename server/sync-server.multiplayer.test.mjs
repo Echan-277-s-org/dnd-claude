@@ -37,10 +37,13 @@ import { applyPartyUpdate, numCtxForModel } from '../src/lib/session.js'
  * Spin up the multiplayer sync server against a temp sessions dir.
  * Returns { base, wsBase, server, dir }.
  */
-async function startTestServer() {
+async function startTestServer(opts = {}) {
+  // Default lobby:false here so the legacy DM-trigger / turn-enforcement suites
+  // (which join a fresh room and immediately act) keep their pre-lobby behavior.
+  // The dedicated pregame-lobby suite starts its own server with lobby:true.
   const dir = await mkdtemp(path.join(tmpdir(), 'dnd-mp-'))
   const httpServer = await new Promise(resolve => {
-    const s = createSyncServer({ sessionsDir: dir }).listen(0, () => resolve(s))
+    const s = createSyncServer({ sessionsDir: dir, lobby: false, ...opts }).listen(0, () => resolve(s))
   })
   const port = httpServer.address().port
   return {
@@ -257,7 +260,8 @@ describe('Phase 1 — WebSocket /ws endpoint', () => {
     expect(firstMessage.type).toBe('session:state')
     expect(firstMessage.payload).toHaveProperty('phase')
     expect(firstMessage.payload).toHaveProperty('turnSequence')
-    expect(['free-roam', 'combat']).toContain(firstMessage.payload.phase)
+    // A brand-new room opens in the pregame lobby (it has no stored .md).
+    expect(['free-roam', 'combat', 'lobby']).toContain(firstMessage.payload.phase)
     expect(typeof firstMessage.payload.turnSequence).toBe('number')
     ws.close()
   })
@@ -1248,9 +1252,11 @@ describe('Phase 6 — disconnect detection and rejoin', () => {
    * Supports roomGcMs injection for the GC test.
    */
   async function startTestServerP6(opts = {}) {
+    // lobby:false by default — the Phase 6 disconnect/rejoin tests act immediately
+    // and need free-roam rooms (the pregame lobby would gate those actions).
     const dir = await mkdtemp(path.join(tmpdir(), 'dnd-p6-'))
     const httpServer = await new Promise(resolve => {
-      const s = createSyncServer({ sessionsDir: dir, ...opts }).listen(0, () => resolve(s))
+      const s = createSyncServer({ sessionsDir: dir, lobby: false, ...opts }).listen(0, () => resolve(s))
     })
     const port = httpServer.address().port
     return {
@@ -4658,5 +4664,307 @@ describe('Fix #5 — anchorJoinedPCNames pure-logic unit tests', () => {
     expect(thorinSlot.hpPct).toBe(80)
     // Membership count unchanged.
     expect(result).toHaveLength(4)
+  })
+})
+
+// ─── Pregame lobby ─────────────────────────────────────────────────────────────
+// The lobby is enabled per-server (createSyncServer({ lobby: true })). A fresh
+// multiplayer room opens in the 'lobby' phase; the party readies up and the host
+// starts the adventure (phase → 'free-roam'). 'lobby' never persists.
+
+describe('Pregame lobby', () => {
+  let ctx
+
+  // Race-free tracked client: buffers every message from connection onward so a
+  // post-join broadcast (presence/lobby) is never missed between awaits.
+  function trackedClient(wsBase, joinPayload) {
+    const ws = new WebSocket(`${wsBase}/ws`)
+    const buffer = []
+    const waiters = []
+    ws.on('message', data => {
+      let m
+      try { m = JSON.parse(data) } catch { return }
+      buffer.push(m)
+      for (let i = waiters.length - 1; i >= 0; i--) {
+        if (waiters[i].pred(m)) { waiters[i].resolve(m); waiters.splice(i, 1) }
+      }
+    })
+    ws.once('open', () => ws.send(JSON.stringify({ type: 'join', ...joinPayload })))
+    function waitFor(pred, timeoutMs = 5000) {
+      const hit = buffer.find(pred)
+      if (hit) return Promise.resolve(hit)
+      return new Promise((resolve, reject) => {
+        const t = setTimeout(() => reject(new Error('trackedClient.waitFor timed out')), timeoutMs)
+        waiters.push({ pred, resolve: m => { clearTimeout(t); resolve(m) } })
+      })
+    }
+    function send(obj) { ws.send(JSON.stringify(obj)) }
+    return { ws, waitFor, send }
+  }
+
+  const isLobbyUpdate = m => m.type === 'lobby:update'
+
+  beforeAll(async () => {
+    ctx = await startTestServer({ lobby: true })
+  })
+  afterAll(async () => {
+    await new Promise(r => ctx.server.close(r))
+    await cleanupDir(ctx.dir)
+  })
+
+  it('a fresh room opens in the lobby phase with the first joiner as host', async () => {
+    const ROOM = 'dnd-lob00001'
+    const SESSION = 'lobby0001-0000-0000-0000-000000000001'
+    const a = trackedClient(ctx.wsBase, { roomCode: ROOM, sessionId: SESSION, displayName: 'Alex', lastTurnSequence: 0 })
+
+    const state = await a.waitFor(m => m.type === 'session:state')
+    expect(state.payload.phase).toBe('lobby')
+
+    const lu = await a.waitFor(isLobbyUpdate)
+    expect(lu.payload.host).toBe('Alex')
+    expect(lu.payload.players).toHaveLength(1)
+    expect(lu.payload.players[0]).toMatchObject({ displayName: 'Alex', isHost: true, ready: false, status: 'connected' })
+    expect(lu.payload.allReady).toBe(false)
+
+    a.ws.close()
+  })
+
+  it('a second joiner appears in the roster; only the first is host', async () => {
+    const ROOM = 'dnd-lob00002'
+    const SESSION = 'lobby0002-0000-0000-0000-000000000002'
+    const a = trackedClient(ctx.wsBase, { roomCode: ROOM, sessionId: SESSION, displayName: 'Alex', lastTurnSequence: 0 })
+    await a.waitFor(isLobbyUpdate)
+    const b = trackedClient(ctx.wsBase, { roomCode: ROOM, sessionId: SESSION, displayName: 'Bo', lastTurnSequence: 0 })
+
+    const lu = await a.waitFor(m => isLobbyUpdate(m) && m.payload.players.length === 2)
+    const names = lu.payload.players.map(p => p.displayName).sort()
+    expect(names).toEqual(['Alex', 'Bo'])
+    expect(lu.payload.players.find(p => p.displayName === 'Alex').isHost).toBe(true)
+    expect(lu.payload.players.find(p => p.displayName === 'Bo').isHost).toBe(false)
+
+    a.ws.close(); b.ws.close()
+  })
+
+  it('allReady flips true only once every connected player is ready', async () => {
+    const ROOM = 'dnd-lob00003'
+    const SESSION = 'lobby0003-0000-0000-0000-000000000003'
+    const a = trackedClient(ctx.wsBase, { roomCode: ROOM, sessionId: SESSION, displayName: 'Alex', lastTurnSequence: 0 })
+    await a.waitFor(isLobbyUpdate)
+    const b = trackedClient(ctx.wsBase, { roomCode: ROOM, sessionId: SESSION, displayName: 'Bo', lastTurnSequence: 0 })
+    await a.waitFor(m => isLobbyUpdate(m) && m.payload.players.length === 2)
+
+    b.send({ type: 'lobby:ready', roomCode: ROOM, payload: { ready: true } })
+    const afterB = await a.waitFor(m => isLobbyUpdate(m) && m.payload.players.find(p => p.displayName === 'Bo')?.ready === true)
+    expect(afterB.payload.allReady).toBe(false) // Alex still not ready
+
+    a.send({ type: 'lobby:ready', roomCode: ROOM, payload: { ready: true } })
+    const allReady = await a.waitFor(m => isLobbyUpdate(m) && m.payload.allReady === true)
+    expect(allReady.payload.players.every(p => p.ready)).toBe(true)
+
+    a.ws.close(); b.ws.close()
+  })
+
+  it('an action is rejected with NOT_STARTED while the room is in the lobby', async () => {
+    const ROOM = 'dnd-lob00004'
+    const SESSION = 'lobby0004-0000-0000-0000-000000000004'
+    const a = trackedClient(ctx.wsBase, { roomCode: ROOM, sessionId: SESSION, displayName: 'Alex', lastTurnSequence: 0 })
+    await a.waitFor(isLobbyUpdate)
+
+    a.send({ type: 'action', roomCode: ROOM, payload: { content: 'I sneak ahead.', type: 'user' } })
+    const err = await a.waitFor(m => m.type === 'error')
+    expect(err.payload.code).toBe('NOT_STARTED')
+
+    a.ws.close()
+  })
+
+  it('a non-host cannot start the game (NOT_HOST)', async () => {
+    const ROOM = 'dnd-lob00005'
+    const SESSION = 'lobby0005-0000-0000-0000-000000000005'
+    const a = trackedClient(ctx.wsBase, { roomCode: ROOM, sessionId: SESSION, displayName: 'Alex', lastTurnSequence: 0 })
+    await a.waitFor(isLobbyUpdate)
+    const b = trackedClient(ctx.wsBase, { roomCode: ROOM, sessionId: SESSION, displayName: 'Bo', lastTurnSequence: 0 })
+    await b.waitFor(isLobbyUpdate)
+
+    b.send({ type: 'lobby:start', roomCode: ROOM })
+    const err = await b.waitFor(m => m.type === 'error')
+    expect(err.payload.code).toBe('NOT_HOST')
+
+    a.ws.close(); b.ws.close()
+  })
+
+  it('the host cannot start until all players are ready (NOT_ALL_READY)', async () => {
+    const ROOM = 'dnd-lob00006'
+    const SESSION = 'lobby0006-0000-0000-0000-000000000006'
+    const a = trackedClient(ctx.wsBase, { roomCode: ROOM, sessionId: SESSION, displayName: 'Alex', lastTurnSequence: 0 })
+    await a.waitFor(isLobbyUpdate)
+    const b = trackedClient(ctx.wsBase, { roomCode: ROOM, sessionId: SESSION, displayName: 'Bo', lastTurnSequence: 0 })
+    await a.waitFor(m => isLobbyUpdate(m) && m.payload.players.length === 2)
+
+    // Only the host readies; Bo is not ready.
+    a.send({ type: 'lobby:ready', roomCode: ROOM, payload: { ready: true } })
+    await a.waitFor(m => isLobbyUpdate(m) && m.payload.players.find(p => p.displayName === 'Alex')?.ready === true)
+
+    a.send({ type: 'lobby:start', roomCode: ROOM })
+    const err = await a.waitFor(m => m.type === 'error')
+    expect(err.payload.code).toBe('NOT_ALL_READY')
+
+    a.ws.close(); b.ws.close()
+  })
+
+  it('the host starts once all are ready → room transitions to free-roam', async () => {
+    const ROOM = 'dnd-lob00007'
+    const SESSION = 'lobby0007-0000-0000-0000-000000000007'
+    const a = trackedClient(ctx.wsBase, { roomCode: ROOM, sessionId: SESSION, displayName: 'Alex', lastTurnSequence: 0 })
+    await a.waitFor(isLobbyUpdate)
+    const b = trackedClient(ctx.wsBase, { roomCode: ROOM, sessionId: SESSION, displayName: 'Bo', lastTurnSequence: 0 })
+    await a.waitFor(m => isLobbyUpdate(m) && m.payload.players.length === 2)
+
+    a.send({ type: 'lobby:ready', roomCode: ROOM, payload: { ready: true } })
+    b.send({ type: 'lobby:ready', roomCode: ROOM, payload: { ready: true } })
+    await a.waitFor(m => isLobbyUpdate(m) && m.payload.allReady === true)
+
+    a.send({ type: 'lobby:start', roomCode: ROOM })
+    // Both clients see the canonical phase flip via session:update.
+    const flipA = await a.waitFor(m => m.type === 'session:update' && m.payload.phase === 'free-roam')
+    const flipB = await b.waitFor(m => m.type === 'session:update' && m.payload.phase === 'free-roam')
+    expect(flipA.payload.phase).toBe('free-roam')
+    expect(flipB.payload.phase).toBe('free-roam')
+
+    a.ws.close(); b.ws.close()
+  })
+
+  it('host is reassigned to the earliest remaining player when the host leaves', async () => {
+    const ROOM = 'dnd-lob00008'
+    const SESSION = 'lobby0008-0000-0000-0000-000000000008'
+    const a = trackedClient(ctx.wsBase, { roomCode: ROOM, sessionId: SESSION, displayName: 'Alex', lastTurnSequence: 0 })
+    await a.waitFor(isLobbyUpdate)
+    const b = trackedClient(ctx.wsBase, { roomCode: ROOM, sessionId: SESSION, displayName: 'Bo', lastTurnSequence: 0 })
+    await b.waitFor(isLobbyUpdate)
+
+    // Host (Alex) departs.
+    a.ws.close()
+    const reassigned = await b.waitFor(m => isLobbyUpdate(m) && m.payload.host === 'Bo')
+    expect(reassigned.payload.host).toBe('Bo')
+    expect(reassigned.payload.players.find(p => p.displayName === 'Bo').isHost).toBe(true)
+
+    b.ws.close()
+  })
+
+  it('a restored session (stored .md) skips the lobby and opens in its resting phase', async () => {
+    const ROOM = 'dnd-lob00009'
+    const SESSION = 'lobby0009-0000-0000-0000-000000000009'
+    // Seed a stored session already in free-roam with a message.
+    const put = (id, body) => fetch(`${ctx.base}/session/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    const putRes = await put(SESSION, {
+      campaign: { name: 'Restored', genre: 'dnd', model: 'qwen2.5:14b', sessionId: SESSION },
+      messages: [{ role: 'assistant', content: 'The story so far…' }],
+      sessionLog: [],
+      party: [],
+      savedAt: null,
+      roomCode: ROOM,
+      phase: 'free-roam',
+      turnSequence: 3,
+    })
+    expect(putRes.status).toBe(200)
+
+    const a = trackedClient(ctx.wsBase, { roomCode: ROOM, sessionId: SESSION, displayName: 'Alex', lastTurnSequence: 0 })
+    const state = await a.waitFor(m => m.type === 'session:state')
+    expect(state.payload.phase).toBe('free-roam') // not 'lobby' — game already started
+    expect(state.payload.admitted).toBe(true)     // solo host of a restored game is auto-admitted
+
+    a.ws.close()
+  })
+
+  // ─── Waiting room (late joiners) ──────────────────────────────────────────
+  // Bring a room to a started state with one admitted host, returning the host client.
+  async function startSoloGame(room, session, name = 'Host') {
+    const h = trackedClient(ctx.wsBase, { roomCode: room, sessionId: session, displayName: name, lastTurnSequence: 0 })
+    await h.waitFor(isLobbyUpdate)
+    h.send({ type: 'lobby:ready', roomCode: room, payload: { ready: true } })
+    await h.waitFor(m => isLobbyUpdate(m) && m.payload.allReady === true)
+    h.send({ type: 'lobby:start', roomCode: room })
+    await h.waitFor(m => m.type === 'session:update' && m.payload.phase === 'free-roam')
+    return h
+  }
+
+  it('a late joiner to a started game is not admitted and appears in the waiting roster', async () => {
+    const ROOM = 'dnd-lob00010'; const SESSION = 'lobby0010-0000-0000-0000-000000000010'
+    const host = await startSoloGame(ROOM, SESSION, 'Host')
+
+    const late = trackedClient(ctx.wsBase, { roomCode: ROOM, sessionId: SESSION, displayName: 'Late', lastTurnSequence: 0 })
+    const state = await late.waitFor(m => m.type === 'session:state')
+    expect(state.payload.phase).toBe('free-roam')
+    expect(state.payload.admitted).toBe(false) // must wait for the host
+
+    // The host learns of the waiting player via waiting:update.
+    const wu = await host.waitFor(m => m.type === 'waiting:update' && m.payload.waiting.some(p => p.displayName === 'Late'))
+    expect(wu.payload.host).toBe('Host')
+
+    host.ws.close(); late.ws.close()
+  })
+
+  it('a not-yet-admitted late joiner action is rejected with NOT_ADMITTED', async () => {
+    const ROOM = 'dnd-lob00011'; const SESSION = 'lobby0011-0000-0000-0000-000000000011'
+    const host = await startSoloGame(ROOM, SESSION, 'Host')
+    const late = trackedClient(ctx.wsBase, { roomCode: ROOM, sessionId: SESSION, displayName: 'Late', lastTurnSequence: 0 })
+    await late.waitFor(m => m.type === 'session:state')
+
+    late.send({ type: 'action', roomCode: ROOM, payload: { content: 'I barge in.', type: 'user' } })
+    const err = await late.waitFor(m => m.type === 'error')
+    expect(err.payload.code).toBe('NOT_ADMITTED')
+
+    host.ws.close(); late.ws.close()
+  })
+
+  it('a non-host cannot admit a waiting player (NOT_HOST)', async () => {
+    const ROOM = 'dnd-lob00012'; const SESSION = 'lobby0012-0000-0000-0000-000000000012'
+    const host = await startSoloGame(ROOM, SESSION, 'Host')
+    const late = trackedClient(ctx.wsBase, { roomCode: ROOM, sessionId: SESSION, displayName: 'Late', lastTurnSequence: 0 })
+    await late.waitFor(m => m.type === 'session:state')
+
+    // The waiting player tries to admit themselves — rejected.
+    late.send({ type: 'lobby:admit', roomCode: ROOM, payload: { displayName: 'Late' } })
+    const err = await late.waitFor(m => m.type === 'error')
+    expect(err.payload.code).toBe('NOT_HOST')
+
+    host.ws.close(); late.ws.close()
+  })
+
+  it('the host admits a waiting player → they get admitted:true and drop off the roster', async () => {
+    const ROOM = 'dnd-lob00013'; const SESSION = 'lobby0013-0000-0000-0000-000000000013'
+    const host = await startSoloGame(ROOM, SESSION, 'Host')
+    const late = trackedClient(ctx.wsBase, { roomCode: ROOM, sessionId: SESSION, displayName: 'Late', lastTurnSequence: 0 })
+    await late.waitFor(m => m.type === 'session:state' && m.payload.admitted === false)
+    await host.waitFor(m => m.type === 'waiting:update' && m.payload.waiting.some(p => p.displayName === 'Late'))
+
+    host.send({ type: 'lobby:admit', roomCode: ROOM, payload: { displayName: 'Late' } })
+
+    // The late joiner receives a fresh session:state flipping them to admitted.
+    const admitState = await late.waitFor(m => m.type === 'session:state' && m.payload.admitted === true)
+    expect(admitState.payload.phase).toBe('free-roam')
+    // And the waiting roster no longer lists them.
+    const cleared = await host.waitFor(m => m.type === 'waiting:update' && !m.payload.waiting.some(p => p.displayName === 'Late'))
+    expect(cleared.payload.waiting).toHaveLength(0)
+
+    host.ws.close(); late.ws.close()
+  })
+
+  it('host-inheritance pulls a promoted waiting player out of the waiting room', async () => {
+    const ROOM = 'dnd-lob00014'; const SESSION = 'lobby0014-0000-0000-0000-000000000014'
+    const host = await startSoloGame(ROOM, SESSION, 'Host')
+    const late = trackedClient(ctx.wsBase, { roomCode: ROOM, sessionId: SESSION, displayName: 'Late', lastTurnSequence: 0 })
+    await late.waitFor(m => m.type === 'session:state' && m.payload.admitted === false)
+
+    // The only admitted player (the host) leaves → Late is promoted to host and
+    // auto-admitted, and is told so via a fresh session:state.
+    host.ws.close()
+    const promoted = await late.waitFor(m => m.type === 'session:state' && m.payload.admitted === true)
+    expect(promoted.payload.admitted).toBe(true)
+
+    late.ws.close()
   })
 })

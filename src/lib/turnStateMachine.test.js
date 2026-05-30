@@ -119,6 +119,21 @@ describe('phaseReducer — RESOLVING transitions', () => {
 
 // ─── reconnect / server-restart ───────────────────────────────────────────────
 
+describe('phaseReducer — LOBBY transitions', () => {
+  it('LOBBY + start → FREE_ROAM (host launches the adventure)', () => {
+    expect(phaseReducer('lobby', { type: 'start' }, {})).toBe('free-roam')
+  })
+
+  it('LOBBY + any player action → NOT_STARTED (no actions before the game starts)', () => {
+    expect(phaseReducer('lobby', { type: 'action', displayName: 'Alex' }, {})).toBe('NOT_STARTED')
+  })
+
+  it('start event outside the lobby is a no-op (phase unchanged)', () => {
+    expect(phaseReducer('free-roam', { type: 'start' }, {})).toBe('free-roam')
+    expect(phaseReducer('combat', { type: 'start' }, {})).toBe('combat')
+  })
+})
+
 describe('phaseReducer — reconnect restores phase from .md', () => {
   it('any state + server restart → current phase from .md store (authoritative)', () => {
     // This is a server-level concern (the server reads the .md and sends session:state).

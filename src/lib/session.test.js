@@ -87,6 +87,28 @@ describe('serializeSession', () => {
   })
 })
 
+describe('phase coercion — lobby never persists', () => {
+  const CAMP = { name: 'C', genre: 'dnd', model: 'm', sessionId: 's-1' }
+
+  it('serializeSession coerces the transient lobby phase to free-roam (never written)', () => {
+    const p = serializeSession({ campaign: CAMP }, null, { phase: 'lobby' })
+    expect(p.phase).toBe('free-roam')
+  })
+
+  it('serializeSession preserves resting phases (free-roam / combat)', () => {
+    expect(serializeSession({ campaign: CAMP }, null, { phase: 'combat' }).phase).toBe('combat')
+    expect(serializeSession({ campaign: CAMP }, null, { phase: 'free-roam' }).phase).toBe('free-roam')
+  })
+
+  it('deserializeSession accepts a stored lobby phase on the read path (lenient)', () => {
+    const payload = {
+      schemaVersion: SCHEMA_VERSION, sessionId: 's-1', savedAt: null,
+      campaign: CAMP, messages: [], sessionLog: [], party: [], phase: 'lobby',
+    }
+    expect(deserializeSession(payload).phase).toBe('lobby')
+  })
+})
+
 describe('deserializeSession', () => {
   it('round-trips a serialized payload', () => {
     const p = serializeSession(STATE, '2026-05-25T14:32:11Z')

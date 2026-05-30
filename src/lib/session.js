@@ -19,12 +19,13 @@
 export const SCHEMA_VERSION = 3
 
 // Phase enum. RESTING phases are the only values ever PERSISTED. The transient
-// operational phases ('awaiting-dm' / 'resolving') live only in the sync server's
-// in-memory room state; they are coerced to 'free-roam' on every serialize / .md
-// write (MC-4). The READ path is lenient (accepts all four) and clamps anything
-// else to 'free-roam'.
+// operational phases ('lobby' / 'awaiting-dm' / 'resolving') live only in the sync
+// server's in-memory room state; they are coerced to 'free-roam' on every serialize
+// / .md write (MC-4). The READ path is lenient (accepts all valid values) and clamps
+// anything else to 'free-roam'. 'lobby' is the pregame-gathering phase — a restored
+// or .md-loaded session is by definition already started, so it never persists.
 export const RESTING_PHASES = ['free-roam', 'combat']
-const VALID_PHASES = ['free-roam', 'combat', 'awaiting-dm', 'resolving']
+const VALID_PHASES = ['free-roam', 'combat', 'lobby', 'awaiting-dm', 'resolving']
 
 // WRITE-path coercion — only resting phases are ever serialized / written to .md.
 function restingPhase(phase) {
