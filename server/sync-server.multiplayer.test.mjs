@@ -4874,7 +4874,97 @@ describe('Pregame lobby', () => {
     const a = trackedClient(ctx.wsBase, { roomCode: ROOM, sessionId: SESSION, displayName: 'Alex', lastTurnSequence: 0 })
     const state = await a.waitFor(m => m.type === 'session:state')
     expect(state.payload.phase).toBe('free-roam') // not 'lobby' — game already started
+    expect(state.payload.admitted).toBe(true)     // solo host of a restored game is auto-admitted
 
     a.ws.close()
+  })
+
+  // ─── Waiting room (late joiners) ──────────────────────────────────────────
+  // Bring a room to a started state with one admitted host, returning the host client.
+  async function startSoloGame(room, session, name = 'Host') {
+    const h = trackedClient(ctx.wsBase, { roomCode: room, sessionId: session, displayName: name, lastTurnSequence: 0 })
+    await h.waitFor(isLobbyUpdate)
+    h.send({ type: 'lobby:ready', roomCode: room, payload: { ready: true } })
+    await h.waitFor(m => isLobbyUpdate(m) && m.payload.allReady === true)
+    h.send({ type: 'lobby:start', roomCode: room })
+    await h.waitFor(m => m.type === 'session:update' && m.payload.phase === 'free-roam')
+    return h
+  }
+
+  it('a late joiner to a started game is not admitted and appears in the waiting roster', async () => {
+    const ROOM = 'dnd-lob00010'; const SESSION = 'lobby0010-0000-0000-0000-000000000010'
+    const host = await startSoloGame(ROOM, SESSION, 'Host')
+
+    const late = trackedClient(ctx.wsBase, { roomCode: ROOM, sessionId: SESSION, displayName: 'Late', lastTurnSequence: 0 })
+    const state = await late.waitFor(m => m.type === 'session:state')
+    expect(state.payload.phase).toBe('free-roam')
+    expect(state.payload.admitted).toBe(false) // must wait for the host
+
+    // The host learns of the waiting player via waiting:update.
+    const wu = await host.waitFor(m => m.type === 'waiting:update' && m.payload.waiting.some(p => p.displayName === 'Late'))
+    expect(wu.payload.host).toBe('Host')
+
+    host.ws.close(); late.ws.close()
+  })
+
+  it('a not-yet-admitted late joiner action is rejected with NOT_ADMITTED', async () => {
+    const ROOM = 'dnd-lob00011'; const SESSION = 'lobby0011-0000-0000-0000-000000000011'
+    const host = await startSoloGame(ROOM, SESSION, 'Host')
+    const late = trackedClient(ctx.wsBase, { roomCode: ROOM, sessionId: SESSION, displayName: 'Late', lastTurnSequence: 0 })
+    await late.waitFor(m => m.type === 'session:state')
+
+    late.send({ type: 'action', roomCode: ROOM, payload: { content: 'I barge in.', type: 'user' } })
+    const err = await late.waitFor(m => m.type === 'error')
+    expect(err.payload.code).toBe('NOT_ADMITTED')
+
+    host.ws.close(); late.ws.close()
+  })
+
+  it('a non-host cannot admit a waiting player (NOT_HOST)', async () => {
+    const ROOM = 'dnd-lob00012'; const SESSION = 'lobby0012-0000-0000-0000-000000000012'
+    const host = await startSoloGame(ROOM, SESSION, 'Host')
+    const late = trackedClient(ctx.wsBase, { roomCode: ROOM, sessionId: SESSION, displayName: 'Late', lastTurnSequence: 0 })
+    await late.waitFor(m => m.type === 'session:state')
+
+    // The waiting player tries to admit themselves — rejected.
+    late.send({ type: 'lobby:admit', roomCode: ROOM, payload: { displayName: 'Late' } })
+    const err = await late.waitFor(m => m.type === 'error')
+    expect(err.payload.code).toBe('NOT_HOST')
+
+    host.ws.close(); late.ws.close()
+  })
+
+  it('the host admits a waiting player → they get admitted:true and drop off the roster', async () => {
+    const ROOM = 'dnd-lob00013'; const SESSION = 'lobby0013-0000-0000-0000-000000000013'
+    const host = await startSoloGame(ROOM, SESSION, 'Host')
+    const late = trackedClient(ctx.wsBase, { roomCode: ROOM, sessionId: SESSION, displayName: 'Late', lastTurnSequence: 0 })
+    await late.waitFor(m => m.type === 'session:state' && m.payload.admitted === false)
+    await host.waitFor(m => m.type === 'waiting:update' && m.payload.waiting.some(p => p.displayName === 'Late'))
+
+    host.send({ type: 'lobby:admit', roomCode: ROOM, payload: { displayName: 'Late' } })
+
+    // The late joiner receives a fresh session:state flipping them to admitted.
+    const admitState = await late.waitFor(m => m.type === 'session:state' && m.payload.admitted === true)
+    expect(admitState.payload.phase).toBe('free-roam')
+    // And the waiting roster no longer lists them.
+    const cleared = await host.waitFor(m => m.type === 'waiting:update' && !m.payload.waiting.some(p => p.displayName === 'Late'))
+    expect(cleared.payload.waiting).toHaveLength(0)
+
+    host.ws.close(); late.ws.close()
+  })
+
+  it('host-inheritance pulls a promoted waiting player out of the waiting room', async () => {
+    const ROOM = 'dnd-lob00014'; const SESSION = 'lobby0014-0000-0000-0000-000000000014'
+    const host = await startSoloGame(ROOM, SESSION, 'Host')
+    const late = trackedClient(ctx.wsBase, { roomCode: ROOM, sessionId: SESSION, displayName: 'Late', lastTurnSequence: 0 })
+    await late.waitFor(m => m.type === 'session:state' && m.payload.admitted === false)
+
+    // The only admitted player (the host) leaves → Late is promoted to host and
+    // auto-admitted, and is told so via a fresh session:state.
+    host.ws.close()
+    const promoted = await late.waitFor(m => m.type === 'session:state' && m.payload.admitted === true)
+    expect(promoted.payload.admitted).toBe(true)
+
+    late.ws.close()
   })
 })

@@ -5,6 +5,7 @@ import CharacterPanel from './CharacterPanel'
 import PartyStrip from './PartyStrip'
 import DiceChip from './DiceChip'
 import Lobby from './Lobby'
+import WaitingRoom from './WaitingRoom'
 import { getGenre } from '../lib/genres'
 import { serializeSession, deserializeSession, getLanHost, toMarkdown, sessionFileName, markOrphanedDice, applyPartyUpdate, makeRoomCode, buildPlayersForPrompt, numCtxForModel } from '../lib/session'
 import { useSessionPersistence } from '../hooks/useSessionPersistence'
@@ -164,6 +165,16 @@ export default function Chat({
   // lobby:update broadcast. Only consulted while serverPhase === 'lobby'.
   const [lobby, setLobby] = useState(null)
 
+  // Waiting room — a late joiner (joined an already-started game) waits here until
+  // the host admits them. `admitted` defaults true so single-player and the initial
+  // party are never gated; the server sets it false in a late joiner's session:state.
+  // `waiting` = { host, waiting: [{displayName, character}] } for the host's admit UI.
+  const [admitted, setAdmitted] = useState(true)
+  const [waiting, setWaiting] = useState(null)
+  // True once this client has seen the lobby phase — used to auto-admit lobby
+  // participants when the host starts (the start broadcast carries no per-client flag).
+  const sawLobbyRef = useRef(false)
+
   // Phase 5: server-authoritative phase ('free-roam' | 'combat' | 'awaiting-dm' | 'resolving').
   // Driven by session:update and session:state events from the server.
   // Single-player: stays 'free-roam' (never updated via WS).
@@ -195,6 +206,12 @@ export default function Chat({
         onSessionUpdateRef.current?.(payload)
         // Phase 5: track server phase for combat HUD + input gating.
         if (payload?.phase) {
+          // Waiting room: a lobby participant becomes admitted the moment the host
+          // starts (phase leaves 'lobby'); the start broadcast carries no per-client
+          // flag, so being IN the lobby at start is the admission signal.
+          if (payload.phase !== 'lobby' && sawLobbyRef.current) {
+            setAdmitted(true)
+          }
           setServerPhase(payload.phase)
         }
         // If the server phase returns to a resting phase, loading is done.
@@ -252,6 +269,12 @@ export default function Chat({
         if (payload && Array.isArray(payload.players)) {
           setLobby(payload)
         }
+      } else if (type === 'waiting:update') {
+        // Waiting-room roster ({ host, waiting: [{displayName, character}] }) — the
+        // host admits late joiners from it. All strings render as React text nodes.
+        if (payload && Array.isArray(payload.waiting)) {
+          setWaiting(payload)
+        }
       } else if (type === 'error') {
         // Server-sent error (DM_BUSY, NOT_YOUR_TURN, etc.). Show feedback.
         // Input is re-enabled by the subsequent session:update phase change.
@@ -279,7 +302,14 @@ export default function Chat({
       onSessionStateRef.current?.(payload)
       // Phase 5: restore server phase from session:state (MC-7 sentinel reset).
       if (payload?.phase) {
+        if (payload.phase === 'lobby') sawLobbyRef.current = true
         setServerPhase(payload.phase)
+      }
+      // Waiting room: adopt this client's per-recipient admitted flag when present.
+      // Absent (older payloads / non-lobby servers) → leave admitted unchanged
+      // (defaults true), so single-player and existing flows never gate.
+      if (typeof payload?.admitted === 'boolean') {
+        setAdmitted(payload.admitted)
       }
       // Also update local presence if the snapshot contains connections.
       // (presence:update follows immediately from the server anyway)
@@ -725,6 +755,11 @@ export default function Chat({
     wsSend({ type: 'lobby:start', roomCode: roomCode || campaign.roomCode || sharedRoomCode })
   }, [wsSend, roomCode, campaign.roomCode, sharedRoomCode])
 
+  // Waiting room: the host admits a late joiner into active play.
+  const handleAdmit = useCallback((dn) => {
+    wsSend({ type: 'lobby:admit', roomCode: roomCode || campaign.roomCode || sharedRoomCode, payload: { displayName: dn } })
+  }, [wsSend, roomCode, campaign.roomCode, sharedRoomCode])
+
   // Find last assistant message index for action suggestions
   const lastAssistantIndex = (() => {
     for (let i = messages.length - 1; i >= 0; i--) {
@@ -775,6 +810,23 @@ export default function Chat({
         allReady={lobby?.allReady ?? false}
         onToggleReady={handleToggleReady}
         onStart={handleStartGame}
+      />
+    )
+  }
+
+  // ─── Waiting room ───────────────────────────────────────────────────────────
+  // A late joiner (joined an already-started game) waits here until the host
+  // admits them. The initial party never lands here (they were admitted at start);
+  // single-player never reaches this branch (admitted stays true).
+  if (isMultiplayer && !admitted) {
+    return (
+      <WaitingRoom
+        genre={genre}
+        campaignName={campaign.name || genre.headerDefaultName}
+        roomCode={sharedRoomCode}
+        myDisplayName={displayName ?? ''}
+        party={party}
+        host={waiting?.host ?? null}
       />
     )
   }
@@ -880,6 +932,30 @@ export default function Chat({
             </button>
           </div>
         </header>
+
+        {/* Waiting room: host-only admit banner for late joiners awaiting entry. */}
+        {isMultiplayer && waiting?.waiting?.length > 0 && (
+          waiting.host === displayName ? (
+            <div className="admit-banner" role="region" aria-label="Players waiting to join">
+              {waiting.waiting.map(p => (
+                <div key={p.displayName} className="admit-row">
+                  <span className="admit-name">
+                    {p.displayName}
+                    {p.character?.charClass && (
+                      <span className="admit-char"> · {[p.character.race, p.character.charClass].filter(Boolean).join(' ')}</span>
+                    )}
+                    {' '}is waiting to join
+                  </span>
+                  <button className="admit-btn" onClick={() => handleAdmit(p.displayName)}>Admit</button>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="admit-banner admit-banner--info" aria-live="polite">
+              {waiting.waiting.map(p => p.displayName).join(', ')} waiting for the host to admit…
+            </div>
+          )
+        )}
 
         {/* Phase B: mobile-only party strip — visibility controlled by CSS media query */}
         {/* Phase 5: pass phase so PartyStrip can dim inactive cells in combat */}

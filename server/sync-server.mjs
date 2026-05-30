@@ -972,6 +972,17 @@ export function createSyncServer({ sessionsDir = DEFAULT_DIR, roomGcMs = 30 * 60
         return
       }
 
+      // Waiting-room gate: a late joiner who has not yet been admitted by the host
+      // cannot act. The client shows the waiting room (no composer); this guards
+      // against a stale/forged action from a not-yet-admitted connection.
+      {
+        const joinedName = normalizeName(room.clients.get(ws)?.displayName)
+        if (!admittedFor(room, joinedName)) {
+          ws.send(JSON.stringify({ type: 'error', payload: { code: 'NOT_ADMITTED' } }))
+          return
+        }
+      }
+
       // Reject empty content.
       if (!content) {
         ws.send(JSON.stringify({ type: 'error', payload: { code: 'empty_action' } }))
@@ -1505,6 +1516,71 @@ export function createSyncServer({ sessionsDir = DEFAULT_DIR, roomGcMs = 30 * 60
     if (!hostOpen) {
       room.host = open.length ? open[0][1].displayName : null
     }
+    // In a STARTED game the host is always admitted. This covers (a) a restored
+    // solo session reopened by its host, and (b) host-inheritance when every
+    // admitted player has left and a waiting player is promoted — without this
+    // they could never be admitted (no one left to admit them).
+    if (lobbyEnabled && room.host && room.phase !== 'lobby') {
+      room.admitted.add(normalizeName(room.host))
+    }
+  }
+
+  // Normalize a displayName to the key used in the admitted set (case/space-insensitive).
+  function normalizeName(name) {
+    return String(name ?? '').trim().toLowerCase()
+  }
+
+  // Whether a player is admitted into active play. Disabled-lobby deployments
+  // admit everyone (no waiting room). During the lobby phase nobody is "admitted"
+  // yet (the lobby UI governs that screen instead of the waiting room).
+  function admittedFor(room, nameLower) {
+    if (!lobbyEnabled) return true
+    if (room.phase === 'lobby') return false
+    return room.admitted.has(nameLower)
+  }
+
+  // Late joiners awaiting host admission (connected, not yet admitted). Empty when
+  // the lobby is disabled or the room is still in the pregame lobby.
+  function waitingList(room) {
+    if (!lobbyEnabled || room.phase === 'lobby') return []
+    const out = []
+    for (const [ws, c] of room.clients) {
+      if (ws.readyState !== ws.OPEN) continue
+      if (!room.admitted.has(normalizeName(c.displayName))) {
+        out.push({ displayName: c.displayName, character: room.characters?.[c.displayName] ?? null })
+      }
+    }
+    return out
+  }
+
+  // Broadcast the current waiting-room roster (host admits from it). No-op while
+  // the lobby is disabled or the room is still gathering.
+  function broadcastWaiting(room) {
+    if (!lobbyEnabled || room.phase === 'lobby') return
+    broadcast(room, { type: 'waiting:update', roomCode: room.roomCode, payload: { host: room.host, waiting: waitingList(room) } })
+  }
+
+  // Send a fresh session:state to one connected player (by normalized name),
+  // stamping their per-recipient `admitted` flag. Used to pull a newly-admitted
+  // late joiner (host admit, or host-inheritance) out of the waiting room.
+  function pushSessionState(room, nameLower, admitted) {
+    const payload = {
+      messages: room.messages ?? [],
+      party: room.party ?? [],
+      phase: room.phase,
+      turnSequence: room.turnSequence ?? 0,
+      roomCode: room.roomCode,
+      savedAt: new Date().toISOString(),
+      campaign: room.campaign ?? null,
+      characters: { ...room.characters },
+      admitted,
+    }
+    const data = JSON.stringify({ type: 'session:state', roomCode: room.roomCode, payload })
+    for (const [cws, c] of room.clients) {
+      if (cws.readyState === cws.OPEN && normalizeName(c.displayName) === nameLower) {
+        try { cws.send(data) } catch { /* best-effort */ }
+      }
+    }
   }
 
   // True iff there is at least one connected player and ALL connected players
@@ -1574,7 +1650,7 @@ export function createSyncServer({ sessionsDir = DEFAULT_DIR, roomGcMs = 30 * 60
         const { type } = msg ?? {}
 
         // ─── type allowlist (security item F) ───────────────────────────────
-        if (!['join', 'action', 'ping', 'lobby:ready', 'lobby:start'].includes(type)) {
+        if (!['join', 'action', 'ping', 'lobby:ready', 'lobby:start', 'lobby:admit'].includes(type)) {
           // Unknown type — drop silently (don't send error; avoid info leakage).
           return
         }
@@ -1604,6 +1680,10 @@ export function createSyncServer({ sessionsDir = DEFAULT_DIR, roomGcMs = 30 * 60
         }
         if (type === 'lobby:start') {
           handleLobbyStart(ws, msg)
+          return
+        }
+        if (type === 'lobby:admit') {
+          handleLobbyAdmit(ws, msg)
           return
         }
 
@@ -1660,7 +1740,12 @@ export function createSyncServer({ sessionsDir = DEFAULT_DIR, roomGcMs = 30 * 60
       return
     }
 
-    // Launch: leave the lobby for free-roam play.
+    // Launch: every player currently in the lobby is admitted into play, then
+    // leave the lobby for free-roam. (Players who join LATER become waiting-room
+    // late joiners the host must admit.)
+    for (const [cws, c] of room.clients) {
+      if (cws.readyState === cws.OPEN) room.admitted.add(normalizeName(c.displayName))
+    }
     room.phase = 'free-roam'
 
     // Tell lobby UIs the phase changed (so any that key off lobby:update update too)…
@@ -1678,6 +1763,32 @@ export function createSyncServer({ sessionsDir = DEFAULT_DIR, roomGcMs = 30 * 60
         savedAt: new Date().toISOString(),
       },
     })
+  }
+
+  // ─── lobby:admit handler ─────────────────────────────────────────────────────
+  // The host admits a waiting late joiner into active play. The admitted client
+  // receives a fresh session:state (admitted:true) so it leaves the waiting room
+  // caught up, and the waiting roster is rebroadcast (minus the admitted player).
+  function handleLobbyAdmit(ws, msg) {
+    let room = null
+    for (const [, r] of rooms) { if (r.clients.has(ws)) { room = r; break } }
+    if (!room || !lobbyEnabled || room.phase === 'lobby') return
+
+    const conn = room.clients.get(ws)
+    if (!conn || conn.displayName !== room.host) {
+      ws.send(JSON.stringify({ type: 'error', payload: { code: 'NOT_HOST', message: 'Only the host can admit players' } }))
+      return
+    }
+
+    const target = sanitizeDisplayName(msg?.payload?.displayName)
+    if (!target) return
+    const targetLower = normalizeName(target)
+    room.admitted.add(targetLower)
+
+    // Notify the admitted client with a current snapshot carrying admitted:true,
+    // then refresh the waiting roster (minus the admitted player).
+    pushSessionState(room, targetLower, true)
+    broadcastWaiting(room)
   }
 
   // ─── join handler ──────────────────────────────────────────────────────────
@@ -1732,6 +1843,7 @@ export function createSyncServer({ sessionsDir = DEFAULT_DIR, roomGcMs = 30 * 60
           // When the lobby is disabled, fresh rooms open straight into 'free-roam'.
           phase: stored?.phase ?? (lobbyEnabled ? 'lobby' : 'free-roam'),
           host: null,                      // Lobby: displayName of the room host (first joiner)
+          admitted: new Set(),             // Waiting room: normalized names admitted into play
           turnSequence: stored?.turnSequence ?? 0,
           messages: stored?.messages ?? [],   // Phase 2: in-memory message history
           party: stored?.party ?? [],          // Phase 2: in-memory party state
@@ -1913,8 +2025,13 @@ export function createSyncServer({ sessionsDir = DEFAULT_DIR, roomGcMs = 30 * 60
         ? inMemorySnapshot
         : snapshot
 
-      // Send session:state to the joining client.
-      ws.send(JSON.stringify({ type: 'session:state', roomCode, payload: sendSnapshot }))
+      // Send session:state to the joining client. `admitted` is per-recipient
+      // (the joiner's own status): true for the initial party / rejoining admitted
+      // players, false for a late joiner who must wait for the host. It is attached
+      // ONLY to the joiner's payload — the G-C7 broadcast below must not carry one
+      // client's admitted flag to others (the client ignores an absent `admitted`).
+      const joinerPayload = { ...sendSnapshot, admitted: admittedFor(room, normalizedName) }
+      ws.send(JSON.stringify({ type: 'session:state', roomCode, payload: joinerPayload }))
 
       // G-C7: when a NEW player joins (not a rejoin), existing clients must learn
       // the joiner's character. Broadcast session:state with the updated characters
@@ -1947,6 +2064,10 @@ export function createSyncServer({ sessionsDir = DEFAULT_DIR, roomGcMs = 30 * 60
           roomCode: room.roomCode,
           payload: lobbyRoster(room),
         })
+      } else {
+        // Started game: refresh the waiting roster so the host sees any late
+        // joiner now awaiting admission.
+        broadcastWaiting(room)
       }
     } catch (err) {
       // eslint-disable-next-line no-console
@@ -1981,6 +2102,16 @@ export function createSyncServer({ sessionsDir = DEFAULT_DIR, roomGcMs = 30 * 60
             roomCode: room.roomCode,
             payload: lobbyRoster(room),
           })
+        } else {
+          // Started game: promote a new host if the host left (ensureHost keeps the
+          // host admitted). If the promoted host was a waiting player, pull them out
+          // of the waiting room; then refresh the roster for whoever remains.
+          const prevHost = room.host
+          ensureHost(room)
+          if (room.host && room.host !== prevHost) {
+            pushSessionState(room, normalizeName(room.host), true)
+          }
+          broadcastWaiting(room)
         }
 
         // If no OPEN connections remain, schedule orphaned-room GC.
